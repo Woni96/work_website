@@ -211,9 +211,68 @@ code {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.module-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+  margin-top: 24px;
+}
+
+.module-card-wide {
+  grid-column: 1 / -1;
+}
+
 .info-card,
 .subpanel {
   padding: 22px;
+}
+
+.hero-link-row {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.action-link,
+.primary-link,
+.secondary-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 11px 16px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  text-decoration: none;
+}
+
+.primary-link {
+  background: linear-gradient(135deg, rgba(103, 184, 255, 0.24), rgba(170, 140, 255, 0.18));
+  color: var(--text);
+}
+
+.secondary-link {
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--muted);
+}
+
+.image-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
+  gap: 18px;
+}
+
+.image-frame {
+  overflow: hidden;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  background: rgba(4, 10, 20, 0.7);
+  box-shadow: var(--shadow);
+}
+
+.image-frame img {
+  display: block;
+  width: 100%;
+  height: auto;
 }
 
 .accent-red {
@@ -335,7 +394,9 @@ code {
   .card-grid,
   .two-column,
   .three-up,
-  .pipeline {
+  .pipeline,
+  .module-grid,
+  .image-layout {
     grid-template-columns: 1fr;
   }
 
