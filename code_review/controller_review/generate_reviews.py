@@ -31,6 +31,8 @@ class ModuleConfig:
     role_summary: str
     design_summary: str
     review_focus: str
+    runtime_summary: str
+    parameters: tuple[tuple[str, str], ...]
     items: tuple[ReviewItem, ...]
 
 
@@ -52,6 +54,24 @@ MODULES: tuple[ModuleConfig, ...] = (
         review_focus=(
             "리뷰 포인트는 `목표 자세를 어떻게 잡는지`, `IMU를 어떻게 제어 상태로 필터링하는지`, "
             "`yaw manual override와 hold가 어떻게 전환되는지`, `translation/heave 중 보호 로직이 어떤 출력을 만드는지`입니다."
+        ),
+        runtime_summary=(
+            "런타임에서는 `imu_callback()`이 현재 자세와 각속도를 계속 갱신하고, "
+            "`control_loop()`가 주기적으로 목표 자세와 현재 자세의 차이를 계산해 토크를 냅니다. "
+            "여기에 yaw stick release 이후 heading을 다시 잠그는 로직, translation 중 roll/pitch trim을 유지하는 로직, "
+            "heave나 큰 body rate 상황에서 출력을 보호하는 로직이 겹쳐서 실제 조종 감각을 만듭니다."
+        ),
+        parameters=(
+            ("`kp_roll`, `ki_roll`, `kd_roll`", "roll 축 복원력, steady-state bias 보상, roll rate damping 강도를 정합니다."),
+            ("`kp_pitch`, `ki_pitch`, `kd_pitch`", "pitch 축 응답과 감쇠를 정하며 surge 중 nose-up 경향을 얼마나 강하게 잡을지에도 영향을 줍니다."),
+            ("`kp_yaw`, `kd_yaw`", "heading error를 얼마나 세게 복원할지와 yaw rate를 얼마나 감쇠할지 결정합니다."),
+            ("`yaw_manual_override_threshold`", "이 값보다 큰 yaw stick이 들어오면 yaw hold보다 manual yaw를 우선합니다."),
+            ("`yaw_hold_settle_time_sec`", "yaw stick을 놓은 직후 heading을 다시 잠그기 전에 잠깐 damping만 적용하는 시간입니다."),
+            ("`xy_motion_protect_threshold`, `strong_xy_motion_threshold`", "translation 중 roll/pitch trim hold를 약하게 만들기 시작하는 기준입니다."),
+            ("`rp_scale_when_xy_motion`, `rp_scale_when_strong_xy_motion`", "translation 중 roll/pitch torque를 얼마나 줄일지 정합니다."),
+            ("`heave_protect_threshold`, `strong_heave_threshold`", "수직 조작 중 yaw hold를 더 보수적으로 만들지 결정하는 기준입니다."),
+            ("`large_tilt_disable_deg`", "기체가 너무 크게 기울면 torque 출력을 끊는 안전 게이트입니다."),
+            ("`orientation_filter_measurement_alpha`, `orientation_filter_max_correction_rate_deg`", "IMU 기반 control attitude filter의 추종 속도와 correction 한계를 정합니다."),
         ),
         items=(
             ReviewItem(
@@ -196,6 +216,23 @@ MODULES: tuple[ModuleConfig, ...] = (
             "`manual heave freshness를 어떻게 지우는지`, `depth sensor offset을 IMU로 어떻게 보정하는지`, "
             "`최종 heave shaping이 actuator-friendly한지`입니다."
         ),
+        runtime_summary=(
+            "런타임에서는 `depth_callback()`가 depth sample을 받을 때마다 현재 depth, depth rate, manual heave 상태를 갱신하고 "
+            "필요하면 target depth를 다시 잡습니다. 이후 PID, pilot depth-rate, saturation, upward limit, slew-rate 제한을 거쳐 "
+            "최종 `Fz` 명령이 만들어집니다. 즉 이 모듈은 단순 PID가 아니라 상태 전이와 출력 shaping이 함께 들어간 depth hold 시스템입니다."
+        ),
+        parameters=(
+            ("`kp_depth`, `ki_depth`, `kd_depth`", "수심 오차를 heave 명령으로 바꾸는 핵심 PID 게인입니다."),
+            ("`manual_heave_override_threshold`", "이 값보다 큰 manual heave는 조종자가 depth hold를 직접 흔드는 입력으로 해석됩니다."),
+            ("`manual_wrench_timeout_sec`", "manual heave 입력이 이 시간 이상 갱신되지 않으면 stale로 보고 0으로 복구합니다."),
+            ("`pilot_depth_rate_enabled`", "manual heave를 직접 추력 명령으로 볼지, 목표 수심의 변화율로 볼지 정합니다."),
+            ("`max_pilot_depth_rate`, `pilot_depth_rate_sign`", "pilot depth-rate 모드에서 stick 입력이 target depth를 얼마나 빠르게 움직일지 정합니다."),
+            ("`manual_heave_release_target_offset`", "manual heave를 놓았을 때 현재 depth에 더해 새 target으로 삼는 오프셋입니다."),
+            ("`max_heave`, `max_upward_heave`", "최종 heave 출력의 절대 한계와 상승 방향 한계를 정합니다."),
+            ("`max_heave_delta_per_cycle`", "한 제어 주기에서 heave가 얼마나 급하게 바뀔 수 있는지 제한합니다."),
+            ("`depth_rate_alpha`", "depth 미분값에 low-pass filter를 얼마나 강하게 적용할지 정합니다."),
+            ("`depth_sensor_offset_x/y/z`, `depth_sensor_offset_compensation_enabled`", "센서 장착 위치 보정과 IMU 기반 compensation 사용 여부를 정합니다."),
+        ),
         items=(
             ReviewItem(
                 heading="`quat_to_rotation_z_row()`",
@@ -334,6 +371,24 @@ MODULES: tuple[ModuleConfig, ...] = (
             "`yaw motion-aware damping이 어떤 안정화 효과를 만드는지`, "
             "`body-frame 변환 후 force.z를 왜 출력하는지`입니다."
         ),
+        runtime_summary=(
+            "이 모듈은 `dvl_position_callback()` 또는 `dvl_callback()`에서 위치/속도 참조를 최신 상태로 유지하고, "
+            "`publish_control_output()`에서 target과 현재 위치의 오차를 world frame에서 계산합니다. "
+            "그 다음 yaw 상태를 반영한 damping을 더하고 결과 힘을 body frame으로 회전해 최종 force command로 publish합니다. "
+            "즉 frame 해석과 DVL validity 관리가 control law만큼 중요한 모듈입니다."
+        ),
+        parameters=(
+            ("`kp_x`, `kd_x`, `kp_y`, `kd_y`", "XY 위치 오차를 force로 바꾸는 기본 PD 게인입니다."),
+            ("`max_force_x`, `max_force_y`, `max_force_z`", "각 축별 force saturation 한계를 정합니다."),
+            ("`manual_xy_override_threshold`", "이 값보다 큰 manual XY 입력이 들어오면 position hold보다 pilot input을 우선합니다."),
+            ("`capture_target_on_manual_release`", "pilot이 XY stick을 놓았을 때 현재 위치를 새 hold target으로 다시 잡을지 결정합니다."),
+            ("`valid_timeout_sec`", "DVL position/velocity reference를 얼마 동안 유효하다고 볼지 정합니다."),
+            ("`yaw_rate_damping_gain`", "yaw 회전이 클수록 XY damping을 얼마나 더 강하게 만들지 정합니다."),
+            ("`manual_yaw_damping_boost`", "manual yaw 조작 중 XY hold를 더 안정적으로 만들기 위해 추가되는 damping입니다."),
+            ("`use_dvl_position`", "DVL absolute position을 직접 쓸지, velocity integration 중심으로 갈지 결정합니다."),
+            ("`integrate_dvl_velocity_when_position_unavailable`", "absolute position이 없을 때 velocity를 적분해 hold reference를 유지할지 정합니다."),
+            ("`dvl_mount_roll_deg`, `dvl_mount_pitch_deg`, `dvl_mount_yaw_deg`", "DVL 장착 각도 보정 파라미터입니다."),
+        ),
         items=(
             ReviewItem(
                 heading="Quaternion 유틸리티",
@@ -470,6 +525,18 @@ MODULES: tuple[ModuleConfig, ...] = (
             "`depth active일 때 heave를 어떻게 해석하는지`, "
             "`roll/pitch와 yaw의 arbitration 철학이 어떻게 다른지`입니다."
         ),
+        runtime_summary=(
+            "이 모듈은 각 callback에서 manual/depth/position/attitude 입력의 최신값만 저장하고, "
+            "실제 merge는 timer 기반 `publish_merged_wrench()`에서 수행합니다. "
+            "그래서 입력 주기가 서로 달라도 최종 wrench 주기를 일정하게 유지할 수 있고, armed/disarmed 상태를 마지막 게이트로 적용할 수 있습니다."
+        ),
+        parameters=(
+            ("`publish_rate`", "최종 wrench를 얼마 주기로 publish할지 정합니다."),
+            ("`manual_wrench_timeout_sec`", "manual input이 stale이면 zero wrench로 간주하는 기준 시간입니다."),
+            ("`manual_xy_override_threshold`", "XY 축에서 manual이 auto position보다 우선하는 경계값입니다."),
+            ("`manual_heave_override_threshold`", "heave 축에서 manual이 auto depth보다 우선하는 경계값입니다."),
+            ("`manual_yaw_override_threshold`", "yaw 축에서 manual yaw가 attitude yaw hold보다 우선하는 경계값입니다."),
+        ),
         items=(
             ReviewItem(
                 heading="`__init__()`",
@@ -561,6 +628,24 @@ MODULES: tuple[ModuleConfig, ...] = (
             "`수평/수직 allocator가 어떤 철학으로 분리되는지`, "
             "`compensation 항이 왜 필요한지`, "
             "`최종 shaping과 slew-rate가 actuator에 어떤 영향을 주는지`입니다."
+        ),
+        runtime_summary=(
+            "런타임에서는 `callback()`가 들어온 wrench를 먼저 내부 축 부호와 gain으로 해석하고, "
+            "수평과 수직 그룹으로 나눠 allocation을 수행합니다. "
+            "그 뒤 compensation, priority allocation, normalization, deadband, slew-rate를 차례로 적용해 "
+            "실제 thruster array로 publish합니다. 즉 이 모듈은 '마지막 수학 + 마지막 actuator shaping' 계층입니다."
+        ),
+        parameters=(
+            ("`horizontal_output_gain`, `vertical_output_gain`, `yaw_output_gain`", "수평/수직 force와 yaw torque가 thruster 출력으로 얼마나 강하게 반영될지 정합니다."),
+            ("`heave_gain`", "heave 요구를 vertical thruster 출력으로 키우는 기본 gain입니다."),
+            ("`pitch_torque_gain`, `rear_vertical_bias`", "pitch recovery 성향과 후방 수직 thruster 바이어스를 조절합니다."),
+            ("`torque_first_allocation`", "수직 그룹에서 자세 토크를 먼저 만족시키고 남는 헤드룸에 heave를 넣을지 결정합니다."),
+            ("`level_horizontal_compensation_*`", "기체가 기울어진 상태에서 수평 이동이 heave 성분을 만들 때 이를 보정하는 파라미터 묶음입니다."),
+            ("`attitude_priority_horizontal_slowdown_*`", "자세 토크 요구가 커질수록 horizontal output을 얼마나 줄일지 정합니다."),
+            ("`surge_pitch_moment_*`", "surge thrust가 만드는 pitch moment를 보상할지와 그 강도를 정합니다."),
+            ("`imu_pitch_hold_*`", "현재 pitch와 target pitch 차이를 allocator 차원에서 추가 보상할지 정합니다."),
+            ("`slew_rate`", "thruster 출력이 한 번에 너무 급하게 바뀌지 않도록 제한합니다."),
+            ("`max_output`, `output_scale`, `output_deadband`", "최종 thruster 명령 범위, 전체 출력 크기, deadband 제거 수준을 정합니다."),
         ),
         items=(
             ReviewItem(
@@ -778,6 +863,15 @@ def render_paragraphs(text: str) -> str:
     return "\n".join(f"<p>{inline_code(paragraph)}</p>" for paragraph in paragraphs)
 
 
+def render_parameter_list_html(parameters: tuple[tuple[str, str], ...]) -> str:
+    items = []
+    for name, description in parameters:
+        items.append(
+            f"<li><strong>{inline_code(name)}</strong><span>{inline_code(description)}</span></li>"
+        )
+    return '<ul class="parameter-list">' + "".join(items) + "</ul>"
+
+
 def build_function_map(source: str) -> list[str]:
     names: list[str] = []
     for line in source.splitlines():
@@ -803,8 +897,16 @@ def render_markdown_module(config: ModuleConfig, source: str) -> str:
         "## 리뷰 초점",
         config.review_focus,
         "",
-        "## 함수 맵",
+        "## 런타임 동작 해설",
+        config.runtime_summary,
+        "",
+        "## 핵심 파라미터",
     ]
+    lines.extend([f"- {name}: {description}" for name, description in config.parameters])
+    lines.extend([
+        "",
+        "## 함수 맵",
+    ])
     lines.extend(f"- `{name}()`" for name in function_map)
 
     lines.append("")
@@ -867,6 +969,10 @@ def render_html_module(config: ModuleConfig, source: str) -> str:
           </div>
         </div>
         <div class="review-grid">
+          <article class="review-card code-card">
+            <h3>실제 코드</h3>
+            <pre><code>{html.escape(snippet)}</code></pre>
+          </article>
           <article class="review-card prose-card">
             <h3>의미</h3>
             {render_paragraphs(item.meaning)}
@@ -874,10 +980,6 @@ def render_html_module(config: ModuleConfig, source: str) -> str:
             {render_paragraphs(item.impact)}
             <h3>리뷰 메모</h3>
             {render_paragraphs(item.review)}
-          </article>
-          <article class="review-card code-card">
-            <h3>실제 코드</h3>
-            <pre><code>{html.escape(snippet)}</code></pre>
           </article>
         </div>
       </section>
@@ -901,6 +1003,7 @@ def render_html_module(config: ModuleConfig, source: str) -> str:
       <p class="meta"><code>code_review/code/{html.escape(config.source_filename)}</code></p>
       <nav class="toc">
         <a href="#role">역할</a>
+        <a href="#parameters">핵심 파라미터</a>
         <a href="#map">함수 맵</a>
         {nav_links}
         <a href="#full-source">전체 코드</a>
@@ -915,6 +1018,19 @@ def render_html_module(config: ModuleConfig, source: str) -> str:
           {render_paragraphs(config.role_summary)}
           {render_paragraphs(config.design_summary)}
           {render_paragraphs(config.review_focus)}
+          {render_paragraphs(config.runtime_summary)}
+        </div>
+      </section>
+
+      <section id="parameters" class="panel">
+        <div class="panel-heading">
+          <div>
+            <p class="section-kicker">Parameters</p>
+            <h2>핵심 파라미터 설명</h2>
+          </div>
+        </div>
+        <div class="review-card">
+          {render_parameter_list_html(config.parameters)}
         </div>
       </section>
 
@@ -1234,7 +1350,7 @@ pre code {
 
 .review-grid {
   display: grid;
-  grid-template-columns: minmax(320px, 0.95fr) minmax(420px, 1.05fr);
+  grid-template-columns: minmax(420px, 1.05fr) minmax(320px, 0.95fr);
   gap: 18px;
 }
 
@@ -1261,6 +1377,33 @@ pre code {
   columns: 2;
   color: var(--muted);
   line-height: 1.9;
+}
+
+.parameter-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 14px;
+}
+
+.parameter-list li {
+  display: grid;
+  gap: 6px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.parameter-list li strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.parameter-list li span {
+  color: var(--muted);
+  line-height: 1.7;
 }
 
 .source-details {

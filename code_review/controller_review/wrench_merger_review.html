@@ -15,6 +15,7 @@
       <p class="meta"><code>code_review/code/wrench_merger.py</code></p>
       <nav class="toc">
         <a href="#role">역할</a>
+        <a href="#parameters">핵심 파라미터</a>
         <a href="#map">함수 맵</a>
         <a href="#init">`__init__()`</a>
 <a href="#section">입력 저장 함수</a>
@@ -33,6 +34,19 @@
           <p>이 코드는 manual input, depth, position, attitude 출력을 축별 규칙으로 합쳐 최종 <code>Wrench</code>를 만드는 supervisory mixer입니다.</p>
           <p>핵심 설계는 <code>manual override + auto hold arbitration</code>입니다. 각 축별로 manual과 auto의 우선순위를 다르게 해석해 최종 명령을 만듭니다.</p>
           <p>리뷰 포인트는 <code>manual freshness가 어떻게 적용되는지</code>, <code>depth active일 때 heave를 어떻게 해석하는지</code>, <code>roll/pitch와 yaw의 arbitration 철학이 어떻게 다른지</code>입니다.</p>
+          <p>이 모듈은 각 callback에서 manual/depth/position/attitude 입력의 최신값만 저장하고, 실제 merge는 timer 기반 <code>publish_merged_wrench()</code>에서 수행합니다. 그래서 입력 주기가 서로 달라도 최종 wrench 주기를 일정하게 유지할 수 있고, armed/disarmed 상태를 마지막 게이트로 적용할 수 있습니다.</p>
+        </div>
+      </section>
+
+      <section id="parameters" class="panel">
+        <div class="panel-heading">
+          <div>
+            <p class="section-kicker">Parameters</p>
+            <h2>핵심 파라미터 설명</h2>
+          </div>
+        </div>
+        <div class="review-card">
+          <ul class="parameter-list"><li><strong><code>publish_rate</code></strong><span>최종 wrench를 얼마 주기로 publish할지 정합니다.</span></li><li><strong><code>manual_wrench_timeout_sec</code></strong><span>manual input이 stale이면 zero wrench로 간주하는 기준 시간입니다.</span></li><li><strong><code>manual_xy_override_threshold</code></strong><span>XY 축에서 manual이 auto position보다 우선하는 경계값입니다.</span></li><li><strong><code>manual_heave_override_threshold</code></strong><span>heave 축에서 manual이 auto depth보다 우선하는 경계값입니다.</span></li><li><strong><code>manual_yaw_override_threshold</code></strong><span>yaw 축에서 manual yaw가 attitude yaw hold보다 우선하는 경계값입니다.</span></li></ul>
         </div>
       </section>
 
@@ -69,14 +83,6 @@
           </div>
         </div>
         <div class="review-grid">
-          <article class="review-card prose-card">
-            <h3>의미</h3>
-            <p>입력 토픽, armed gating, manual override threshold, publish timer와 마지막 입력 상태들을 준비합니다.</p>
-            <h3>영향</h3>
-            <p>이 함수가 곧 이 노드의 arbitration 정책 초기 상태를 만듭니다. 특히 timer 기반 publish는 입력 주기가 달라도 최종 wrench 주기를 일정하게 유지합니다.</p>
-            <h3>리뷰 메모</h3>
-            <p>구조가 단순하고 목적이 분명합니다. 이런 중간 supervisory layer가 있으면 상위 제어기와 allocator를 느슨하게 연결할 수 있습니다.</p>
-          </article>
           <article class="review-card code-card">
             <h3>실제 코드</h3>
             <pre><code>def __init__(self):
@@ -209,6 +215,14 @@
     self.get_logger().info(f&#x27;  manual_wrench_timeout_sec       = {self.manual_wrench_timeout_sec:.3f}&#x27;)
     self.get_logger().info(&#x27;  initial armed state             = False&#x27;)</code></pre>
           </article>
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>입력 토픽, armed gating, manual override threshold, publish timer와 마지막 입력 상태들을 준비합니다.</p>
+            <h3>영향</h3>
+            <p>이 함수가 곧 이 노드의 arbitration 정책 초기 상태를 만듭니다. 특히 timer 기반 publish는 입력 주기가 달라도 최종 wrench 주기를 일정하게 유지합니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>구조가 단순하고 목적이 분명합니다. 이런 중간 supervisory layer가 있으면 상위 제어기와 allocator를 느슨하게 연결할 수 있습니다.</p>
+          </article>
         </div>
       </section> <section id="section" class="review-section">
         <div class="section-heading">
@@ -218,14 +232,6 @@
           </div>
         </div>
         <div class="review-grid">
-          <article class="review-card prose-card">
-            <h3>의미</h3>
-            <p>각 제어기 출력을 최신값으로 저장하고 armed 상태를 갱신하는 함수들입니다.</p>
-            <h3>영향</h3>
-            <p>이 함수들이 직접 최종 출력은 만들지 않지만, timer 루프가 읽을 최신 상태를 보관합니다.</p>
-            <h3>리뷰 메모</h3>
-            <p>timer 기반 merge 구조와 잘 맞습니다. 다만 manual 이외 auto 입력에 freshness timestamp가 없어 마지막 자동 출력이 오래 남을 수 있습니다.</p>
-          </article>
           <article class="review-card code-card">
             <h3>실제 코드</h3>
             <pre><code>def manual_wrench_callback(self, msg: Wrench):
@@ -257,6 +263,14 @@ def armed_callback(self, msg: Bool):
     if prev != self.armed:
         self.get_logger().info(f&#x27;armed state changed: {self.armed}&#x27;)</code></pre>
           </article>
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>각 제어기 출력을 최신값으로 저장하고 armed 상태를 갱신하는 함수들입니다.</p>
+            <h3>영향</h3>
+            <p>이 함수들이 직접 최종 출력은 만들지 않지만, timer 루프가 읽을 최신 상태를 보관합니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>timer 기반 merge 구조와 잘 맞습니다. 다만 manual 이외 auto 입력에 freshness timestamp가 없어 마지막 자동 출력이 오래 남을 수 있습니다.</p>
+          </article>
         </div>
       </section> <section id="manual-wrench-is-fresh" class="review-section">
         <div class="section-heading">
@@ -266,14 +280,6 @@ def armed_callback(self, msg: Bool):
           </div>
         </div>
         <div class="review-grid">
-          <article class="review-card prose-card">
-            <h3>의미</h3>
-            <p>manual input이 최근에 들어왔는지 판정하고 stale이면 사실상 zero wrench로 취급하게 만드는 안전 함수입니다.</p>
-            <h3>영향</h3>
-            <p>조종기 신호 유실 시 마지막 manual 명령이 latch되는 문제를 막아줍니다.</p>
-            <h3>리뷰 메모</h3>
-            <p>현재 코드베이스에서 freshness 처리가 가장 깔끔하게 들어간 부분입니다. 같은 아이디어가 auto inputs에도 확장되면 훨씬 견고해집니다.</p>
-          </article>
           <article class="review-card code-card">
             <h3>실제 코드</h3>
             <pre><code>def publish_zero_wrench(self):
@@ -292,6 +298,14 @@ def manual_wrench_is_fresh(self) -&gt; bool:
     ).nanoseconds * 1e-9
     return age &lt;= self.manual_wrench_timeout_sec</code></pre>
           </article>
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>manual input이 최근에 들어왔는지 판정하고 stale이면 사실상 zero wrench로 취급하게 만드는 안전 함수입니다.</p>
+            <h3>영향</h3>
+            <p>조종기 신호 유실 시 마지막 manual 명령이 latch되는 문제를 막아줍니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>현재 코드베이스에서 freshness 처리가 가장 깔끔하게 들어간 부분입니다. 같은 아이디어가 auto inputs에도 확장되면 훨씬 견고해집니다.</p>
+          </article>
         </div>
       </section> <section id="publish-merged-wrench" class="review-section">
         <div class="section-heading">
@@ -301,14 +315,6 @@ def manual_wrench_is_fresh(self) -&gt; bool:
           </div>
         </div>
         <div class="review-grid">
-          <article class="review-card prose-card">
-            <h3>의미</h3>
-            <p>armed gating, manual freshness 확인, 축별 override 규칙, depth active 정책, yaw arbitration을 적용해 최종 wrench를 publish합니다.</p>
-            <h3>영향</h3>
-            <p>이 함수가 전체 제어 시스템의 최종 의사결정자입니다. 같은 upper controller 출력이라도 여기서 어떤 축은 manual이 이기고 어떤 축은 auto가 이깁니다.</p>
-            <h3>리뷰 메모</h3>
-            <p>정책은 명료하고 읽기 쉽습니다. 다만 <code>last_position_force</code>, <code>last_depth_heave</code>, <code>last_attitude_torque</code>에도 freshness를 넣지 않으면 상위 노드 장애 시 마지막 값이 계속 살아남습니다.</p>
-          </article>
           <article class="review-card code-card">
             <h3>실제 코드</h3>
             <pre><code>def publish_merged_wrench(self):
@@ -393,6 +399,14 @@ def manual_wrench_is_fresh(self) -&gt; bool:
     #     f&#x27;tx={merged.torque.x:.3f}, ty={merged.torque.y:.3f}, tz={merged.torque.z:.3f}&#x27;
     # )</code></pre>
           </article>
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>armed gating, manual freshness 확인, 축별 override 규칙, depth active 정책, yaw arbitration을 적용해 최종 wrench를 publish합니다.</p>
+            <h3>영향</h3>
+            <p>이 함수가 전체 제어 시스템의 최종 의사결정자입니다. 같은 upper controller 출력이라도 여기서 어떤 축은 manual이 이기고 어떤 축은 auto가 이깁니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>정책은 명료하고 읽기 쉽습니다. 다만 <code>last_position_force</code>, <code>last_depth_heave</code>, <code>last_attitude_torque</code>에도 freshness를 넣지 않으면 상위 노드 장애 시 마지막 값이 계속 살아남습니다.</p>
+          </article>
         </div>
       </section> <section id="on-parameter-update" class="review-section">
         <div class="section-heading">
@@ -402,14 +416,6 @@ def manual_wrench_is_fresh(self) -&gt; bool:
           </div>
         </div>
         <div class="review-grid">
-          <article class="review-card prose-card">
-            <h3>의미</h3>
-            <p>publish rate와 override threshold를 런타임에 갱신하고 timer도 재생성합니다.</p>
-            <h3>영향</h3>
-            <p>운용자가 merge 주기와 manual override 감도를 실시간 조정할 수 있습니다.</p>
-            <h3>리뷰 메모</h3>
-            <p>supervisory node답게 runtime tuning이 단순하고 이해하기 쉽습니다.</p>
-          </article>
           <article class="review-card code-card">
             <h3>실제 코드</h3>
             <pre><code>def on_parameter_update(self, params):
@@ -438,6 +444,14 @@ def manual_wrench_is_fresh(self) -&gt; bool:
         return SetParametersResult(successful=True)
     except Exception as e:
         return SetParametersResult(successful=False, reason=str(e))</code></pre>
+          </article>
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>publish rate와 override threshold를 런타임에 갱신하고 timer도 재생성합니다.</p>
+            <h3>영향</h3>
+            <p>운용자가 merge 주기와 manual override 감도를 실시간 조정할 수 있습니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>supervisory node답게 runtime tuning이 단순하고 이해하기 쉽습니다.</p>
           </article>
         </div>
       </section>

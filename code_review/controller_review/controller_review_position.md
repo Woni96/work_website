@@ -11,6 +11,21 @@
 ## 리뷰 초점
 리뷰 포인트는 `DVL position과 velocity fallback이 어떻게 연결되는지`, `manual XY override가 hold target과 어떻게 상호작용하는지`, `yaw motion-aware damping이 어떤 안정화 효과를 만드는지`, `body-frame 변환 후 force.z를 왜 출력하는지`입니다.
 
+## 런타임 동작 해설
+이 모듈은 `dvl_position_callback()` 또는 `dvl_callback()`에서 위치/속도 참조를 최신 상태로 유지하고, `publish_control_output()`에서 target과 현재 위치의 오차를 world frame에서 계산합니다. 그 다음 yaw 상태를 반영한 damping을 더하고 결과 힘을 body frame으로 회전해 최종 force command로 publish합니다. 즉 frame 해석과 DVL validity 관리가 control law만큼 중요한 모듈입니다.
+
+## 핵심 파라미터
+- `kp_x`, `kd_x`, `kp_y`, `kd_y`: XY 위치 오차를 force로 바꾸는 기본 PD 게인입니다.
+- `max_force_x`, `max_force_y`, `max_force_z`: 각 축별 force saturation 한계를 정합니다.
+- `manual_xy_override_threshold`: 이 값보다 큰 manual XY 입력이 들어오면 position hold보다 pilot input을 우선합니다.
+- `capture_target_on_manual_release`: pilot이 XY stick을 놓았을 때 현재 위치를 새 hold target으로 다시 잡을지 결정합니다.
+- `valid_timeout_sec`: DVL position/velocity reference를 얼마 동안 유효하다고 볼지 정합니다.
+- `yaw_rate_damping_gain`: yaw 회전이 클수록 XY damping을 얼마나 더 강하게 만들지 정합니다.
+- `manual_yaw_damping_boost`: manual yaw 조작 중 XY hold를 더 안정적으로 만들기 위해 추가되는 damping입니다.
+- `use_dvl_position`: DVL absolute position을 직접 쓸지, velocity integration 중심으로 갈지 결정합니다.
+- `integrate_dvl_velocity_when_position_unavailable`: absolute position이 없을 때 velocity를 적분해 hold reference를 유지할지 정합니다.
+- `dvl_mount_roll_deg`, `dvl_mount_pitch_deg`, `dvl_mount_yaw_deg`: DVL 장착 각도 보정 파라미터입니다.
+
 ## 함수 맵
 - `clamp()`
 - `quat_normalize()`

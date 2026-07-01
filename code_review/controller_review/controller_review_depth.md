@@ -11,6 +11,21 @@
 ## 리뷰 초점
 리뷰 포인트는 `target depth를 언제 어떻게 캡처하는지`, `manual heave freshness를 어떻게 지우는지`, `depth sensor offset을 IMU로 어떻게 보정하는지`, `최종 heave shaping이 actuator-friendly한지`입니다.
 
+## 런타임 동작 해설
+런타임에서는 `depth_callback()`가 depth sample을 받을 때마다 현재 depth, depth rate, manual heave 상태를 갱신하고 필요하면 target depth를 다시 잡습니다. 이후 PID, pilot depth-rate, saturation, upward limit, slew-rate 제한을 거쳐 최종 `Fz` 명령이 만들어집니다. 즉 이 모듈은 단순 PID가 아니라 상태 전이와 출력 shaping이 함께 들어간 depth hold 시스템입니다.
+
+## 핵심 파라미터
+- `kp_depth`, `ki_depth`, `kd_depth`: 수심 오차를 heave 명령으로 바꾸는 핵심 PID 게인입니다.
+- `manual_heave_override_threshold`: 이 값보다 큰 manual heave는 조종자가 depth hold를 직접 흔드는 입력으로 해석됩니다.
+- `manual_wrench_timeout_sec`: manual heave 입력이 이 시간 이상 갱신되지 않으면 stale로 보고 0으로 복구합니다.
+- `pilot_depth_rate_enabled`: manual heave를 직접 추력 명령으로 볼지, 목표 수심의 변화율로 볼지 정합니다.
+- `max_pilot_depth_rate`, `pilot_depth_rate_sign`: pilot depth-rate 모드에서 stick 입력이 target depth를 얼마나 빠르게 움직일지 정합니다.
+- `manual_heave_release_target_offset`: manual heave를 놓았을 때 현재 depth에 더해 새 target으로 삼는 오프셋입니다.
+- `max_heave`, `max_upward_heave`: 최종 heave 출력의 절대 한계와 상승 방향 한계를 정합니다.
+- `max_heave_delta_per_cycle`: 한 제어 주기에서 heave가 얼마나 급하게 바뀔 수 있는지 제한합니다.
+- `depth_rate_alpha`: depth 미분값에 low-pass filter를 얼마나 강하게 적용할지 정합니다.
+- `depth_sensor_offset_x/y/z`, `depth_sensor_offset_compensation_enabled`: 센서 장착 위치 보정과 IMU 기반 compensation 사용 여부를 정합니다.
+
 ## 함수 맵
 - `quat_to_rotation_z_row()`
 - `__init__()`

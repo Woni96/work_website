@@ -15,6 +15,7 @@
       <p class="meta"><code>code_review/code/depth_controller.py</code></p>
       <nav class="toc">
         <a href="#role">역할</a>
+        <a href="#parameters">핵심 파라미터</a>
         <a href="#map">함수 맵</a>
         <a href="#quat-to-rotation-z-row">`quat_to_rotation_z_row()`</a>
 <a href="#init">`__init__()`</a>
@@ -36,6 +37,19 @@
           <p>이 코드는 depth sensor와 IMU, manual heave 입력을 받아 최종 <code>Fz</code> 명령을 만드는 수심 유지 제어기입니다.</p>
           <p>설계의 핵심은 <code>depth hold + pilot depth-rate</code>입니다. 즉 stick을 위아래로 움직이면 즉시 추진기 출력만 주는 것이 아니라, 목표 수심을 움직이는 방식으로 조종감을 만듭니다.</p>
           <p>리뷰 포인트는 <code>target depth를 언제 어떻게 캡처하는지</code>, <code>manual heave freshness를 어떻게 지우는지</code>, <code>depth sensor offset을 IMU로 어떻게 보정하는지</code>, <code>최종 heave shaping이 actuator-friendly한지</code>입니다.</p>
+          <p>런타임에서는 <code>depth_callback()</code>가 depth sample을 받을 때마다 현재 depth, depth rate, manual heave 상태를 갱신하고 필요하면 target depth를 다시 잡습니다. 이후 PID, pilot depth-rate, saturation, upward limit, slew-rate 제한을 거쳐 최종 <code>Fz</code> 명령이 만들어집니다. 즉 이 모듈은 단순 PID가 아니라 상태 전이와 출력 shaping이 함께 들어간 depth hold 시스템입니다.</p>
+        </div>
+      </section>
+
+      <section id="parameters" class="panel">
+        <div class="panel-heading">
+          <div>
+            <p class="section-kicker">Parameters</p>
+            <h2>핵심 파라미터 설명</h2>
+          </div>
+        </div>
+        <div class="review-card">
+          <ul class="parameter-list"><li><strong><code>kp_depth</code>, <code>ki_depth</code>, <code>kd_depth</code></strong><span>수심 오차를 heave 명령으로 바꾸는 핵심 PID 게인입니다.</span></li><li><strong><code>manual_heave_override_threshold</code></strong><span>이 값보다 큰 manual heave는 조종자가 depth hold를 직접 흔드는 입력으로 해석됩니다.</span></li><li><strong><code>manual_wrench_timeout_sec</code></strong><span>manual heave 입력이 이 시간 이상 갱신되지 않으면 stale로 보고 0으로 복구합니다.</span></li><li><strong><code>pilot_depth_rate_enabled</code></strong><span>manual heave를 직접 추력 명령으로 볼지, 목표 수심의 변화율로 볼지 정합니다.</span></li><li><strong><code>max_pilot_depth_rate</code>, <code>pilot_depth_rate_sign</code></strong><span>pilot depth-rate 모드에서 stick 입력이 target depth를 얼마나 빠르게 움직일지 정합니다.</span></li><li><strong><code>manual_heave_release_target_offset</code></strong><span>manual heave를 놓았을 때 현재 depth에 더해 새 target으로 삼는 오프셋입니다.</span></li><li><strong><code>max_heave</code>, <code>max_upward_heave</code></strong><span>최종 heave 출력의 절대 한계와 상승 방향 한계를 정합니다.</span></li><li><strong><code>max_heave_delta_per_cycle</code></strong><span>한 제어 주기에서 heave가 얼마나 급하게 바뀔 수 있는지 제한합니다.</span></li><li><strong><code>depth_rate_alpha</code></strong><span>depth 미분값에 low-pass filter를 얼마나 강하게 적용할지 정합니다.</span></li><li><strong><code>depth_sensor_offset_x/y/z</code>, <code>depth_sensor_offset_compensation_enabled</code></strong><span>센서 장착 위치 보정과 IMU 기반 compensation 사용 여부를 정합니다.</span></li></ul>
         </div>
       </section>
 
@@ -77,14 +91,6 @@
           </div>
         </div>
         <div class="review-grid">
-          <article class="review-card prose-card">
-            <h3>의미</h3>
-            <p>IMU quaternion에서 body z축이 world에서 어디를 보는지 계산하는 보조 함수입니다.</p>
-            <h3>영향</h3>
-            <p>depth sensor가 기체 중심에서 떨어져 있을 때, pitch/roll에 의해 측정 depth가 흔들리는 문제를 보정할 수 있게 해줍니다.</p>
-            <h3>리뷰 메모</h3>
-            <p>작은 함수지만 depth sensor offset compensation의 핵심 기반입니다. 이 함수가 없으면 IMU를 depth controller가 활용할 방법이 사라집니다.</p>
-          </article>
           <article class="review-card code-card">
             <h3>실제 코드</h3>
             <pre><code>def quat_to_rotation_z_row(x: float, y: float, z: float, w: float):
@@ -102,6 +108,14 @@
         1.0 - 2.0 * (x * x + y * y),
     )</code></pre>
           </article>
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>IMU quaternion에서 body z축이 world에서 어디를 보는지 계산하는 보조 함수입니다.</p>
+            <h3>영향</h3>
+            <p>depth sensor가 기체 중심에서 떨어져 있을 때, pitch/roll에 의해 측정 depth가 흔들리는 문제를 보정할 수 있게 해줍니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>작은 함수지만 depth sensor offset compensation의 핵심 기반입니다. 이 함수가 없으면 IMU를 depth controller가 활용할 방법이 사라집니다.</p>
+          </article>
         </div>
       </section> <section id="init" class="review-section">
         <div class="section-heading">
@@ -111,14 +125,6 @@
           </div>
         </div>
         <div class="review-grid">
-          <article class="review-card prose-card">
-            <h3>의미</h3>
-            <p>depth PID, manual override, pilot depth-rate, sensor offset compensation, output shaping 파라미터를 한 번에 선언합니다.</p>
-            <h3>영향</h3>
-            <p>이 함수가 depth hold의 운용 정책 전체를 결정합니다. 즉 단순 PID가 아니라 실제 조종기, arming, offset compensation, target clamp까지 모두 여기서 준비됩니다.</p>
-            <h3>리뷰 메모</h3>
-            <p>구성이 잘 되어 있고 실제 운용형 controller에 가깝습니다. 특히 <code>manual_wrench_timeout_sec</code>가 있는 점은 attitude/position보다 안전 측면에서 낫습니다.</p>
-          </article>
           <article class="review-card code-card">
             <h3>실제 코드</h3>
             <pre><code>def __init__(self):
@@ -364,6 +370,14 @@
         f&#x27;{self.depth_sensor_offset_compensation_enabled}&#x27;
     )</code></pre>
           </article>
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>depth PID, manual override, pilot depth-rate, sensor offset compensation, output shaping 파라미터를 한 번에 선언합니다.</p>
+            <h3>영향</h3>
+            <p>이 함수가 depth hold의 운용 정책 전체를 결정합니다. 즉 단순 PID가 아니라 실제 조종기, arming, offset compensation, target clamp까지 모두 여기서 준비됩니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>구성이 잘 되어 있고 실제 운용형 controller에 가깝습니다. 특히 <code>manual_wrench_timeout_sec</code>가 있는 점은 attitude/position보다 안전 측면에서 낫습니다.</p>
+          </article>
         </div>
       </section> <section id="arming-active" class="review-section">
         <div class="section-heading">
@@ -373,14 +387,6 @@
           </div>
         </div>
         <div class="review-grid">
-          <article class="review-card prose-card">
-            <h3>의미</h3>
-            <p>이 함수들은 controller가 언제 활성인지, target depth를 허용 범위 안에 둘지, arm/disarm에서 어떤 초기화를 할지 정의합니다.</p>
-            <h3>영향</h3>
-            <p>ROV가 arm 될 때 current depth를 target으로 잡고, disarm 시 integrator와 출력 상태를 초기화합니다. 즉 이 계층은 안전성과 target 일관성을 담당합니다.</p>
-            <h3>리뷰 메모</h3>
-            <p>상태 전이가 비교적 명확합니다. 실무에서는 <code>depth_control_is_active()</code> 같은 함수가 있어야 상위 시스템에서 상태를 해석하기 쉬워집니다.</p>
-          </article>
           <article class="review-card code-card">
             <h3>실제 코드</h3>
             <pre><code>def armed_callback(self, msg: Bool):
@@ -429,6 +435,14 @@ def clamp_target_depth(self):
     elif self.target_depth &gt; hi:
         self.target_depth = hi</code></pre>
           </article>
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>이 함수들은 controller가 언제 활성인지, target depth를 허용 범위 안에 둘지, arm/disarm에서 어떤 초기화를 할지 정의합니다.</p>
+            <h3>영향</h3>
+            <p>ROV가 arm 될 때 current depth를 target으로 잡고, disarm 시 integrator와 출력 상태를 초기화합니다. 즉 이 계층은 안전성과 target 일관성을 담당합니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>상태 전이가 비교적 명확합니다. 실무에서는 <code>depth_control_is_active()</code> 같은 함수가 있어야 상위 시스템에서 상태를 해석하기 쉬워집니다.</p>
+          </article>
         </div>
       </section> <section id="capture-manual-release-target" class="review-section">
         <div class="section-heading">
@@ -438,14 +452,6 @@ def clamp_target_depth(self):
           </div>
         </div>
         <div class="review-grid">
-          <article class="review-card prose-card">
-            <h3>의미</h3>
-            <p>manual heave를 놓았을 때 현재 depth에 release offset을 더해 새 target depth를 잡는 함수입니다.</p>
-            <h3>영향</h3>
-            <p>이 함수가 조종자가 stick을 놓은 뒤 depth hold가 어디에서 다시 잠길지를 결정합니다.</p>
-            <h3>리뷰 메모</h3>
-            <p>운용 철학은 분명하지만 <code>current_depth + offset</code>은 직관과 다를 수 있습니다. 오프셋이 항상 들어가면 &#x27;놓은 자리 유지&#x27;보다 &#x27;조금 이동한 자리 유지&#x27;가 되어 사용자 혼란을 줄 수 있습니다.</p>
-          </article>
           <article class="review-card code-card">
             <h3>실제 코드</h3>
             <pre><code>def capture_manual_release_target(self, reason: str):
@@ -460,6 +466,14 @@ def clamp_target_depth(self):
         f&#x27;target={self.target_depth:.3f} m&#x27;
     )</code></pre>
           </article>
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>manual heave를 놓았을 때 현재 depth에 release offset을 더해 새 target depth를 잡는 함수입니다.</p>
+            <h3>영향</h3>
+            <p>이 함수가 조종자가 stick을 놓은 뒤 depth hold가 어디에서 다시 잠길지를 결정합니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>운용 철학은 분명하지만 <code>current_depth + offset</code>은 직관과 다를 수 있습니다. 오프셋이 항상 들어가면 &#x27;놓은 자리 유지&#x27;보다 &#x27;조금 이동한 자리 유지&#x27;가 되어 사용자 혼란을 줄 수 있습니다.</p>
+          </article>
         </div>
       </section> <section id="compensate-depth-sensor-offset" class="review-section">
         <div class="section-heading">
@@ -469,14 +483,6 @@ def clamp_target_depth(self):
           </div>
         </div>
         <div class="review-grid">
-          <article class="review-card prose-card">
-            <h3>의미</h3>
-            <p>IMU로 센서의 world z 위치 변화를 계산해, pitch/roll 때문에 생기는 depth sensor 오차를 보정합니다.</p>
-            <h3>영향</h3>
-            <p>기체가 기울어져도 가짜 depth 변화에 과민 반응하지 않게 해 줍니다. 즉 depth hold가 실제 수심 변화를 더 정확히 보게 됩니다.</p>
-            <h3>리뷰 메모</h3>
-            <p>이 함수는 실전적인 품질을 크게 올리는 부분입니다. 센서 장착 위치가 중심에서 벗어난 수중체에서는 특히 의미가 큽니다.</p>
-          </article>
           <article class="review-card code-card">
             <h3>실제 코드</h3>
             <pre><code>def imu_callback(self, msg: Imu):
@@ -502,6 +508,14 @@ def compensate_depth_sensor_offset(self, sensor_depth: float) -&gt; float:
     )
     return sensor_depth + sensor_z_in_world</code></pre>
           </article>
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>IMU로 센서의 world z 위치 변화를 계산해, pitch/roll 때문에 생기는 depth sensor 오차를 보정합니다.</p>
+            <h3>영향</h3>
+            <p>기체가 기울어져도 가짜 depth 변화에 과민 반응하지 않게 해 줍니다. 즉 depth hold가 실제 수심 변화를 더 정확히 보게 됩니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>이 함수는 실전적인 품질을 크게 올리는 부분입니다. 센서 장착 위치가 중심에서 벗어난 수중체에서는 특히 의미가 큽니다.</p>
+          </article>
         </div>
       </section> <section id="manual-freshness" class="review-section">
         <div class="section-heading">
@@ -511,14 +525,6 @@ def compensate_depth_sensor_offset(self, sensor_depth: float) -&gt; float:
           </div>
         </div>
         <div class="review-grid">
-          <article class="review-card prose-card">
-            <h3>의미</h3>
-            <p>manual heave 입력이 최근 입력인지 판정하고, stale이면 안전하게 0으로 되돌리며 필요하면 새 target depth를 다시 잡습니다.</p>
-            <h3>영향</h3>
-            <p>조종기 신호가 끊겼을 때 controller가 마지막 nonzero heave를 계속 믿는 문제를 막습니다.</p>
-            <h3>리뷰 메모</h3>
-            <p>이 계층은 현재 코드베이스에서 가장 좋은 패턴 중 하나입니다. attitude/position도 이 freshness 전략을 가져오면 전체 일관성이 더 좋아집니다.</p>
-          </article>
           <article class="review-card code-card">
             <h3>실제 코드</h3>
             <pre><code>def manual_wrench_callback(self, msg: Wrench):
@@ -553,6 +559,14 @@ def clear_stale_manual_heave(self, now):
     self.prev_manual_heave_active = False
     self.manual_heave_active = False</code></pre>
           </article>
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>manual heave 입력이 최근 입력인지 판정하고, stale이면 안전하게 0으로 되돌리며 필요하면 새 target depth를 다시 잡습니다.</p>
+            <h3>영향</h3>
+            <p>조종기 신호가 끊겼을 때 controller가 마지막 nonzero heave를 계속 믿는 문제를 막습니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>이 계층은 현재 코드베이스에서 가장 좋은 패턴 중 하나입니다. attitude/position도 이 freshness 전략을 가져오면 전체 일관성이 더 좋아집니다.</p>
+          </article>
         </div>
       </section> <section id="depth-callback" class="review-section">
         <div class="section-heading">
@@ -562,14 +576,6 @@ def clear_stale_manual_heave(self, now):
           </div>
         </div>
         <div class="review-grid">
-          <article class="review-card prose-card">
-            <h3>의미</h3>
-            <p>depth sample이 들어올 때마다 target capture, depth rate 추정, PID 계산, pilot depth-rate, saturation, slew-rate, status publish를 수행합니다.</p>
-            <h3>영향</h3>
-            <p>이 함수가 곧 depth controller의 본체입니다. PID와 운용 상태 머신이 모두 여기에서 만납니다.</p>
-            <h3>리뷰 메모</h3>
-            <p>구조가 좋고 actuator-friendly합니다. 특히 <code>depth_rate_alpha</code>, <code>max_heave_delta_per_cycle</code>, <code>max_upward_heave</code>가 실제 시스템을 거칠지 않게 만들어 줍니다.</p>
-          </article>
           <article class="review-card code-card">
             <h3>실제 코드</h3>
             <pre><code>def depth_callback(self, msg: Float64):
@@ -689,6 +695,14 @@ def clear_stale_manual_heave(self, now):
     #     f&#x27;manual_active={self.manual_heave_active}&#x27;
     # )</code></pre>
           </article>
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>depth sample이 들어올 때마다 target capture, depth rate 추정, PID 계산, pilot depth-rate, saturation, slew-rate, status publish를 수행합니다.</p>
+            <h3>영향</h3>
+            <p>이 함수가 곧 depth controller의 본체입니다. PID와 운용 상태 머신이 모두 여기에서 만납니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>구조가 좋고 actuator-friendly합니다. 특히 <code>depth_rate_alpha</code>, <code>max_heave_delta_per_cycle</code>, <code>max_upward_heave</code>가 실제 시스템을 거칠지 않게 만들어 줍니다.</p>
+          </article>
         </div>
       </section> <section id="on-parameter-update" class="review-section">
         <div class="section-heading">
@@ -698,14 +712,6 @@ def clear_stale_manual_heave(self, now):
           </div>
         </div>
         <div class="review-grid">
-          <article class="review-card prose-card">
-            <h3>의미</h3>
-            <p>depth controller의 gain, limit, manual policy, compensation 설정을 런타임에 바꿉니다.</p>
-            <h3>영향</h3>
-            <p>실험 중 depth 감각과 안전 정책을 바로 수정할 수 있게 해줍니다.</p>
-            <h3>리뷰 메모</h3>
-            <p>runtime tuning 친화적이지만, 파라미터가 많을수록 문서가 중요합니다. 이번 리뷰 사이트에서 이 함수가 중요한 이유도 바로 그 때문입니다.</p>
-          </article>
           <article class="review-card code-card">
             <h3>실제 코드</h3>
             <pre><code>def on_parameter_update(self, params):
@@ -771,6 +777,14 @@ def clear_stale_manual_heave(self, now):
         return SetParametersResult(successful=True)
     except Exception as e:
         return SetParametersResult(successful=False, reason=str(e))</code></pre>
+          </article>
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>depth controller의 gain, limit, manual policy, compensation 설정을 런타임에 바꿉니다.</p>
+            <h3>영향</h3>
+            <p>실험 중 depth 감각과 안전 정책을 바로 수정할 수 있게 해줍니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>runtime tuning 친화적이지만, 파라미터가 많을수록 문서가 중요합니다. 이번 리뷰 사이트에서 이 함수가 중요한 이유도 바로 그 때문입니다.</p>
           </article>
         </div>
       </section>

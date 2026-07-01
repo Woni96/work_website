@@ -15,6 +15,7 @@
       <p class="meta"><code>code_review/code/position_controller.py</code></p>
       <nav class="toc">
         <a href="#role">역할</a>
+        <a href="#parameters">핵심 파라미터</a>
         <a href="#map">함수 맵</a>
         <a href="#quaternion">Quaternion 유틸리티</a>
 <a href="#init">`__init__()`</a>
@@ -36,6 +37,19 @@
           <p>이 코드는 DVL와 IMU, manual input을 이용해 planar hold용 <code>Fx</code>, <code>Fy</code>, 그리고 경우에 따라 <code>Fz</code> 보정까지 만드는 위치 제어기입니다.</p>
           <p>핵심 구조는 <code>world frame에서 위치 오차 계산 → body frame 힘으로 회전</code>입니다. 즉 기체가 yaw되어 있어도 지구 기준 위치를 유지하려는 설계입니다.</p>
           <p>리뷰 포인트는 <code>DVL position과 velocity fallback이 어떻게 연결되는지</code>, <code>manual XY override가 hold target과 어떻게 상호작용하는지</code>, <code>yaw motion-aware damping이 어떤 안정화 효과를 만드는지</code>, <code>body-frame 변환 후 force.z를 왜 출력하는지</code>입니다.</p>
+          <p>이 모듈은 <code>dvl_position_callback()</code> 또는 <code>dvl_callback()</code>에서 위치/속도 참조를 최신 상태로 유지하고, <code>publish_control_output()</code>에서 target과 현재 위치의 오차를 world frame에서 계산합니다. 그 다음 yaw 상태를 반영한 damping을 더하고 결과 힘을 body frame으로 회전해 최종 force command로 publish합니다. 즉 frame 해석과 DVL validity 관리가 control law만큼 중요한 모듈입니다.</p>
+        </div>
+      </section>
+
+      <section id="parameters" class="panel">
+        <div class="panel-heading">
+          <div>
+            <p class="section-kicker">Parameters</p>
+            <h2>핵심 파라미터 설명</h2>
+          </div>
+        </div>
+        <div class="review-card">
+          <ul class="parameter-list"><li><strong><code>kp_x</code>, <code>kd_x</code>, <code>kp_y</code>, <code>kd_y</code></strong><span>XY 위치 오차를 force로 바꾸는 기본 PD 게인입니다.</span></li><li><strong><code>max_force_x</code>, <code>max_force_y</code>, <code>max_force_z</code></strong><span>각 축별 force saturation 한계를 정합니다.</span></li><li><strong><code>manual_xy_override_threshold</code></strong><span>이 값보다 큰 manual XY 입력이 들어오면 position hold보다 pilot input을 우선합니다.</span></li><li><strong><code>capture_target_on_manual_release</code></strong><span>pilot이 XY stick을 놓았을 때 현재 위치를 새 hold target으로 다시 잡을지 결정합니다.</span></li><li><strong><code>valid_timeout_sec</code></strong><span>DVL position/velocity reference를 얼마 동안 유효하다고 볼지 정합니다.</span></li><li><strong><code>yaw_rate_damping_gain</code></strong><span>yaw 회전이 클수록 XY damping을 얼마나 더 강하게 만들지 정합니다.</span></li><li><strong><code>manual_yaw_damping_boost</code></strong><span>manual yaw 조작 중 XY hold를 더 안정적으로 만들기 위해 추가되는 damping입니다.</span></li><li><strong><code>use_dvl_position</code></strong><span>DVL absolute position을 직접 쓸지, velocity integration 중심으로 갈지 결정합니다.</span></li><li><strong><code>integrate_dvl_velocity_when_position_unavailable</code></strong><span>absolute position이 없을 때 velocity를 적분해 hold reference를 유지할지 정합니다.</span></li><li><strong><code>dvl_mount_roll_deg</code>, <code>dvl_mount_pitch_deg</code>, <code>dvl_mount_yaw_deg</code></strong><span>DVL 장착 각도 보정 파라미터입니다.</span></li></ul>
         </div>
       </section>
 
@@ -82,14 +96,6 @@
           </div>
         </div>
         <div class="review-grid">
-          <article class="review-card prose-card">
-            <h3>의미</h3>
-            <p>이 함수들은 DVL 속도와 위치제어 출력을 body/world frame 사이에서 변환하기 위한 기본 수학 도구입니다.</p>
-            <h3>영향</h3>
-            <p>이 계층이 있어야 yaw가 바뀌어도 같은 world 위치를 유지할 수 있습니다. 즉 이 controller의 존재 이유 자체가 여기서 시작됩니다.</p>
-            <h3>리뷰 메모</h3>
-            <p>수학 유틸리티는 단순하지만 매우 중요합니다. 좌표계가 꼬이면 controller tuning 문제가 아니라 frame mismatch 문제가 됩니다.</p>
-          </article>
           <article class="review-card code-card">
             <h3>실제 코드</h3>
             <pre><code>def clamp(value: float, lo: float, hi: float) -&gt; float:
@@ -134,6 +140,14 @@ def quat_rotate_vector(q, v):
     rotated = quat_multiply(quat_multiply(q, qv), quat_conjugate(q))
     return (rotated[0], rotated[1], rotated[2])</code></pre>
           </article>
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>이 함수들은 DVL 속도와 위치제어 출력을 body/world frame 사이에서 변환하기 위한 기본 수학 도구입니다.</p>
+            <h3>영향</h3>
+            <p>이 계층이 있어야 yaw가 바뀌어도 같은 world 위치를 유지할 수 있습니다. 즉 이 controller의 존재 이유 자체가 여기서 시작됩니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>수학 유틸리티는 단순하지만 매우 중요합니다. 좌표계가 꼬이면 controller tuning 문제가 아니라 frame mismatch 문제가 됩니다.</p>
+          </article>
         </div>
       </section> <section id="init" class="review-section">
         <div class="section-heading">
@@ -143,14 +157,6 @@ def quat_rotate_vector(q, v):
           </div>
         </div>
         <div class="review-grid">
-          <article class="review-card prose-card">
-            <h3>의미</h3>
-            <p>DVL 입력 방식, gain, yaw damping, manual override, frame 정책, velocity integration fallback까지 초기화합니다.</p>
-            <h3>영향</h3>
-            <p>position hold가 absolute position 기반인지 velocity integration 기반인지, manual release 시 target을 다시 잡을지, 어떤 frame으로 publish할지가 모두 여기서 결정됩니다.</p>
-            <h3>리뷰 메모</h3>
-            <p>실전 운용형 controller답게 파라미터 구성이 좋습니다. 다만 manual freshness timeout이 없어서 수동 입력이 stale일 때 hold 복귀가 늦어질 수 있습니다.</p>
-          </article>
           <article class="review-card code-card">
             <h3>실제 코드</h3>
             <pre><code>def __init__(self):
@@ -304,6 +310,14 @@ def quat_rotate_vector(q, v):
     )
     self.get_logger().info(f&#x27;  control_enabled                 = {self.control_enabled}&#x27;)</code></pre>
           </article>
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>DVL 입력 방식, gain, yaw damping, manual override, frame 정책, velocity integration fallback까지 초기화합니다.</p>
+            <h3>영향</h3>
+            <p>position hold가 absolute position 기반인지 velocity integration 기반인지, manual release 시 target을 다시 잡을지, 어떤 frame으로 publish할지가 모두 여기서 결정됩니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>실전 운용형 controller답게 파라미터 구성이 좋습니다. 다만 manual freshness timeout이 없어서 수동 입력이 stale일 때 hold 복귀가 늦어질 수 있습니다.</p>
+          </article>
         </div>
       </section> <section id="section" class="review-section">
         <div class="section-heading">
@@ -313,14 +327,6 @@ def quat_rotate_vector(q, v):
           </div>
         </div>
         <div class="review-grid">
-          <article class="review-card prose-card">
-            <h3>의미</h3>
-            <p>이 함수들은 제어 출력을 언제 0으로 만들지, target을 언제 갱신할지, DVL 데이터가 유효한지 판정하는 기반 계층입니다.</p>
-            <h3>영향</h3>
-            <p>센서가 유효하지 않으면 output을 0으로 내리고, enable edge에서 hold target을 다시 캡처할 수 있습니다.</p>
-            <h3>리뷰 메모</h3>
-            <p>이 보조 계층 덕분에 publish 조건이 깔끔합니다. 실제 control law보다 앞단의 상태 판정이 잘 분리된 점이 장점입니다.</p>
-          </article>
           <article class="review-card code-card">
             <h3>실제 코드</h3>
             <pre><code>def _publish_zero_force(self):
@@ -357,6 +363,14 @@ def _apply_deadband(self, value: float) -&gt; float:
 def _dvl_position_is_finite(self, msg: PointStamped) -&gt; bool:
     return math.isfinite(float(msg.point.x)) and math.isfinite(float(msg.point.y))</code></pre>
           </article>
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>이 함수들은 제어 출력을 언제 0으로 만들지, target을 언제 갱신할지, DVL 데이터가 유효한지 판정하는 기반 계층입니다.</p>
+            <h3>영향</h3>
+            <p>센서가 유효하지 않으면 output을 0으로 내리고, enable edge에서 hold target을 다시 캡처할 수 있습니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>이 보조 계층 덕분에 publish 조건이 깔끔합니다. 실제 control law보다 앞단의 상태 판정이 잘 분리된 점이 장점입니다.</p>
+          </article>
         </div>
       </section> <section id="manual-wrench-callback" class="review-section">
         <div class="section-heading">
@@ -366,14 +380,6 @@ def _dvl_position_is_finite(self, msg: PointStamped) -&gt; bool:
           </div>
         </div>
         <div class="review-grid">
-          <article class="review-card prose-card">
-            <h3>의미</h3>
-            <p>manual XY 입력이 active인지 판정하고, release edge에서 현재 위치를 새 hold target으로 캡처합니다.</p>
-            <h3>영향</h3>
-            <p>조종자가 이동을 끝내고 stick을 놓았을 때 그 자리에서 poshold가 다시 잠기게 만드는 함수입니다.</p>
-            <h3>리뷰 메모</h3>
-            <p>운용감은 좋지만 freshness timeout이 없어서 마지막 manual XY가 남으면 poshold 복귀가 안 될 수 있습니다. 현재 코드의 대표적인 개선 후보입니다.</p>
-          </article>
           <article class="review-card code-card">
             <h3>실제 코드</h3>
             <pre><code>def manual_wrench_callback(self, msg: Wrench):
@@ -396,6 +402,14 @@ def _dvl_position_is_finite(self, msg: PointStamped) -&gt; bool:
             f&#x27;x={self.target_x:.3f}, y={self.target_y:.3f}&#x27;
         )</code></pre>
           </article>
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>manual XY 입력이 active인지 판정하고, release edge에서 현재 위치를 새 hold target으로 캡처합니다.</p>
+            <h3>영향</h3>
+            <p>조종자가 이동을 끝내고 stick을 놓았을 때 그 자리에서 poshold가 다시 잠기게 만드는 함수입니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>운용감은 좋지만 freshness timeout이 없어서 마지막 manual XY가 남으면 poshold 복귀가 안 될 수 있습니다. 현재 코드의 대표적인 개선 후보입니다.</p>
+          </article>
         </div>
       </section> <section id="dvl" class="review-section">
         <div class="section-heading">
@@ -405,14 +419,6 @@ def _dvl_position_is_finite(self, msg: PointStamped) -&gt; bool:
           </div>
         </div>
         <div class="review-grid">
-          <article class="review-card prose-card">
-            <h3>의미</h3>
-            <p>DVL position을 직접 쓰거나, 없으면 velocity를 body→world로 회전해 적분 위치를 만들고 속도 피드백을 갱신합니다.</p>
-            <h3>영향</h3>
-            <p>센서 구성에 따라 absolute hold와 dead-reckoning hold를 모두 지원하게 해줍니다.</p>
-            <h3>리뷰 메모</h3>
-            <p>유연성이 높고 실제 운용에 유리합니다. 특히 <code>use_dvl_position=False</code> fallback 설계는 테스트 단계에서 큰 장점이 됩니다.</p>
-          </article>
           <article class="review-card code-card">
             <h3>실제 코드</h3>
             <pre><code>def dvl_position_callback(self, msg: PointStamped):
@@ -489,6 +495,14 @@ def dvl_callback(self, msg: DVLData):
     self.publish_position_estimate(now)
     self.publish_control_output(now)</code></pre>
           </article>
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>DVL position을 직접 쓰거나, 없으면 velocity를 body→world로 회전해 적분 위치를 만들고 속도 피드백을 갱신합니다.</p>
+            <h3>영향</h3>
+            <p>센서 구성에 따라 absolute hold와 dead-reckoning hold를 모두 지원하게 해줍니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>유연성이 높고 실제 운용에 유리합니다. 특히 <code>use_dvl_position=False</code> fallback 설계는 테스트 단계에서 큰 장점이 됩니다.</p>
+          </article>
         </div>
       </section> <section id="publish-position-estimate" class="review-section">
         <div class="section-heading">
@@ -498,14 +512,6 @@ def dvl_callback(self, msg: DVLData):
           </div>
         </div>
         <div class="review-grid">
-          <article class="review-card prose-card">
-            <h3>의미</h3>
-            <p>현재 controller가 보고 있는 position estimate를 외부에 publish합니다.</p>
-            <h3>영향</h3>
-            <p>상위 시각화, 디버깅, 로깅에서 controller 내부 상태를 그대로 볼 수 있게 해줍니다.</p>
-            <h3>리뷰 메모</h3>
-            <p>작은 함수지만 디버깅 가치가 큽니다. 이런 상태 출력이 없으면 position hold 문제를 센서 문제와 구분하기 어렵습니다.</p>
-          </article>
           <article class="review-card code-card">
             <h3>실제 코드</h3>
             <pre><code>def publish_position_estimate(self, stamp):
@@ -517,6 +523,14 @@ def dvl_callback(self, msg: DVLData):
     msg.point.z = 0.0
     self.pub_position.publish(msg)</code></pre>
           </article>
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>현재 controller가 보고 있는 position estimate를 외부에 publish합니다.</p>
+            <h3>영향</h3>
+            <p>상위 시각화, 디버깅, 로깅에서 controller 내부 상태를 그대로 볼 수 있게 해줍니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>작은 함수지만 디버깅 가치가 큽니다. 이런 상태 출력이 없으면 position hold 문제를 센서 문제와 구분하기 어렵습니다.</p>
+          </article>
         </div>
       </section> <section id="publish-control-output" class="review-section">
         <div class="section-heading">
@@ -526,14 +540,6 @@ def dvl_callback(self, msg: DVLData):
           </div>
         </div>
         <div class="review-grid">
-          <article class="review-card prose-card">
-            <h3>의미</h3>
-            <p>validity check, target error 계산, yaw-rate aware damping, world→body 회전, manual override 적용, force clamp를 수행하는 본체입니다.</p>
-            <h3>영향</h3>
-            <p>이 함수가 실제 position hold의 감각을 결정합니다. 특히 yaw 회전 중 damping boost와 body-frame force 변환이 핵심입니다.</p>
-            <h3>리뷰 메모</h3>
-            <p>구조는 명확하고 PD hold로서 좋습니다. 다만 <code>force_body_z</code>를 최종 출력에 포함시키는 부분은 설계 의도를 명시하지 않으면 depth와의 coupling을 읽는 사람이 헷갈릴 수 있습니다.</p>
-          </article>
           <article class="review-card code-card">
             <h3>실제 코드</h3>
             <pre><code>def publish_control_output(self, now):
@@ -583,6 +589,14 @@ def dvl_callback(self, msg: DVLData):
 
     self.pub_force.publish(out)</code></pre>
           </article>
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>validity check, target error 계산, yaw-rate aware damping, world→body 회전, manual override 적용, force clamp를 수행하는 본체입니다.</p>
+            <h3>영향</h3>
+            <p>이 함수가 실제 position hold의 감각을 결정합니다. 특히 yaw 회전 중 damping boost와 body-frame force 변환이 핵심입니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>구조는 명확하고 PD hold로서 좋습니다. 다만 <code>force_body_z</code>를 최종 출력에 포함시키는 부분은 설계 의도를 명시하지 않으면 depth와의 coupling을 읽는 사람이 헷갈릴 수 있습니다.</p>
+          </article>
         </div>
       </section> <section id="on-parameter-update" class="review-section">
         <div class="section-heading">
@@ -592,14 +606,6 @@ def dvl_callback(self, msg: DVLData):
           </div>
         </div>
         <div class="review-grid">
-          <article class="review-card prose-card">
-            <h3>의미</h3>
-            <p>gain, threshold, frame, DVL fallback 정책을 실시간으로 수정합니다.</p>
-            <h3>영향</h3>
-            <p>테스트 중 poshold의 stiffness와 damping을 바로 바꿀 수 있습니다.</p>
-            <h3>리뷰 메모</h3>
-            <p>runtime tuning은 강점이지만, 어떤 파라미터가 어떤 함수를 통해 결과에 연결되는지 문서가 꼭 필요합니다. 이번 리뷰 문서가 그 연결을 설명하는 역할을 합니다.</p>
-          </article>
           <article class="review-card code-card">
             <h3>실제 코드</h3>
             <pre><code>def on_parameter_update(self, params):
@@ -673,6 +679,14 @@ def dvl_callback(self, msg: DVLData):
         return SetParametersResult(successful=True)
     except Exception as exc:
         return SetParametersResult(successful=False, reason=str(exc))</code></pre>
+          </article>
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>gain, threshold, frame, DVL fallback 정책을 실시간으로 수정합니다.</p>
+            <h3>영향</h3>
+            <p>테스트 중 poshold의 stiffness와 damping을 바로 바꿀 수 있습니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>runtime tuning은 강점이지만, 어떤 파라미터가 어떤 함수를 통해 결과에 연결되는지 문서가 꼭 필요합니다. 이번 리뷰 문서가 그 연결을 설명하는 역할을 합니다.</p>
           </article>
         </div>
       </section>

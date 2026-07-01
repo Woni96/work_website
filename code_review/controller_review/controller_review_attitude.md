@@ -11,6 +11,21 @@
 ## 리뷰 초점
 리뷰 포인트는 `목표 자세를 어떻게 잡는지`, `IMU를 어떻게 제어 상태로 필터링하는지`, `yaw manual override와 hold가 어떻게 전환되는지`, `translation/heave 중 보호 로직이 어떤 출력을 만드는지`입니다.
 
+## 런타임 동작 해설
+런타임에서는 `imu_callback()`이 현재 자세와 각속도를 계속 갱신하고, `control_loop()`가 주기적으로 목표 자세와 현재 자세의 차이를 계산해 토크를 냅니다. 여기에 yaw stick release 이후 heading을 다시 잠그는 로직, translation 중 roll/pitch trim을 유지하는 로직, heave나 큰 body rate 상황에서 출력을 보호하는 로직이 겹쳐서 실제 조종 감각을 만듭니다.
+
+## 핵심 파라미터
+- `kp_roll`, `ki_roll`, `kd_roll`: roll 축 복원력, steady-state bias 보상, roll rate damping 강도를 정합니다.
+- `kp_pitch`, `ki_pitch`, `kd_pitch`: pitch 축 응답과 감쇠를 정하며 surge 중 nose-up 경향을 얼마나 강하게 잡을지에도 영향을 줍니다.
+- `kp_yaw`, `kd_yaw`: heading error를 얼마나 세게 복원할지와 yaw rate를 얼마나 감쇠할지 결정합니다.
+- `yaw_manual_override_threshold`: 이 값보다 큰 yaw stick이 들어오면 yaw hold보다 manual yaw를 우선합니다.
+- `yaw_hold_settle_time_sec`: yaw stick을 놓은 직후 heading을 다시 잠그기 전에 잠깐 damping만 적용하는 시간입니다.
+- `xy_motion_protect_threshold`, `strong_xy_motion_threshold`: translation 중 roll/pitch trim hold를 약하게 만들기 시작하는 기준입니다.
+- `rp_scale_when_xy_motion`, `rp_scale_when_strong_xy_motion`: translation 중 roll/pitch torque를 얼마나 줄일지 정합니다.
+- `heave_protect_threshold`, `strong_heave_threshold`: 수직 조작 중 yaw hold를 더 보수적으로 만들지 결정하는 기준입니다.
+- `large_tilt_disable_deg`: 기체가 너무 크게 기울면 torque 출력을 끊는 안전 게이트입니다.
+- `orientation_filter_measurement_alpha`, `orientation_filter_max_correction_rate_deg`: IMU 기반 control attitude filter의 추종 속도와 correction 한계를 정합니다.
+
 ## 함수 맵
 - `clamp()`
 - `vec_norm()`

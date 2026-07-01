@@ -11,6 +11,16 @@
 ## 리뷰 초점
 리뷰 포인트는 `manual freshness가 어떻게 적용되는지`, `depth active일 때 heave를 어떻게 해석하는지`, `roll/pitch와 yaw의 arbitration 철학이 어떻게 다른지`입니다.
 
+## 런타임 동작 해설
+이 모듈은 각 callback에서 manual/depth/position/attitude 입력의 최신값만 저장하고, 실제 merge는 timer 기반 `publish_merged_wrench()`에서 수행합니다. 그래서 입력 주기가 서로 달라도 최종 wrench 주기를 일정하게 유지할 수 있고, armed/disarmed 상태를 마지막 게이트로 적용할 수 있습니다.
+
+## 핵심 파라미터
+- `publish_rate`: 최종 wrench를 얼마 주기로 publish할지 정합니다.
+- `manual_wrench_timeout_sec`: manual input이 stale이면 zero wrench로 간주하는 기준 시간입니다.
+- `manual_xy_override_threshold`: XY 축에서 manual이 auto position보다 우선하는 경계값입니다.
+- `manual_heave_override_threshold`: heave 축에서 manual이 auto depth보다 우선하는 경계값입니다.
+- `manual_yaw_override_threshold`: yaw 축에서 manual yaw가 attitude yaw hold보다 우선하는 경계값입니다.
+
 ## 함수 맵
 - `__init__()`
 - `manual_wrench_callback()`

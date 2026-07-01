@@ -190,7 +190,7 @@ pre code {
 
 .review-grid {
   display: grid;
-  grid-template-columns: minmax(320px, 0.95fr) minmax(420px, 1.05fr);
+  grid-template-columns: minmax(420px, 1.05fr) minmax(320px, 0.95fr);
   gap: 18px;
 }
 
@@ -217,6 +217,33 @@ pre code {
   columns: 2;
   color: var(--muted);
   line-height: 1.9;
+}
+
+.parameter-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 14px;
+}
+
+.parameter-list li {
+  display: grid;
+  gap: 6px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.parameter-list li strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.parameter-list li span {
+  color: var(--muted);
+  line-height: 1.7;
 }
 
 .source-details {

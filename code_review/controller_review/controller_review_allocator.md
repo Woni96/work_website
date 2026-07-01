@@ -11,6 +11,21 @@
 ## 리뷰 초점
 리뷰 포인트는 `행렬이 실제 기체 배치를 어떻게 표현하는지`, `수평/수직 allocator가 어떤 철학으로 분리되는지`, `compensation 항이 왜 필요한지`, `최종 shaping과 slew-rate가 actuator에 어떤 영향을 주는지`입니다.
 
+## 런타임 동작 해설
+런타임에서는 `callback()`가 들어온 wrench를 먼저 내부 축 부호와 gain으로 해석하고, 수평과 수직 그룹으로 나눠 allocation을 수행합니다. 그 뒤 compensation, priority allocation, normalization, deadband, slew-rate를 차례로 적용해 실제 thruster array로 publish합니다. 즉 이 모듈은 '마지막 수학 + 마지막 actuator shaping' 계층입니다.
+
+## 핵심 파라미터
+- `horizontal_output_gain`, `vertical_output_gain`, `yaw_output_gain`: 수평/수직 force와 yaw torque가 thruster 출력으로 얼마나 강하게 반영될지 정합니다.
+- `heave_gain`: heave 요구를 vertical thruster 출력으로 키우는 기본 gain입니다.
+- `pitch_torque_gain`, `rear_vertical_bias`: pitch recovery 성향과 후방 수직 thruster 바이어스를 조절합니다.
+- `torque_first_allocation`: 수직 그룹에서 자세 토크를 먼저 만족시키고 남는 헤드룸에 heave를 넣을지 결정합니다.
+- `level_horizontal_compensation_*`: 기체가 기울어진 상태에서 수평 이동이 heave 성분을 만들 때 이를 보정하는 파라미터 묶음입니다.
+- `attitude_priority_horizontal_slowdown_*`: 자세 토크 요구가 커질수록 horizontal output을 얼마나 줄일지 정합니다.
+- `surge_pitch_moment_*`: surge thrust가 만드는 pitch moment를 보상할지와 그 강도를 정합니다.
+- `imu_pitch_hold_*`: 현재 pitch와 target pitch 차이를 allocator 차원에서 추가 보상할지 정합니다.
+- `slew_rate`: thruster 출력이 한 번에 너무 급하게 바뀌지 않도록 제한합니다.
+- `max_output`, `output_scale`, `output_deadband`: 최종 thruster 명령 범위, 전체 출력 크기, deadband 제거 수준을 정합니다.
+
 ## 함수 맵
 - `normalize()`
 - `normalize_group_unit()`

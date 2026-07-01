@@ -15,6 +15,7 @@
       <p class="meta"><code>code_review/code/allocator_node.py</code></p>
       <nav class="toc">
         <a href="#role">역할</a>
+        <a href="#parameters">핵심 파라미터</a>
         <a href="#map">함수 맵</a>
         <a href="#section">기본 유틸리티</a>
 <a href="#init">`__init__()`</a>
@@ -36,6 +37,19 @@
           <p>이 코드는 최종 <code>Wrench(Fx, Fy, Fz, Tx, Ty, Tz)</code>를 8개 thruster 명령으로 바꾸는 control allocation 노드입니다.</p>
           <p>설계의 핵심은 <code>수평 4개(Fx, Fy, Tz)</code>와 <code>수직 4개(Fz, Tx, Ty)</code>를 분리해서 pseudo-inverse와 priority logic으로 다루는 것입니다.</p>
           <p>리뷰 포인트는 <code>행렬이 실제 기체 배치를 어떻게 표현하는지</code>, <code>수평/수직 allocator가 어떤 철학으로 분리되는지</code>, <code>compensation 항이 왜 필요한지</code>, <code>최종 shaping과 slew-rate가 actuator에 어떤 영향을 주는지</code>입니다.</p>
+          <p>런타임에서는 <code>callback()</code>가 들어온 wrench를 먼저 내부 축 부호와 gain으로 해석하고, 수평과 수직 그룹으로 나눠 allocation을 수행합니다. 그 뒤 compensation, priority allocation, normalization, deadband, slew-rate를 차례로 적용해 실제 thruster array로 publish합니다. 즉 이 모듈은 &#x27;마지막 수학 + 마지막 actuator shaping&#x27; 계층입니다.</p>
+        </div>
+      </section>
+
+      <section id="parameters" class="panel">
+        <div class="panel-heading">
+          <div>
+            <p class="section-kicker">Parameters</p>
+            <h2>핵심 파라미터 설명</h2>
+          </div>
+        </div>
+        <div class="review-card">
+          <ul class="parameter-list"><li><strong><code>horizontal_output_gain</code>, <code>vertical_output_gain</code>, <code>yaw_output_gain</code></strong><span>수평/수직 force와 yaw torque가 thruster 출력으로 얼마나 강하게 반영될지 정합니다.</span></li><li><strong><code>heave_gain</code></strong><span>heave 요구를 vertical thruster 출력으로 키우는 기본 gain입니다.</span></li><li><strong><code>pitch_torque_gain</code>, <code>rear_vertical_bias</code></strong><span>pitch recovery 성향과 후방 수직 thruster 바이어스를 조절합니다.</span></li><li><strong><code>torque_first_allocation</code></strong><span>수직 그룹에서 자세 토크를 먼저 만족시키고 남는 헤드룸에 heave를 넣을지 결정합니다.</span></li><li><strong><code>level_horizontal_compensation_*</code></strong><span>기체가 기울어진 상태에서 수평 이동이 heave 성분을 만들 때 이를 보정하는 파라미터 묶음입니다.</span></li><li><strong><code>attitude_priority_horizontal_slowdown_*</code></strong><span>자세 토크 요구가 커질수록 horizontal output을 얼마나 줄일지 정합니다.</span></li><li><strong><code>surge_pitch_moment_*</code></strong><span>surge thrust가 만드는 pitch moment를 보상할지와 그 강도를 정합니다.</span></li><li><strong><code>imu_pitch_hold_*</code></strong><span>현재 pitch와 target pitch 차이를 allocator 차원에서 추가 보상할지 정합니다.</span></li><li><strong><code>slew_rate</code></strong><span>thruster 출력이 한 번에 너무 급하게 바뀌지 않도록 제한합니다.</span></li><li><strong><code>max_output</code>, <code>output_scale</code>, <code>output_deadband</code></strong><span>최종 thruster 명령 범위, 전체 출력 크기, deadband 제거 수준을 정합니다.</span></li></ul>
         </div>
       </section>
 
@@ -82,14 +96,6 @@
           </div>
         </div>
         <div class="review-grid">
-          <article class="review-card prose-card">
-            <h3>의미</h3>
-            <p>행렬 생성과 IMU 보상 계산에 필요한 벡터/자세 유틸리티입니다.</p>
-            <h3>영향</h3>
-            <p>allocation 행렬과 IMU 기반 보상 항의 수학적 기반을 제공합니다.</p>
-            <h3>리뷰 메모</h3>
-            <p>작은 함수지만 allocator가 단순 mixer가 아니라 IMU-aware allocation이라는 점을 보여줍니다.</p>
-          </article>
           <article class="review-card code-card">
             <h3>실제 코드</h3>
             <pre><code>def normalize(v):
@@ -146,6 +152,14 @@ def quat_to_rpy(x: float, y: float, z: float, w: float):
 
     return roll, pitch, yaw</code></pre>
           </article>
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>행렬 생성과 IMU 보상 계산에 필요한 벡터/자세 유틸리티입니다.</p>
+            <h3>영향</h3>
+            <p>allocation 행렬과 IMU 기반 보상 항의 수학적 기반을 제공합니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>작은 함수지만 allocator가 단순 mixer가 아니라 IMU-aware allocation이라는 점을 보여줍니다.</p>
+          </article>
         </div>
       </section> <section id="init" class="review-section">
         <div class="section-heading">
@@ -155,14 +169,6 @@ def quat_to_rpy(x: float, y: float, z: float, w: float):
           </div>
         </div>
         <div class="review-grid">
-          <article class="review-card prose-card">
-            <h3>의미</h3>
-            <p>thruster sign, gain, compensation, priority, output shaping, runtime tuning 관련 모든 파라미터를 선언합니다.</p>
-            <h3>영향</h3>
-            <p>allocator가 단순 <code>TAM * u = τ</code> 계산기가 아니라 실제 운용형 shaping node라는 점이 여기서 드러납니다.</p>
-            <h3>리뷰 메모</h3>
-            <p>파라미터가 많지만 역할이 분명합니다. 다만 <code>fx = -msg.force.x</code>처럼 본체 쪽 부호 해석이 하드코딩되어 있어서 문서화가 꼭 필요합니다.</p>
-          </article>
           <article class="review-card code-card">
             <h3>실제 코드</h3>
             <pre><code>def __init__(self):
@@ -416,6 +422,14 @@ def quat_to_rpy(x: float, y: float, z: float, w: float):
         f&#x27;yaw_torque_gain={self.yaw_torque_gain:.3f}&#x27;
     )</code></pre>
           </article>
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>thruster sign, gain, compensation, priority, output shaping, runtime tuning 관련 모든 파라미터를 선언합니다.</p>
+            <h3>영향</h3>
+            <p>allocator가 단순 <code>TAM * u = τ</code> 계산기가 아니라 실제 운용형 shaping node라는 점이 여기서 드러납니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>파라미터가 많지만 역할이 분명합니다. 다만 <code>fx = -msg.force.x</code>처럼 본체 쪽 부호 해석이 하드코딩되어 있어서 문서화가 꼭 필요합니다.</p>
+          </article>
         </div>
       </section> <section id="imu-attitude" class="review-section">
         <div class="section-heading">
@@ -425,14 +439,6 @@ def quat_to_rpy(x: float, y: float, z: float, w: float):
           </div>
         </div>
         <div class="review-grid">
-          <article class="review-card prose-card">
-            <h3>의미</h3>
-            <p>allocator가 현재 자세, 목표 trim, 출력 scale 상태를 받아 compensation과 output shaping에 반영하는 입력 계층입니다.</p>
-            <h3>영향</h3>
-            <p>이 함수들이 있어 allocator는 단순 분배가 아니라 현재 자세와 운용 상태를 고려하는 smart mixer가 됩니다.</p>
-            <h3>리뷰 메모</h3>
-            <p>상위 controller와 allocator가 느슨하지만 의미 있게 연결되어 있습니다.</p>
-          </article>
           <article class="review-card code-card">
             <h3>실제 코드</h3>
             <pre><code>def imu_callback(self, msg: Imu):
@@ -462,6 +468,14 @@ def joy_speed_scale_callback(self, msg: Float64):
     if self.use_joy_speed_scale_for_output:
         self.output_scale_callback(msg)</code></pre>
           </article>
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>allocator가 현재 자세, 목표 trim, 출력 scale 상태를 받아 compensation과 output shaping에 반영하는 입력 계층입니다.</p>
+            <h3>영향</h3>
+            <p>이 함수들이 있어 allocator는 단순 분배가 아니라 현재 자세와 운용 상태를 고려하는 smart mixer가 됩니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>상위 controller와 allocator가 느슨하지만 의미 있게 연결되어 있습니다.</p>
+          </article>
         </div>
       </section> <section id="compensation" class="review-section">
         <div class="section-heading">
@@ -471,14 +485,6 @@ def joy_speed_scale_callback(self, msg: Float64):
           </div>
         </div>
         <div class="review-grid">
-          <article class="review-card prose-card">
-            <h3>의미</h3>
-            <p>수평 이동으로 인한 heave 누수, attitude demand가 클 때 horizontal 약화, surge에 따른 pitch moment, IMU 기반 pitch hold 보상 등 실제 기체 거동을 보정합니다.</p>
-            <h3>영향</h3>
-            <p>이 함수들이 켜지면 allocator는 단순 분배기에서 벗어나, 기체 자세와 운동 모드에 따라 더 실용적인 출력을 냅니다.</p>
-            <h3>리뷰 메모</h3>
-            <p>이 부분이 가장 실험적이면서도 고급스럽습니다. 동시에 gain 의존성이 큰 영역이므로 기능별 로그와 문서가 꼭 있어야 합니다.</p>
-          </article>
           <article class="review-card code-card">
             <h3>실제 코드</h3>
             <pre><code>def level_horizontal_heave_compensation(self, fx: float, fy: float) -&gt; float:
@@ -557,6 +563,14 @@ def imu_pitch_hold_compensation(self, fx: float) -&gt; float:
     limit = max(0.0, abs(float(self.imu_pitch_hold_max)))
     return float(np.clip(comp, -limit, limit))</code></pre>
           </article>
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>수평 이동으로 인한 heave 누수, attitude demand가 클 때 horizontal 약화, surge에 따른 pitch moment, IMU 기반 pitch hold 보상 등 실제 기체 거동을 보정합니다.</p>
+            <h3>영향</h3>
+            <p>이 함수들이 켜지면 allocator는 단순 분배기에서 벗어나, 기체 자세와 운동 모드에 따라 더 실용적인 출력을 냅니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>이 부분이 가장 실험적이면서도 고급스럽습니다. 동시에 gain 의존성이 큰 영역이므로 기능별 로그와 문서가 꼭 있어야 합니다.</p>
+          </article>
         </div>
       </section> <section id="init-matrices" class="review-section">
         <div class="section-heading">
@@ -566,14 +580,6 @@ def imu_pitch_hold_compensation(self, fx: float) -&gt; float:
           </div>
         </div>
         <div class="review-grid">
-          <article class="review-card prose-card">
-            <h3>의미</h3>
-            <p>thruster 위치/방향으로 TAM, 수평 H 행렬, 수직 V 행렬, pseudo-inverse를 구성합니다.</p>
-            <h3>영향</h3>
-            <p>기체 배치가 이 함수에 담깁니다. 행렬이 틀리면 heave만 줘도 pitch가 생기고, yaw만 줘도 sway가 생깁니다.</p>
-            <h3>리뷰 메모</h3>
-            <p>allocator 해석의 핵심입니다. 실제 모델과 이 함수의 thruster geometry가 맞는지 항상 함께 검증해야 합니다.</p>
-          </article>
           <article class="review-card code-card">
             <h3>실제 코드</h3>
             <pre><code>def init_matrices(self):
@@ -640,6 +646,14 @@ def imu_pitch_hold_compensation(self, fx: float) -&gt; float:
     self.get_logger().info(f&#x27;Horizontal matrix H:\n{self.H}&#x27;)
     self.get_logger().info(f&#x27;Vertical matrix V:\n{self.V}&#x27;)</code></pre>
           </article>
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>thruster 위치/방향으로 TAM, 수평 H 행렬, 수직 V 행렬, pseudo-inverse를 구성합니다.</p>
+            <h3>영향</h3>
+            <p>기체 배치가 이 함수에 담깁니다. 행렬이 틀리면 heave만 줘도 pitch가 생기고, yaw만 줘도 sway가 생깁니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>allocator 해석의 핵심입니다. 실제 모델과 이 함수의 thruster geometry가 맞는지 항상 함께 검증해야 합니다.</p>
+          </article>
         </div>
       </section> <section id="allocation-shaping" class="review-section">
         <div class="section-heading">
@@ -649,14 +663,6 @@ def imu_pitch_hold_compensation(self, fx: float) -&gt; float:
           </div>
         </div>
         <div class="review-grid">
-          <article class="review-card prose-card">
-            <h3>의미</h3>
-            <p>출력 deadband 제거, 남은 헤드룸 안에서 성분 추가, priority allocation, slew-rate 제한을 담당합니다.</p>
-            <h3>영향</h3>
-            <p>수치적으로는 같은 wrench라도 actuator 친화성은 크게 달라집니다. 이 함수들이 saturation 시 거동과 응답 속도를 정합니다.</p>
-            <h3>리뷰 메모</h3>
-            <p>현재 allocator가 heuristic allocator라는 점이 가장 잘 드러나는 구간입니다. 이 계층 덕분에 practical하지만, 최적화 기반 allocator와는 성격이 다릅니다.</p>
-          </article>
           <article class="review-card code-card">
             <h3>실제 코드</h3>
             <pre><code>def apply_deadband(self, arr):
@@ -715,6 +721,14 @@ def apply_slew_rate(self, target):
     self.prev_thrust = out.copy()
     return out</code></pre>
           </article>
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>출력 deadband 제거, 남은 헤드룸 안에서 성분 추가, priority allocation, slew-rate 제한을 담당합니다.</p>
+            <h3>영향</h3>
+            <p>수치적으로는 같은 wrench라도 actuator 친화성은 크게 달라집니다. 이 함수들이 saturation 시 거동과 응답 속도를 정합니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>현재 allocator가 heuristic allocator라는 점이 가장 잘 드러나는 구간입니다. 이 계층 덕분에 practical하지만, 최적화 기반 allocator와는 성격이 다릅니다.</p>
+          </article>
         </div>
       </section> <section id="callback" class="review-section">
         <div class="section-heading">
@@ -724,14 +738,6 @@ def apply_slew_rate(self, target):
           </div>
         </div>
         <div class="review-grid">
-          <article class="review-card prose-card">
-            <h3>의미</h3>
-            <p>최종 wrench를 받아 부호 해석, scaling, horizontal/vertical allocation, compensation, shaping, saturation, publish까지 한 번에 수행합니다.</p>
-            <h3>영향</h3>
-            <p>이 함수가 곧 thruster command의 최종 형태를 결정합니다. 어떤 축 요구가 우선되는지, saturation에서 무엇을 희생하는지가 여기서 결정됩니다.</p>
-            <h3>리뷰 메모</h3>
-            <p>코드의 의도는 분명합니다. 다만 <code>Fx</code> 하드코딩 반전과 heuristic saturation은 읽는 사람에게 반드시 설명이 필요합니다.</p>
-          </article>
           <article class="review-card code-card">
             <h3>실제 코드</h3>
             <pre><code>def callback(self, msg: Wrench):
@@ -862,6 +868,14 @@ def apply_slew_rate(self, target):
     #     f&#x27;thrust(norm)={np.round(thrust, 4).tolist()}&#x27;
     # )</code></pre>
           </article>
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>최종 wrench를 받아 부호 해석, scaling, horizontal/vertical allocation, compensation, shaping, saturation, publish까지 한 번에 수행합니다.</p>
+            <h3>영향</h3>
+            <p>이 함수가 곧 thruster command의 최종 형태를 결정합니다. 어떤 축 요구가 우선되는지, saturation에서 무엇을 희생하는지가 여기서 결정됩니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>코드의 의도는 분명합니다. 다만 <code>Fx</code> 하드코딩 반전과 heuristic saturation은 읽는 사람에게 반드시 설명이 필요합니다.</p>
+          </article>
         </div>
       </section> <section id="on-parameter-update" class="review-section">
         <div class="section-heading">
@@ -871,14 +885,6 @@ def apply_slew_rate(self, target):
           </div>
         </div>
         <div class="review-grid">
-          <article class="review-card prose-card">
-            <h3>의미</h3>
-            <p>allocation gain, compensation, slew, output scale을 런타임에 갱신합니다.</p>
-            <h3>영향</h3>
-            <p>allocator tuning을 빠르게 반복할 수 있게 해줍니다.</p>
-            <h3>리뷰 메모</h3>
-            <p>실험 속도를 크게 올리는 좋은 구조입니다. 이번 리뷰 문서에서 함수-파라미터 연결을 설명하는 이유도 이 함수 때문입니다.</p>
-          </article>
           <article class="review-card code-card">
             <h3>실제 코드</h3>
             <pre><code>def on_parameter_update(self, params):
@@ -984,6 +990,14 @@ def apply_slew_rate(self, target):
         return SetParametersResult(successful=True)
     except Exception as e:
         return SetParametersResult(successful=False, reason=str(e))</code></pre>
+          </article>
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>allocation gain, compensation, slew, output scale을 런타임에 갱신합니다.</p>
+            <h3>영향</h3>
+            <p>allocator tuning을 빠르게 반복할 수 있게 해줍니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>실험 속도를 크게 올리는 좋은 구조입니다. 이번 리뷰 문서에서 함수-파라미터 연결을 설명하는 이유도 이 함수 때문입니다.</p>
           </article>
         </div>
       </section>
