@@ -1,0 +1,765 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Robster V5 vs PX4 / ArduSub 비교 정리</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="page-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <p class="eyebrow">Comparison Report</p>
+        <h1>Robster V5<br />vs PX4 / ArduSub</h1>
+        <p class="meta">작성일: 2026-07-01</p>
+      </div>
+
+      <nav class="toc">
+        <a href="#overview">개요</a>
+        <a href="#architecture">현재 제어 구조</a>
+        <a href="#big-picture">큰 그림 비교</a>
+        <a href="#feature-diff">기능 차이 상세</a>
+        <a href="#parameters">파라미터 차이</a>
+        <a href="#defaults">기본 세팅 관점</a>
+        <a href="#conclusion">결론</a>
+        <a href="#mapping">실무 대응표</a>
+        <a href="#appendix">별첨</a>
+        <a href="#gaps">ArduSub에 있고 현재 없는 항목</a>
+      </nav>
+
+      <div class="sidebar-card">
+        <p class="sidebar-label">빠른 요약</p>
+        <ul>
+          <li>운용 감각은 ArduSub에 가까움</li>
+          <li>구현 구조는 ROS 2 분산형</li>
+          <li>추력 분배는 전용기체 최적화형</li>
+          <li>시스템 완성도는 PX4 / ArduSub가 우세</li>
+        </ul>
+      </div>
+    </aside>
+
+    <main class="content">
+      <section id="overview" class="hero">
+        <div>
+          <p class="eyebrow">ROS 2 Custom Controller Report</p>
+          <h2>현재 Robster V5 제어기를 PX4 UUV / ArduSub와 비교한 문서형 대시보드</h2>
+          <p class="hero-text">
+            이 페이지는 현재 워크스페이스에서 사용 중인 ROS 2 Python 제어 파이프라인을 기준으로
+            PX4 UUV(BlueROV2/experimental) 및 ArduSub와의 구조, 기능, 파라미터 차이를 정리한 웹 버전입니다.
+          </p>
+        </div>
+        <div class="hero-actions">
+          <button class="chip-button is-active" data-filter="all">전체 보기</button>
+          <button class="chip-button" data-filter="architecture">구조 중심</button>
+          <button class="chip-button" data-filter="params">파라미터 중심</button>
+          <button class="chip-button" data-filter="operations">운용 중심</button>
+        </div>
+      </section>
+
+      <section class="card-grid" data-category="operations">
+        <article class="info-card accent-blue">
+          <h3>현재 코드 기준</h3>
+          <p>`src/rov_control/rov_control/*.py`와 `src/rov_bringup/launch/sim.launch.py`를 기준으로 비교했습니다.</p>
+        </article>
+        <article class="info-card accent-green">
+          <h3>PX4 기준</h3>
+          <p>공식 PX4 문서의 UUV / BlueROV2 및 parameter reference를 기준으로 비교했습니다.</p>
+        </article>
+        <article class="info-card accent-purple">
+          <h3>ArduSub 기준</h3>
+          <p>공식 ArduSub 모드 및 파라미터 문서를 기준으로 대응 관계를 정리했습니다.</p>
+        </article>
+      </section>
+
+      <section id="architecture" class="panel" data-category="architecture">
+        <div class="panel-heading">
+          <div>
+            <p class="section-kicker">1. 현재 Robster V5 제어 구조 요약</p>
+            <h2>분산형 ROS 2 제어 파이프라인</h2>
+          </div>
+          <span class="badge">Architecture</span>
+        </div>
+
+        <div class="pipeline">
+          <div class="pipeline-node">
+            <h3>joy_wrench_teleop</h3>
+            <p>수동 조종 입력 생성</p>
+            <small>/rov/wrench_manual, /cmd_attitude, /cmd_attitude_trim, /rov/armed</small>
+          </div>
+          <div class="pipeline-node">
+            <h3>depth_controller</h3>
+            <p>depth hold / pilot depth-rate 해석</p>
+            <small>/ctrl/depth_heave, /ctrl/depth_active</small>
+          </div>
+          <div class="pipeline-node">
+            <h3>position_controller</h3>
+            <p>DVL + IMU 기반 XY hold</p>
+            <small>/ctrl/position_force, /rov/position_estimate</small>
+          </div>
+          <div class="pipeline-node">
+            <h3>attitude_controller</h3>
+            <p>roll / pitch / yaw stabilization</p>
+            <small>/ctrl/attitude_torque</small>
+          </div>
+          <div class="pipeline-node">
+            <h3>wrench_merger</h3>
+            <p>manual / auto 축별 병합</p>
+            <small>/rov/wrench_cmd</small>
+          </div>
+          <div class="pipeline-node">
+            <h3>allocator_node</h3>
+            <p>8개 thruster 명령으로 변환</p>
+            <small>/thruster_cmd</small>
+          </div>
+        </div>
+
+        <div class="two-column">
+          <div class="subpanel">
+            <h3>핵심 특징</h3>
+            <ul class="check-list">
+              <li>수동/자동 축 혼합 가능</li>
+              <li>heave는 depth hold에 종속된 pilot rate 명령 가능</li>
+              <li>yaw는 수동 override 영향이 큼</li>
+              <li>최종 추력 분배가 전용 allocator로 분리됨</li>
+              <li>GUI 기반 runtime tuning을 전제함</li>
+            </ul>
+          </div>
+          <div class="subpanel">
+            <h3>해석</h3>
+            <p>
+              이 구조는 단일 오토파일럿 펌웨어보다 디버깅과 실험이 쉽고, 특정 축만 켜고 끄는 유연성이 큽니다.
+              반면 모드 추상화, 안전 기능, 상태추정 통합은 PX4 / ArduSub보다 약합니다.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section id="big-picture" class="panel" data-category="architecture operations">
+        <div class="panel-heading">
+          <div>
+            <p class="section-kicker">2. 큰 그림 비교</p>
+            <h2>한눈에 보는 구조 차이</h2>
+          </div>
+          <span class="badge">Summary</span>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>항목</th>
+                <th>현재 Robster V5</th>
+                <th>PX4 UUV</th>
+                <th>ArduSub</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td>아키텍처</td><td>ROS 2 노드 분산형</td><td>펌웨어 내 통합형</td><td>펌웨어 내 통합형</td></tr>
+              <tr><td>수동/자동 병합</td><td>`wrench_merger` 축별 병합</td><td>flight mode/task 내부 처리</td><td>mode/controller 내부 처리</td></tr>
+              <tr><td>depth hold</td><td>별도 `depth_controller`</td><td>UUV position/altitude 계열</td><td>`ALT_HOLD`</td></tr>
+              <tr><td>XY hold</td><td>별도 `position_controller`</td><td>UUV position mode</td><td>`POSHOLD`</td></tr>
+              <tr><td>attitude hold</td><td>별도 `attitude_controller`</td><td>stabilized / acro / position</td><td>`STABILIZE`, `ALT_HOLD`, `POSHOLD`</td></tr>
+              <tr><td>thruster allocation</td><td>사용자 정의 allocator</td><td>control allocation</td><td>frame/motor matrix mixer</td></tr>
+              <tr><td>joystick semantics</td><td>BlueROV / ArduSub 스타일 유사</td><td>`UUV_STICK_MODE`</td><td>ROV 운용 중심</td></tr>
+              <tr><td>mission / auto navigation</td><td>현재 코드상 없음</td><td>offboard / return, UUV experimental</td><td>`AUTO`, `GUIDED`, `SURFACE`, `SURFTRAK`</td></tr>
+              <tr><td>failsafe / EKF / arming checks</td><td>최소 수준</td><td>강함</td><td>강함</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="highlight-callout">
+          <strong>요약:</strong> 현재 제어기 감성은 PX4보다 ArduSub에 더 가깝지만, 구현 방식은 통합 펌웨어가 아닌 ROS 2 기반 분산 조합형입니다.
+        </div>
+      </section>
+
+      <section id="feature-diff" class="panel" data-category="architecture operations">
+        <div class="panel-heading">
+          <div>
+            <p class="section-kicker">3. 기능 차이 상세</p>
+            <h2>PX4 UUV / ArduSub와의 해석 차이</h2>
+          </div>
+          <span class="badge">Deep Dive</span>
+        </div>
+
+        <div class="tabs" role="tablist" aria-label="기능 비교 탭">
+          <button class="tab is-active" role="tab" data-tab-target="px4">vs PX4 UUV</button>
+          <button class="tab" role="tab" data-tab-target="ardusub">vs ArduSub</button>
+        </div>
+
+        <div class="tab-panel is-active" id="px4">
+          <div class="stacked-cards">
+            <article class="subpanel">
+              <h3>제어 구조 차이</h3>
+              <ul>
+                <li>현재 코드는 depth / position / attitude / merge / allocation이 모두 분리됩니다.</li>
+                <li>PX4는 내부 flight task + controller + control allocation으로 통합됩니다.</li>
+                <li>현재 구조는 축별 enable / disable과 디버깅이 쉽고, PX4는 시스템 연동성이 더 강합니다.</li>
+              </ul>
+            </article>
+            <article class="subpanel">
+              <h3>모드 구조 차이</h3>
+              <ul>
+                <li>PX4는 `Manual`, `Stabilized`, `Acro`, `Altitude`, `Position` 중심입니다.</li>
+                <li>현재 구조는 명확한 mode switch보다 `control_enabled`, override threshold, `depth_active` 조합으로 움직입니다.</li>
+              </ul>
+            </article>
+            <article class="subpanel">
+              <h3>Allocator 철학 차이</h3>
+              <ul>
+                <li>현재 allocator는 수평/수직 thruster 분리와 후처리 정책이 강합니다.</li>
+                <li>PX4는 `CA_ROTOR*`, `CA_R_REV`, `CA_ROTOR_COUNT` 중심의 일반화된 control allocation입니다.</li>
+                <li>즉 현재는 기체 최적화형, PX4는 재사용성 높은 일반 allocator에 가깝습니다.</li>
+              </ul>
+            </article>
+            <article class="subpanel">
+              <h3>안전/시스템 기능 차이</h3>
+              <ul>
+                <li>현재는 `armed` gating 중심의 비교적 단순한 안전 구조입니다.</li>
+                <li>PX4는 prearm check, output state machine, failure handling, offboard / return이 강합니다.</li>
+              </ul>
+            </article>
+          </div>
+        </div>
+
+        <div class="tab-panel" id="ardusub">
+          <div class="stacked-cards">
+            <article class="subpanel">
+              <h3>가까운 부분</h3>
+              <ul>
+                <li>manual heave를 depth-rate request로 해석하는 감각</li>
+                <li>수동 조종 시 자동 hold를 약화하거나 해제하는 구조</li>
+                <li>vectored ROV 조이스틱 운용 전제</li>
+                <li>position hold / depth hold / stabilized 개념 분리</li>
+              </ul>
+            </article>
+            <article class="subpanel">
+              <h3>다른 부분</h3>
+              <ul>
+                <li>ArduSub은 mode 중심, 현재 코드는 노드 enable 중심입니다.</li>
+                <li>ArduSub은 EKF / mission / failsafe가 내장되어 있습니다.</li>
+                <li>현재 position controller는 DVL + PD 기반 XY hold에 집중합니다.</li>
+                <li>현재 attitude controller는 heave / XY motion protection 같은 커스텀 보호 로직이 많습니다.</li>
+                <li>현재 allocator는 ArduSub frame mixer보다 더 커스텀성이 강합니다.</li>
+              </ul>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section id="parameters" class="panel" data-category="params">
+        <div class="panel-heading">
+          <div>
+            <p class="section-kicker">4. 파라미터 세팅 차이</p>
+            <h2>제어 영역별 대응 관계</h2>
+          </div>
+          <span class="badge">Parameters</span>
+        </div>
+
+        <div class="accordion-group">
+          <details open>
+            <summary>4.1 자세 제어</summary>
+            <div class="details-body">
+              <div class="tag-row">
+                <span class="tag">현재 코드</span>
+                <span class="tag">PX4: `UUV_ROLL_P`, `UUV_PITCH_P`, `UUV_YAW_P`, `MC_*`</span>
+                <span class="tag">ArduSub: `ATC_ANG_*`, `ATC_RAT_*`</span>
+              </div>
+              <p>현재 코드는 축별 P/ID와 override 정책, 보호 로직이 한 노드 안에 강하게 결합되어 있고, PX4 / ArduSub은 angle loop / rate loop / saturation 분리가 더 분명합니다.</p>
+            </div>
+          </details>
+
+          <details>
+            <summary>4.2 깊이 제어</summary>
+            <div class="details-body">
+              <div class="tag-row">
+                <span class="tag">현재 코드</span>
+                <span class="tag">PX4: `UUV_GAIN_Z_P`, `MPC_Z_*`</span>
+                <span class="tag">ArduSub: `PSC_POSZ_P`, `PSC_VELZ_*`</span>
+              </div>
+              <p>현재 depth controller는 ArduSub와 매우 유사한 조종 감각을 목표로 하며, pilot heave → depth-rate 명령, stick release → 현재 depth hold 흐름을 가집니다.</p>
+            </div>
+          </details>
+
+          <details>
+            <summary>4.3 위치 제어</summary>
+            <div class="details-body">
+              <div class="tag-row">
+                <span class="tag">현재 코드</span>
+                <span class="tag">PX4: `UUV_GAIN_X/Y_*`, `MPC_XY_*`</span>
+                <span class="tag">ArduSub: `PSC_VELXY_*`</span>
+              </div>
+              <p>현재 위치 제어는 PD 기반 XY hold 중심이며, DVL position 유무에 따라 velocity integration fallback을 갖습니다.</p>
+            </div>
+          </details>
+
+          <details>
+            <summary>4.4 스틱 / 조종 입력</summary>
+            <div class="details-body">
+              <div class="tag-row">
+                <span class="tag">현재 코드</span>
+                <span class="tag">PX4: `UUV_STICK_MODE`, `UUV_SGM_*`, `UUV_RGM_*`</span>
+                <span class="tag">ArduSub: `JS_GAIN_*`, `JS_THR_GAIN`</span>
+              </div>
+              <p>현재 입력 계층은 ArduSub처럼 파일럿 운용성을 중시하지만, GCS 중심이 아니라 ROS 노드 파라미터로 직접 정의됩니다.</p>
+            </div>
+          </details>
+
+          <details>
+            <summary>4.5 Thruster allocation / frame</summary>
+            <div class="details-body">
+              <div class="tag-row">
+                <span class="tag">현재 코드</span>
+                <span class="tag">PX4: `CA_ROTOR*`, `CA_R_REV`</span>
+                <span class="tag">ArduSub: `FRAME_CONFIG`, `MOT_*`</span>
+              </div>
+              <p>현재 allocator는 frame geometry와 운용 정책이 섞여 있는 커스텀 allocator이고, PX4 / ArduSub은 상대적으로 더 일반화된 체계를 제공합니다.</p>
+            </div>
+          </details>
+        </div>
+      </section>
+
+      <section id="defaults" class="panel" data-category="params operations">
+        <div class="panel-heading">
+          <div>
+            <p class="section-kicker">5. 현재 기본 세팅값 관점</p>
+            <h2>`sim.launch.py` 기본값에서 보이는 성향</h2>
+          </div>
+          <span class="badge">Defaults</span>
+        </div>
+
+        <div class="stats-grid">
+          <article class="stat-card">
+            <h3>Allocator</h3>
+            <ul>
+              <li>`output_scale = 0.25`</li>
+              <li>`heave_gain = 1.4`</li>
+              <li>`horizontal_output_gain = 2.5`</li>
+              <li>`vertical_output_gain = 3.0`</li>
+              <li>`yaw_output_gain = 0.35`</li>
+            </ul>
+          </article>
+          <article class="stat-card">
+            <h3>Attitude</h3>
+            <ul>
+              <li>`kp_roll = 0.50`, `ki_roll = 0.04`</li>
+              <li>`kp_pitch = 0.45`, `ki_pitch = 0.04`, `kd_pitch = 0.08`</li>
+              <li>`kp_yaw = 0.4`, `kd_yaw = 0.12`</li>
+            </ul>
+          </article>
+          <article class="stat-card">
+            <h3>Depth</h3>
+            <ul>
+              <li>`kp_depth = 2.0`, `ki_depth = 0.25`, `kd_depth = 0.8`</li>
+              <li>`pilot_depth_rate_enabled = True`</li>
+              <li>`max_pilot_depth_rate = 0.35`</li>
+            </ul>
+          </article>
+          <article class="stat-card">
+            <h3>Position</h3>
+            <ul>
+              <li>`kp_x = 0.8`, `kd_x = 0.6`, `kp_y = 0.8`, `kd_y = 0.6`</li>
+              <li>시뮬레이터 기본값은 `control_enabled = False`</li>
+              <li>`use_dvl_position = False`</li>
+            </ul>
+          </article>
+        </div>
+
+        <div class="highlight-callout">
+          <strong>해석:</strong> 이 값들은 고전적 autopilot 기본값 복제라기보다 실기/시뮬레이터 감각에 맞춘 실용 세팅에 가깝고, 기본 운용은 full position-hold보다 manual + attitude/depth stabilization 쪽에 더 가깝습니다.
+        </div>
+      </section>
+
+      <section id="conclusion" class="panel" data-category="operations architecture">
+        <div class="panel-heading">
+          <div>
+            <p class="section-kicker">6. 결론</p>
+            <h2>세 줄 결론</h2>
+          </div>
+          <span class="badge">Conclusion</span>
+        </div>
+
+        <div class="three-up">
+          <article class="summary-card">
+            <h3>PX4와 비교</h3>
+            <p>현재 구조는 더 실험적이지만 더 유연한 ROS형 구조입니다. 시스템 통합, 상위 모드, 안전 기능은 PX4가 더 강합니다.</p>
+          </article>
+          <article class="summary-card">
+            <h3>ArduSub와 비교</h3>
+            <p>제어 철학과 운용 감각은 ArduSub에 더 가깝지만, 현재 구조는 mode / EKF / failsafe / mission을 ROS 노드 조합으로 부분 재현한 형태입니다.</p>
+          </article>
+          <article class="summary-card">
+            <h3>한 줄 요약</h3>
+            <p>운용 감각은 ArduSub에 가깝고, 파라미터 구조는 커스텀이며, 추력 배분은 PX4보다 전용기체 최적화형, 시스템 통합도는 더 낮습니다.</p>
+          </article>
+        </div>
+      </section>
+
+      <section id="mapping" class="panel" data-category="params">
+        <div class="panel-heading">
+          <div>
+            <p class="section-kicker">7. 실무적으로 파라미터 옮길 때</p>
+            <h2>빠른 대응표</h2>
+          </div>
+          <span class="badge">Mapping</span>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>현재 코드</th>
+                <th>PX4에서 볼 파라미터</th>
+                <th>ArduSub에서 볼 파라미터</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td>`kp_roll`, `kp_pitch`, `kp_yaw`</td><td>`UUV_ROLL_P`, `UUV_PITCH_P`, `UUV_YAW_P`, `MC_*`</td><td>`ATC_ANG_*`, `ATC_RAT_*`</td></tr>
+              <tr><td>`kd_roll`, `kd_pitch`, `kd_yaw`</td><td>`UUV_*_D`</td><td>`ATC_RAT_*_D`</td></tr>
+              <tr><td>`kp_depth`</td><td>`UUV_GAIN_Z_P`, `MPC_Z_P`</td><td>`PSC_POSZ_P`</td></tr>
+              <tr><td>`ki_depth`, `kd_depth`</td><td>`MPC_Z_VEL_I_ACC`, `MPC_Z_VEL_P_ACC`</td><td>`PSC_VELZ_I`, `PSC_VELZ_P`</td></tr>
+              <tr><td>`max_pilot_depth_rate`</td><td>`MPC_Z_VEL_MAX_UP/DN`</td><td>`PILOT_SPEED_UP`, `PILOT_SPEED_DN`</td></tr>
+              <tr><td>`kp_x`, `kd_x`, `kp_y`, `kd_y`</td><td>`UUV_GAIN_X/Y_*`, `MPC_XY_*`</td><td>`PSC_VELXY_*`</td></tr>
+              <tr><td>`output_scale`, `max_output`</td><td>actuator / allocation saturation</td><td>motor output / thrust scaling</td></tr>
+              <tr><td>`torque_first_allocation`</td><td>allocator policy에 가까운 custom 개념</td><td>직접 1:1 대응 없음</td></tr>
+              <tr><td>`manual_*_override_threshold`</td><td>mode/stick deadband 로직에 분산</td><td>pilot control 내부 로직 + 일부 gain</td></tr>
+              <tr><td>geometry 관련은 코드 내부</td><td>`CA_ROTOR*`, `CA_R_REV`, `CA_ROTOR_COUNT`</td><td>`FRAME_CONFIG`</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="appendix" class="panel" data-category="params architecture">
+        <div class="panel-heading">
+          <div>
+            <p class="section-kicker">10. 별첨</p>
+            <h2>ArduSub vs 현재 제어기 1:1 비교표</h2>
+          </div>
+          <span class="badge">Appendix</span>
+        </div>
+
+        <div class="accordion-group appendix-group">
+          <details>
+            <summary>10.1 자세 제어 / Yaw Hold</summary>
+            <div class="details-body">
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>기능 항목</th>
+                      <th>현재 제어기</th>
+                      <th>기본값</th>
+                      <th>ArduSub 대응</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr><td>Roll 각도 비례 이득</td><td>`kp_roll`</td><td>0.50</td><td>`ATC_ANG_RLL_P`</td></tr>
+                    <tr><td>Roll 적분 이득</td><td>`ki_roll`</td><td>0.04</td><td>`ATC_RAT_RLL_I`</td></tr>
+                    <tr><td>Pitch 각도 비례 이득</td><td>`kp_pitch`</td><td>0.45</td><td>`ATC_ANG_PIT_P`</td></tr>
+                    <tr><td>Pitch 적분 이득</td><td>`ki_pitch`</td><td>0.04</td><td>`ATC_RAT_PIT_I`</td></tr>
+                    <tr><td>Yaw hold 비례 이득</td><td>`kp_yaw`</td><td>0.4</td><td>`ATC_ANG_YAW_P`</td></tr>
+                    <tr><td>Yaw 감쇠 이득</td><td>`kd_yaw`</td><td>0.12</td><td>`ATC_RAT_YAW_D`</td></tr>
+                    <tr><td>Yaw hold 사용 여부</td><td>`yaw_hold_enabled`</td><td>True</td><td>mode 동작에 내장</td></tr>
+                    <tr><td>수동 yaw override 기준</td><td>`yaw_manual_override_threshold`</td><td>0.02</td><td>RC deadband / pilot 로직</td></tr>
+                    <tr><td>yaw release 후 목표 재캡처</td><td>`capture_yaw_target_on_release`</td><td>True</td><td>mode 동작에 내장</td></tr>
+                    <tr><td>자세 필터 사용</td><td>`orientation_filter_enabled`</td><td>True</td><td>EKF / 필터 내부 설정</td></tr>
+                    <tr><td>heave / XY motion protect</td><td>`heave_protect_*`, `xy_motion_protect_*`</td><td>커스텀</td><td>직접 1:1 없음</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </details>
+
+          <details>
+            <summary>10.2 깊이 제어 / Depth Hold</summary>
+            <div class="details-body">
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>기능 항목</th>
+                      <th>현재 제어기</th>
+                      <th>기본값</th>
+                      <th>ArduSub 대응</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr><td>깊이 위치 P</td><td>`kp_depth`</td><td>2.0</td><td>`PSC_POSZ_P`</td></tr>
+                    <tr><td>깊이 적분 I</td><td>`ki_depth`</td><td>0.25</td><td>`PSC_VELZ_I`</td></tr>
+                    <tr><td>깊이 감쇠 D</td><td>`kd_depth`</td><td>0.8</td><td>`PSC_VELZ_P`, `PSC_VELZ_D` 근접</td></tr>
+                    <tr><td>수직 출력 상한</td><td>`max_heave`</td><td>2.0</td><td>`PILOT_SPEED_*` 계열과 조합</td></tr>
+                    <tr><td>상승 출력 상한</td><td>`max_upward_heave`</td><td>0.8</td><td>`PILOT_SPEED_UP`</td></tr>
+                    <tr><td>적분 한계</td><td>`depth_integral_limit`</td><td>2.0</td><td>`PSC_VELZ_IMAX`</td></tr>
+                    <tr><td>pilot depth-rate 모드</td><td>`pilot_depth_rate_enabled`</td><td>True</td><td>`ALT_HOLD` 조작 개념</td></tr>
+                    <tr><td>최대 pilot depth-rate</td><td>`max_pilot_depth_rate`</td><td>0.35</td><td>`PILOT_SPEED_UP`, `PILOT_SPEED_DN`</td></tr>
+                    <tr><td>센서 오프셋 보정</td><td>`depth_sensor_offset_compensation_enabled`</td><td>True</td><td>직접 1:1 없음</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </details>
+
+          <details>
+            <summary>10.3 위치 제어 / Position Hold</summary>
+            <div class="details-body">
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>기능 항목</th>
+                      <th>현재 제어기</th>
+                      <th>기본값</th>
+                      <th>ArduSub 대응</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr><td>X 위치 비례 이득</td><td>`kp_x`</td><td>0.8</td><td>`PSC_VELXY_P` 근접</td></tr>
+                    <tr><td>X 감쇠 이득</td><td>`kd_x`</td><td>0.6</td><td>`PSC_VELXY_D`</td></tr>
+                    <tr><td>Y 위치 비례 이득</td><td>`kp_y`</td><td>0.8</td><td>`PSC_VELXY_P` 근접</td></tr>
+                    <tr><td>Y 감쇠 이득</td><td>`kd_y`</td><td>0.6</td><td>`PSC_VELXY_D`</td></tr>
+                    <tr><td>수동 XY override 기준</td><td>`manual_xy_override_threshold`</td><td>0.05</td><td>pilot stick deadband</td></tr>
+                    <tr><td>초기 hold 목표 캡처</td><td>`capture_initial_position_target`</td><td>True</td><td>`POSHOLD` 진입 동작</td></tr>
+                    <tr><td>DVL position 직접 사용</td><td>`use_dvl_position`</td><td>False</td><td>EKF / DVL integration 설정</td></tr>
+                    <tr><td>velocity 적분 fallback</td><td>`integrate_dvl_velocity_when_position_unavailable`</td><td>True</td><td>직접 1:1 없음</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </details>
+
+          <details>
+            <summary>10.4 수동 입력 / 조종 감각</summary>
+            <div class="details-body">
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>기능 항목</th>
+                      <th>현재 제어기</th>
+                      <th>기본값</th>
+                      <th>ArduSub 대응</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr><td>전후진 축 매핑</td><td>`axis_surge`</td><td>4</td><td>joystick mapping</td></tr>
+                    <tr><td>좌우 이동 축 매핑</td><td>`axis_sway`</td><td>3</td><td>joystick mapping</td></tr>
+                    <tr><td>상하 이동 축 매핑</td><td>`axis_heave`</td><td>1</td><td>joystick mapping</td></tr>
+                    <tr><td>yaw 축 매핑</td><td>`axis_yaw`</td><td>0</td><td>joystick mapping</td></tr>
+                    <tr><td>speed scale</td><td>`speed_scale`</td><td>0.50</td><td>`JS_GAIN_DEFAULT`</td></tr>
+                    <tr><td>입력 expo</td><td>`input_expo`</td><td>1.6</td><td>expo 관련 RC tuning</td></tr>
+                    <tr><td>입력 필터</td><td>`input_filter_alpha`</td><td>0.35</td><td>직접 1:1 없음</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </details>
+
+          <details>
+            <summary>10.5 수동 / 자동 병합</summary>
+            <div class="details-body">
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>기능 항목</th>
+                      <th>현재 제어기</th>
+                      <th>기본값</th>
+                      <th>ArduSub 대응</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr><td>병합 주기</td><td>`publish_rate`</td><td>50.0</td><td>mode / controller loop rate</td></tr>
+                    <tr><td>수동 heave override</td><td>`manual_heave_override_threshold`</td><td>0.05</td><td>pilot input handling</td></tr>
+                    <tr><td>수동 XY override</td><td>`manual_xy_override_threshold`</td><td>0.05</td><td>pilot input handling</td></tr>
+                    <tr><td>수동 yaw override</td><td>`manual_yaw_override_threshold`</td><td>0.02</td><td>pilot input handling</td></tr>
+                    <tr><td>수동 입력 freshness</td><td>`manual_wrench_timeout_sec`</td><td>0.5</td><td>RC timeout / failsafe</td></tr>
+                  </tbody>
+                </table>
+              </div>
+              <p class="note">이 동작은 ArduSub에서는 독립 파라미터보다 mode 로직 내부에 흡수되는 경우가 많습니다.</p>
+            </div>
+          </details>
+
+          <details>
+            <summary>10.6 Thruster allocation / 출력 분배</summary>
+            <div class="details-body">
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>기능 항목</th>
+                      <th>현재 제어기</th>
+                      <th>기본값</th>
+                      <th>ArduSub 대응</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr><td>heave gain</td><td>`heave_gain`</td><td>1.4</td><td>`FRAME_CONFIG` + motor scaling</td></tr>
+                    <tr><td>수평 출력 gain</td><td>`horizontal_output_gain`</td><td>2.5</td><td>frame / motor mixer 내부</td></tr>
+                    <tr><td>yaw 출력 gain</td><td>`yaw_output_gain`</td><td>0.35</td><td>`MOT_YAW_HEADROOM` 부분 유사</td></tr>
+                    <tr><td>수직 출력 gain</td><td>`vertical_output_gain`</td><td>3.0</td><td>frame / motor scaling</td></tr>
+                    <tr><td>토크 우선 배분</td><td>`torque_first_allocation`</td><td>True</td><td>직접 1:1 없음</td></tr>
+                    <tr><td>출력 slew rate</td><td>`slew_rate`</td><td>4.0</td><td>`MOT_SLEWRATE` 계열</td></tr>
+                    <tr><td>전체 출력 스케일</td><td>`output_scale`</td><td>0.25</td><td>gain / scaling 조합</td></tr>
+                    <tr><td>레벨 보상 / pitch 보상</td><td>`level_*`, `surge_pitch_*`, `imu_pitch_*`</td><td>커스텀</td><td>직접 1:1 없음</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </details>
+
+          <details>
+            <summary>10.7 Arm / Enable / 운용 상태</summary>
+            <div class="details-body">
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>기능 항목</th>
+                      <th>현재 제어기</th>
+                      <th>기본값</th>
+                      <th>ArduSub 대응</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr><td>자세 제어 enable</td><td>`control_enabled` (`attitude_controller`)</td><td>True</td><td>mode 선택</td></tr>
+                    <tr><td>깊이 제어 enable</td><td>`control_enabled` (`depth_controller`)</td><td>True</td><td>`ALT_HOLD`</td></tr>
+                    <tr><td>위치 제어 enable</td><td>`control_enabled` (`position_controller`)</td><td>False (sim)</td><td>`POSHOLD`</td></tr>
+                    <tr><td>arm 상태 토픽</td><td>`armed_topic`</td><td>`/rov/armed`</td><td>arming state</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </details>
+
+          <details open>
+            <summary>10.8 핵심 요약</summary>
+            <div class="details-body">
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>비교 축</th>
+                      <th>현재 제어기 특징</th>
+                      <th>ArduSub 특징</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr><td>파라미터 naming</td><td>기능 설명형 커스텀 이름</td><td>`ATC_*`, `PSC_*`, `JS_*`, `FRAME_*` 체계</td></tr>
+                    <tr><td>자세 제어</td><td>angle / rate / 보호로직 결합</td><td>loop / mode 구조가 더 분리</td></tr>
+                    <tr><td>깊이 제어</td><td>ArduSub식 조종 감각과 매우 유사</td><td>mode 기반 depth hold 내장</td></tr>
+                    <tr><td>위치 제어</td><td>DVL 기반 XY hold 집중</td><td>navigation / mode 체계 포함</td></tr>
+                    <tr><td>수동/자동 병합</td><td>`wrench_merger`로 명시적 구현</td><td>mode / controller 내부 흡수</td></tr>
+                    <tr><td>추력 분배</td><td>전용 8-thruster 커스텀 allocator</td><td>frame 기반 일반화 mixer</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </details>
+        </div>
+      </section>
+
+      <section id="gaps" class="panel" data-category="operations architecture">
+        <div class="panel-heading">
+          <div>
+            <p class="section-kicker">10.9 / 10.10 / 10.11</p>
+            <h2>ArduSub에는 있고 현재 제어기에는 없거나 약한 항목</h2>
+          </div>
+          <span class="badge">System Gaps</span>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>ArduSub 측 항목</th>
+                <th>현재 제어기 상태</th>
+                <th>비고</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td>운용 모드 체계 (`MANUAL`, `ALT_HOLD`, `POSHOLD`, `AUTO` 등)</td><td>없음</td><td>`armed` + 각 controller enable 조합으로 유사 동작 구성</td></tr>
+              <tr><td>완전한 미션 운항 / waypoint 실행</td><td>없음</td><td>현재 코드에는 미션 실행기 없음</td></tr>
+              <tr><td>`GUIDED`, `SURFACE`, `SURFTRAK`</td><td>부분적 또는 없음</td><td>ROS topic 명령은 가능하지만 mode 상태기는 없음</td></tr>
+              <tr><td>내장 failsafe 체계</td><td>매우 약함</td><td>사실상 `armed` gating 중심</td></tr>
+              <tr><td>누수 / 배터리 / 통신 두절 대응</td><td>없음 또는 매우 약함</td><td>시스템 자동 대응 체계 부족</td></tr>
+              <tr><td>EKF 기반 통합 상태추정</td><td>없음</td><td>controller별 센서를 직접 사용</td></tr>
+              <tr><td>GCS 기반 표준 파라미터 / calibration / logging</td><td>약함</td><td>ROS 2 파라미터 + GUI 수동 조작 중심</td></tr>
+              <tr><td>arming check, frame preset, output standardization</td><td>약함</td><td>현재는 기체 내부 로직 중심</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="two-column">
+          <div class="subpanel">
+            <h3>현재에도 일부 있는 것</h3>
+            <ul>
+              <li>`manual_wrench_timeout_sec` 기반 입력 신선도 관리</li>
+              <li>`min_target_depth`, `max_target_depth` 기반 depth limit</li>
+              <li>`/rov/armed` 기반 arm / disarm</li>
+              <li>DVL 기반 position hold</li>
+              <li>GUI 기반 파라미터 조정</li>
+              <li>`output_scale`, `max_output`, `deadband` 기반 추력 제한</li>
+            </ul>
+          </div>
+          <div class="subpanel">
+            <h3>한 줄 결론</h3>
+            <p>
+              현재 제어기는 저수준 제어 커스터마이징은 강하지만, ArduSub가 갖는 상위 시스템 기능인 mode,
+              failsafe, EKF, mission, GCS 체계는 많이 비어 있습니다.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel" data-category="operations">
+        <div class="panel-heading">
+          <div>
+            <p class="section-kicker">8. 참고 링크</p>
+            <h2>원문 기준 자료</h2>
+          </div>
+          <span class="badge">References</span>
+        </div>
+
+        <div class="references">
+          <div class="subpanel">
+            <h3>현재 코드</h3>
+            <ul>
+              <li>`src/rov_control/rov_control/allocator_node.py`</li>
+              <li>`src/rov_control/rov_control/attitude_controller.py`</li>
+              <li>`src/rov_control/rov_control/depth_controller.py`</li>
+              <li>`src/rov_control/rov_control/position_controller.py`</li>
+              <li>`src/rov_control/rov_control/wrench_merger.py`</li>
+              <li>`src/rov_bringup/launch/sim.launch.py`</li>
+            </ul>
+          </div>
+          <div class="subpanel">
+            <h3>PX4 공식 문서</h3>
+            <ul>
+              <li><a href="https://docs.px4.io/main/en/frames_sub/" target="_blank" rel="noreferrer">frames_sub</a></li>
+              <li><a href="https://docs.px4.io/main/en/frames_sub/bluerov2" target="_blank" rel="noreferrer">BlueROV2</a></li>
+              <li><a href="https://docs.px4.io/main/en/advanced_config/parameter_reference" target="_blank" rel="noreferrer">Parameter Reference</a></li>
+              <li><a href="https://docs.px4.io/main/en/flight_modes_mc/" target="_blank" rel="noreferrer">Flight Modes</a></li>
+            </ul>
+          </div>
+          <div class="subpanel">
+            <h3>ArduSub 공식 문서</h3>
+            <ul>
+              <li><a href="https://ardupilot.org/sub/docs/modes.html" target="_blank" rel="noreferrer">Modes</a></li>
+              <li><a href="https://ardupilot.org/sub/docs/parameters-Sub-stable-V4.5.7.html" target="_blank" rel="noreferrer">Parameters</a></li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <section class="footer-note">
+        <p>
+          메모: 일부 비교는 직접 1:1 이름 대응이 없는 항목에 대해 기능상 가장 가까운 파라미터를 대응시킨 추론을 포함합니다.
+        </p>
+      </section>
+    </main>
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>
