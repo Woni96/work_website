@@ -139,24 +139,6 @@ code {
   line-height: 1.7;
 }
 
-.file-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin: 12px 0;
-}
-
-.file-chip {
-  display: inline-flex;
-  align-items: center;
-  padding: 7px 10px;
-  border-radius: 999px;
-  border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.04);
-  color: var(--muted);
-  font-size: 0.9rem;
-}
-
 .content {
   padding: 28px;
 }
@@ -262,6 +244,25 @@ code {
   color: #dbe8ff;
   line-height: 1.65;
   font-size: 0.92rem;
+}
+
+.evidence-code {
+  margin: 12px 0 0;
+  padding: 14px 16px;
+  overflow-x: auto;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(4, 10, 20, 0.78);
+}
+
+.evidence-code code {
+  display: block;
+  padding: 0;
+  background: transparent;
+  border-radius: 0;
+  color: #dbe8ff;
+  line-height: 1.6;
+  font-size: 0.9rem;
 }
 
 .accent-red {

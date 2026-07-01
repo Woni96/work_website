@@ -116,11 +116,13 @@
               <h3>`attitude_controller` manual freshness 누락</h3>
             </div>
             <p>마지막 수동 wrench가 남아 `yaw_manual_active`, `heave_protect`, `xy_motion_protect` 상태가 지속될 수 있습니다.</p>
-            <div class="file-list">
-              <span class="file-chip">`src/rov_control/rov_control/attitude_controller.py:572`</span>
-              <span class="file-chip">`src/rov_control/rov_control/attitude_controller.py:610`</span>
-              <span class="file-chip">`src/rov_control/rov_control/attitude_controller.py:674`</span>
-            </div>
+            <pre class="evidence-code"><code>manual_wrench = self.manual_wrench
+yaw_manual_active = abs(manual_wrench.torque.z) &gt; self.manual_yaw_override_threshold
+heave_protect = abs(manual_wrench.force.z) &gt; self.heave_override_threshold
+xy_motion_protect = (
+    abs(manual_wrench.force.x) &gt; self.xy_motion_protect_threshold or
+    abs(manual_wrench.force.y) &gt; self.xy_motion_protect_threshold
+)</code></pre>
             <p class="note">권장: `manual_wrench_timeout_sec`를 도입하고 stale 시 `Wrench()`로 간주.</p>
           </article>
 
@@ -130,11 +132,15 @@
               <h3>`position_controller` manual XY latch 가능성</h3>
             </div>
             <p>마지막 XY 입력이 남으면 `manual_xy_active=True`가 유지되어 position hold 복귀가 지연될 수 있습니다.</p>
-            <div class="file-list">
-              <span class="file-chip">`src/rov_control/rov_control/position_controller.py:261`</span>
-              <span class="file-chip">`src/rov_control/rov_control/position_controller.py:264`</span>
-              <span class="file-chip">`src/rov_control/rov_control/position_controller.py:417`</span>
-            </div>
+            <pre class="evidence-code"><code>self.prev_manual_xy_active = self.manual_xy_active
+self.manual_xy_active = (
+    abs(self.manual_wrench.force.x) &gt; self.manual_xy_override_threshold or
+    abs(self.manual_wrench.force.y) &gt; self.manual_xy_override_threshold
+)
+
+if self.manual_xy_active:
+    force_world_x = 0.0
+    force_world_y = 0.0</code></pre>
             <p class="note">권장: `last_manual_wrench_time`와 timeout 기반 자동 복구 추가.</p>
           </article>
 
@@ -144,12 +150,14 @@
               <h3>`wrench_merger` auto input freshness 미확인</h3>
             </div>
             <p>상위 제어기 publish가 멈춰도 마지막 `position/depth/attitude` 출력이 계속 사용될 수 있습니다.</p>
-            <div class="file-list">
-              <span class="file-chip">`src/rov_control/rov_control/wrench_merger.py:221`</span>
-              <span class="file-chip">`src/rov_control/rov_control/wrench_merger.py:231`</span>
-              <span class="file-chip">`src/rov_control/rov_control/wrench_merger.py:243`</span>
-              <span class="file-chip">`src/rov_control/rov_control/wrench_merger.py:253`</span>
-            </div>
+            <pre class="evidence-code"><code>if abs(manual_surge) &gt; self.manual_xy_override_threshold:
+    merged.force.x = manual_surge
+else:
+    merged.force.x = self.last_position_force.force.x
+
+merged.force.z = self.last_depth_heave + self.last_position_force.force.z
+merged.torque.x = self.last_attitude_torque.torque.x
+merged.torque.y = self.last_attitude_torque.torque.y</code></pre>
             <p class="note">권장: 입력별 timestamp와 timeout을 두고 stale 축만 안전하게 0 처리.</p>
           </article>
 
@@ -159,9 +167,12 @@
               <h3>`allocator_node`의 `Fx` 부호 반전 하드코딩</h3>
             </div>
             <p>`force.x`가 내부에서 무조건 반전되어 좌표계 해석이 코드 추적으로만 드러납니다.</p>
-            <div class="file-list">
-              <span class="file-chip">`src/rov_control/rov_control/allocator_node.py:560`</span>
-            </div>
+            <pre class="evidence-code"><code>fx = float(msg.force.x) * -1
+fy = float(msg.force.y)
+fz = float(msg.force.z)
+tx = float(msg.torque.x)
+ty = float(msg.torque.y)
+tz = float(msg.torque.z)</code></pre>
             <p class="note">권장: `surge_sign` 같은 파라미터로 외부화하고 문서화.</p>
           </article>
 
@@ -171,12 +182,15 @@
               <h3>Allocator saturation 거동의 비직관성</h3>
             </div>
             <p>분리 계산 + normalize 방식이라 saturation 시 원하는 wrench 비율이 보존되지 않을 수 있습니다.</p>
-            <div class="file-list">
-              <span class="file-chip">`src/rov_control/rov_control/allocator_node.py:591`</span>
-              <span class="file-chip">`src/rov_control/rov_control/allocator_node.py:603`</span>
-              <span class="file-chip">`src/rov_control/rov_control/allocator_node.py:611`</span>
-              <span class="file-chip">`src/rov_control/rov_control/allocator_node.py:638`</span>
-            </div>
+            <pre class="evidence-code"><code>u_h = (
+    (self.H_pinv @ horiz_force_cmd) * self.horizontal_output_gain +
+    (self.H_pinv @ horiz_yaw_cmd) * self.yaw_output_gain
+)
+
+if self.torque_first_allocation:
+    components = [u_v_torque, u_v_heave]
+else:
+    components = [u_v_heave, u_v_torque]</code></pre>
             <p class="note">권장: 현재는 heuristic allocator로 명시하고, 장기적으로 weighted least-squares / QP 검토.</p>
           </article>
 
@@ -186,10 +200,11 @@
               <h3>`position_controller`의 planar→body 변환 후 `force.z` 사용</h3>
             </div>
             <p>기체가 기울어졌을 때 XY hold가 heave 요구로 섞여 depth/position coupling이 생길 수 있습니다.</p>
-            <div class="file-list">
-              <span class="file-chip">`src/rov_control/rov_control/position_controller.py:411`</span>
-              <span class="file-chip">`src/rov_control/rov_control/position_controller.py:424`</span>
-            </div>
+            <pre class="evidence-code"><code>force_world = (force_world_x, force_world_y, 0.0)
+force_body = quat_rotate_vector(quat_conjugate(self.q_world_body), force_world)
+force_body_x = force_body[0]
+force_body_y = force_body[1]
+force_body_z = force_body[2]</code></pre>
             <p class="note">권장: 의도된 보상이면 명시, 아니면 `force_body_z = 0` 검토.</p>
           </article>
 
@@ -199,9 +214,11 @@
               <h3>`depth_controller` release target offset</h3>
             </div>
             <p>manual heave 해제 후 항상 고정 오프셋을 더해 목표 수심을 잡아 운용자 기대와 어긋날 수 있습니다.</p>
-            <div class="file-list">
-              <span class="file-chip">`src/rov_control/rov_control/depth_controller.py:334`</span>
-            </div>
+            <pre class="evidence-code"><code>def capture_manual_release_target(self, reason: str):
+    self.target_depth = self.current_depth + self.manual_heave_release_target_offset
+    self.clamp_target_depth()
+    self.target_initialized = True
+    self.depth_integral = 0.0</code></pre>
             <p class="note">권장: 기본값 0 또는 offset 적용 의도 문서화.</p>
           </article>
         </div>
@@ -282,9 +299,6 @@
             <article class="subpanel">
               <h3>전체 리뷰 문서</h3>
               <p>`control_code_review.md`는 구조적 장단점과 cross-module 리스크를 가장 잘 요약합니다.</p>
-              <div class="file-list">
-                <span class="file-chip">`code_review/controller_review/control_code_review.md:1`</span>
-              </div>
               <ul>
                 <li>입력 freshness 불일치</li>
                 <li>allocation heuristic 특성</li>
@@ -327,9 +341,6 @@
             <article class="subpanel">
               <h3>리뷰 포인트</h3>
               <p>수동 wrench freshness 미관리로 보호 로직이 의도보다 오래 남을 수 있습니다.</p>
-              <div class="file-list">
-                <span class="file-chip">`code_review/controller_review/controller_review_attitude.md:1`</span>
-              </div>
               <p class="note">핵심 수정 포인트: manual timeout, stale state reset, yaw override 복귀 일관화.</p>
             </article>
           </div>
@@ -373,9 +384,6 @@
             <article class="subpanel">
               <h3>리뷰 포인트</h3>
               <p>manual heave release 시 목표를 `current_depth + offset`으로 잡는 정책이 직관과 어긋날 수 있습니다.</p>
-              <div class="file-list">
-                <span class="file-chip">`code_review/controller_review/controller_review_depth.md:1`</span>
-              </div>
               <p class="note">핵심 수정 포인트: release offset 기본값 재검토, 의도 문서화.</p>
             </article>
           </div>
@@ -415,9 +423,6 @@ raw_cmd = (
             <article class="subpanel">
               <h3>리뷰 포인트</h3>
               <p>manual XY stale latch 가능성과 transformed `force.z` 사용이 가장 눈에 띕니다.</p>
-              <div class="file-list">
-                <span class="file-chip">`code_review/controller_review/controller_review_position.md:1`</span>
-              </div>
               <p class="note">핵심 수정 포인트: manual timeout, hold 복귀 로직, z-coupling 설계 의도 명확화.</p>
             </article>
           </div>
@@ -457,9 +462,6 @@ if abs(self.manual_wrench.torque.z) > self.manual_yaw_override_threshold:
             <article class="subpanel">
               <h3>리뷰 포인트</h3>
               <p>manual 입력 timeout은 있지만 auto input freshness가 없어 장애 전파가 조용히 남을 수 있습니다.</p>
-              <div class="file-list">
-                <span class="file-chip">`code_review/controller_review/controller_review_wrench_merger.md:1`</span>
-              </div>
               <p class="note">핵심 수정 포인트: 입력별 timestamp/timeout, stale source별 안전 처리.</p>
             </article>
           </div>
@@ -497,9 +499,6 @@ elif abs(manual_heave) &gt; self.manual_heave_override_threshold:
             <article class="subpanel">
               <h3>리뷰 포인트</h3>
               <p>하드코딩된 x축 부호와 heuristic saturation이 핵심 해석 포인트입니다.</p>
-              <div class="file-list">
-                <span class="file-chip">`code_review/controller_review/controller_review_allocator.md:1`</span>
-              </div>
               <p class="note">핵심 수정 포인트: sign 파라미터화, allocator 철학 문서화, 장기적 고도화 방향 제시.</p>
             </article>
           </div>
