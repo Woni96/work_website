@@ -19,6 +19,8 @@ class ReviewItem:
     meaning: str
     impact: str
     review: str
+    details: str = ""
+    parameter_notes: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -94,15 +96,37 @@ MODULES: tuple[ModuleConfig, ...] = (
                 heading="`__init__()`",
                 source_names=("__init__",),
                 meaning=(
-                    "노드의 토픽, 게인, 제한값, 보호 로직, yaw hold 정책을 전부 선언하고 상태 변수를 초기화합니다."
+                    "노드의 토픽, 게인, 제한값, 보호 로직, yaw hold 정책을 전부 선언하고 상태 변수를 초기화합니다. "
+                    "즉 이 함수는 단순 constructor가 아니라 이 controller가 어떤 철학으로 동작할지 정의하는 설정 진입점입니다."
                 ),
                 impact=(
                     "이 함수가 곧 제어기의 운용 정책 선언부입니다. "
                     "어떤 입력을 받고 어떤 보호 로직이 켜지는지, yaw stick을 놓았을 때 어떤 감각으로 복귀하는지가 여기서 결정됩니다."
                 ),
                 review=(
-                    "파라미터가 많지만 모두 의미가 분명합니다. 다만 수동 입력 freshness를 위한 timestamp/state가 없는 점은 "
+                    "파라미터가 많지만 모두 의미가 분명합니다. 특히 이 함수 하나만 읽어도 "
+                    "이 자세 제어기가 `단순 자세 PID`가 아니라 `manual yaw override`, `trim hold`, `translation 보호`, `orientation filtering`을 가진 "
+                    "운용형 controller라는 점을 알 수 있습니다. 다만 수동 입력 freshness를 위한 timestamp/state가 없는 점은 "
                     "후반 제어 루프에서 stale manual state로 이어질 수 있습니다."
+                ),
+                details=(
+                    "이 함수에서 먼저 보아야 할 것은 파라미터가 어떤 덩어리로 나뉘는지입니다. "
+                    "첫 번째 덩어리는 `imu_topic`, `manual_wrench_topic`, `output_torque_topic` 같은 입출력 토픽입니다. "
+                    "두 번째 덩어리는 `kp_*`, `ki_*`, `kd_*`로 대표되는 기본 제어 게인입니다. "
+                    "세 번째 덩어리는 `tx_limit`, `ty_limit`, `tz_limit`, `rp_torque_slew_rate` 같은 출력 shaping / safety 관련 파라미터입니다. "
+                    "마지막으로 이 코드의 성격을 가장 잘 보여주는 것은 `yaw_hold_enabled`, `capture_yaw_target_on_release`, "
+                    "`xy_motion_protect_threshold`, `translation_tilt_ff_*`, `orientation_filter_*` 같은 운용 정책 파라미터입니다.\n\n"
+                    "즉 이 함수는 단순히 숫자를 로드하는 함수가 아니라, 기체를 어떤 감각으로 조종할 것인지 선언하는 정책 테이블입니다. "
+                    "그래서 이 함수 설명이 빈약하면 전체 코드 해석이 얕아질 수밖에 없습니다."
+                ),
+                parameter_notes=(
+                    ("`imu_topic`, `manual_wrench_topic`, `output_torque_topic`", "센서 입력, pilot 입력, 최종 torque 출력이 어디를 통해 흐르는지 정합니다."),
+                    ("`kp_roll/pitch/yaw`, `ki_roll/pitch`, `kd_roll/pitch/yaw`", "자세 오차에 대한 복원력과 damping의 기본 강도를 정하는 핵심 제어 파라미터입니다."),
+                    ("`tx_limit`, `ty_limit`, `tz_limit`", "각 축 torque saturation 상한입니다. 기체를 세우는 힘보다 actuator 보호를 우선할 때 중요합니다."),
+                    ("`rp_torque_slew_rate`", "roll/pitch torque가 한 주기에서 얼마나 급하게 바뀔 수 있는지 제한합니다."),
+                    ("`yaw_hold_enabled`, `capture_yaw_target_on_release`, `yaw_hold_settle_time_sec`", "yaw stick을 놓은 뒤 heading hold가 어떤 감각으로 복귀할지 결정합니다."),
+                    ("`xy_motion_protect_threshold`, `strong_xy_motion_threshold`, `rp_scale_when_*`", "translation 중 자세 hold를 얼마나 약하게 또는 강하게 유지할지 결정합니다."),
+                    ("`orientation_filter_*`", "IMU 자세를 control attitude로 쓸 때 얼마나 부드럽게 필터링할지 정합니다."),
                 ),
             ),
             ReviewItem(
@@ -180,6 +204,14 @@ MODULES: tuple[ModuleConfig, ...] = (
                     "구조는 매우 좋고 운용 의도도 분명합니다. "
                     "다만 manual wrench freshness가 없어서 `yaw_manual_active`, `heave_protect`, `xy_soft_trim`이 오래 남을 수 있는 리스크가 있습니다."
                 ),
+                details=(
+                    "이 함수는 실제로 여러 개의 작은 상태 머신이 겹쳐진 형태입니다. "
+                    "먼저 IMU/target/control_enabled 상태를 보고 제어를 수행할지 결정합니다. "
+                    "그 다음 roll/pitch는 angle error + integral + rate damping으로 계산하고, yaw는 heading hold 상태인지 manual yaw 상태인지에 따라 완전히 다른 정책을 탑니다. "
+                    "여기에 translation 중 trim 유지 약화, heave 중 yaw 보호, large tilt disable, body-rate limit, slew-rate 제한이 순서대로 겹칩니다.\n\n"
+                    "그래서 이 함수는 단순 PID 함수가 아니라, 실제 조종 감각을 조합하는 중앙 orchestration 함수라고 보는 편이 정확합니다. "
+                    "문제 분석 시에도 '게인이 이상하다'보다 '지금 어떤 보호 모드가 켜졌는가'를 먼저 봐야 하는 이유가 여기 있습니다."
+                ),
             ),
             ReviewItem(
                 heading="`on_parameter_update()`",
@@ -252,7 +284,8 @@ MODULES: tuple[ModuleConfig, ...] = (
                 heading="`__init__()`",
                 source_names=("__init__",),
                 meaning=(
-                    "depth PID, manual override, pilot depth-rate, sensor offset compensation, output shaping 파라미터를 한 번에 선언합니다."
+                    "depth PID, manual override, pilot depth-rate, sensor offset compensation, output shaping 파라미터를 한 번에 선언합니다. "
+                    "즉 depth controller가 단순한 `error -> heave` 계산기인지, 실제 운용형 hold 시스템인지가 여기서 갈립니다."
                 ),
                 impact=(
                     "이 함수가 depth hold의 운용 정책 전체를 결정합니다. "
@@ -261,6 +294,22 @@ MODULES: tuple[ModuleConfig, ...] = (
                 review=(
                     "구성이 잘 되어 있고 실제 운용형 controller에 가깝습니다. "
                     "특히 `manual_wrench_timeout_sec`가 있는 점은 attitude/position보다 안전 측면에서 낫습니다."
+                ),
+                details=(
+                    "이 함수는 depth controller를 읽을 때 가장 먼저 봐야 하는 구간입니다. "
+                    "왜냐하면 depth hold의 감각은 `kp/ki/kd`보다도 `pilot_depth_rate_enabled`, "
+                    "`manual_heave_release_target_offset`, `max_upward_heave`, `depth_rate_alpha` 같은 정책 파라미터들에 크게 좌우되기 때문입니다.\n\n"
+                    "또한 이 함수는 sensor offset compensation 관련 파라미터도 함께 준비합니다. "
+                    "즉 이 모듈은 단순 PID가 아니라 센서 물리 배치, arm/disarm 동작, manual release 감각, actuator 친화성까지 같이 품고 있는 시스템입니다."
+                ),
+                parameter_notes=(
+                    ("`depth_topic`, `imu_topic`, `cmd_depth_topic`, `manual_wrench_topic`", "depth hold에 들어오는 주요 센서/명령 입력입니다."),
+                    ("`kp_depth`, `ki_depth`, `kd_depth`", "수심 오차를 heave 출력으로 바꾸는 핵심 PID 게인입니다."),
+                    ("`pilot_depth_rate_enabled`, `max_pilot_depth_rate`, `pilot_depth_rate_sign`", "manual heave를 direct thrust가 아니라 target depth rate로 해석할지 결정합니다."),
+                    ("`manual_heave_override_threshold`, `manual_wrench_timeout_sec`", "manual heave 활성 조건과 stale input 해제 정책을 정합니다."),
+                    ("`manual_heave_release_target_offset`", "pilot이 stick을 놓은 뒤 hold target을 현재 depth 기준 어디에 둘지 정합니다."),
+                    ("`max_heave`, `max_upward_heave`, `max_heave_delta_per_cycle`", "출력 saturation과 actuator-friendly shaping을 담당합니다."),
+                    ("`depth_sensor_offset_*`, `depth_sensor_offset_compensation_enabled`", "센서 장착 위치 보상에 필요한 파라미터입니다."),
                 ),
             ),
             ReviewItem(
@@ -334,6 +383,15 @@ MODULES: tuple[ModuleConfig, ...] = (
                 review=(
                     "구조가 좋고 actuator-friendly합니다. "
                     "특히 `depth_rate_alpha`, `max_heave_delta_per_cycle`, `max_upward_heave`가 실제 시스템을 거칠지 않게 만들어 줍니다."
+                ),
+                details=(
+                    "이 함수 안에는 사실상 depth controller의 모든 핵심이 들어 있습니다. "
+                    "먼저 현재 depth를 보정하고, manual heave stale 여부를 해제하고, 필요하면 초기 target을 캡처합니다. "
+                    "그 다음 depth rate를 샘플 차분으로 계산한 뒤 low-pass filtering을 적용하고, 그 결과를 PID의 derivative 입력으로 사용합니다.\n\n"
+                    "그 이후에는 상황에 따라 분기합니다. disarm이면 무조건 0, control disabled면 0, "
+                    "manual heave + pilot depth-rate 모드면 target depth를 움직이고, 그렇지 않으면 정적인 target depth를 향해 PID를 수행합니다. "
+                    "마지막으로 saturation, upward limit, slew-rate를 차례로 적용해 heave 명령을 publish합니다. "
+                    "즉 이 함수는 제어 law와 output shaping이 하나의 파이프라인으로 묶인 구조입니다."
                 ),
             ),
             ReviewItem(
@@ -409,7 +467,8 @@ MODULES: tuple[ModuleConfig, ...] = (
                 heading="`__init__()`",
                 source_names=("__init__",),
                 meaning=(
-                    "DVL 입력 방식, gain, yaw damping, manual override, frame 정책, velocity integration fallback까지 초기화합니다."
+                    "DVL 입력 방식, gain, yaw damping, manual override, frame 정책, velocity integration fallback까지 초기화합니다. "
+                    "즉 이 함수는 position hold가 어떤 센서 구성과 어떤 좌표계 해석을 전제로 돌아갈지를 정의합니다."
                 ),
                 impact=(
                     "position hold가 absolute position 기반인지 velocity integration 기반인지, "
@@ -418,6 +477,23 @@ MODULES: tuple[ModuleConfig, ...] = (
                 review=(
                     "실전 운용형 controller답게 파라미터 구성이 좋습니다. "
                     "다만 manual freshness timeout이 없어서 수동 입력이 stale일 때 hold 복귀가 늦어질 수 있습니다."
+                ),
+                details=(
+                    "이 함수는 position controller를 단순 PD controller 이상으로 만들어 주는 핵심 구간입니다. "
+                    "먼저 `dvl_topic`, `dvl_position_topic`, `imu_topic` 등으로 어떤 센서 조합을 사용할지 선언합니다. "
+                    "그 다음 `kp_x/kd_x`, `kp_y/kd_y`로 기본 복원력과 감쇠를 정하고, "
+                    "`yaw_rate_damping_gain`, `manual_yaw_damping_boost`로 yaw 운동 중 position hold를 얼마나 보수적으로 할지 결정합니다.\n\n"
+                    "또 `use_dvl_position`, `integrate_dvl_velocity_when_position_unavailable`는 absolute position 기반인지 dead-reckoning fallback 기반인지 선택하게 해 줍니다. "
+                    "즉 이 함수는 '위치제어기'를 초기화하는 것이 아니라, 실제 field condition에서 어떤 센서 가정과 어떤 hold 감각으로 운영할지 선언하는 함수라고 보는 편이 정확합니다."
+                ),
+                parameter_notes=(
+                    ("`dvl_topic`, `dvl_position_topic`, `imu_topic`, `manual_wrench_topic`", "position hold가 의존하는 센서와 pilot 입력 채널입니다."),
+                    ("`kp_x`, `kd_x`, `kp_y`, `kd_y`", "XY 위치 오차를 planar force로 바꾸는 핵심 PD 게인입니다."),
+                    ("`yaw_rate_damping_gain`, `manual_yaw_damping_boost`, `manual_yaw_override_threshold`", "yaw 운동/조작이 있을 때 XY hold를 얼마나 보수적으로 만들지 결정합니다."),
+                    ("`manual_xy_override_threshold`, `capture_target_on_manual_release`", "manual XY 조작 중 auto hold를 끊고, release 후 hold target을 다시 잡는 정책입니다."),
+                    ("`valid_timeout_sec`", "DVL 기반 reference가 stale인지 판단하는 유효 시간입니다."),
+                    ("`use_dvl_position`, `integrate_dvl_velocity_when_position_unavailable`", "absolute position과 velocity fallback 중 어떤 전략을 쓸지 정합니다."),
+                    ("`dvl_mount_roll_deg`, `dvl_mount_pitch_deg`, `dvl_mount_yaw_deg`", "DVL 장착 방향이 body frame과 어긋날 때 이를 보정합니다."),
                 ),
             ),
             ReviewItem(
@@ -490,6 +566,20 @@ MODULES: tuple[ModuleConfig, ...] = (
                     "구조는 명확하고 PD hold로서 좋습니다. "
                     "다만 `force_body_z`를 최종 출력에 포함시키는 부분은 설계 의도를 명시하지 않으면 depth와의 coupling을 읽는 사람이 헷갈릴 수 있습니다."
                 ),
+                details=(
+                    "이 함수는 실제 position hold의 중심입니다. 하지만 단순히 오차를 force로 바꾸기 전에 먼저 "
+                    "`target_initialized`, `valid reference`, `armed`, `control_enabled`를 확인합니다. "
+                    "즉 이 코드는 좋은 출력을 만드는 것보다, 잘못된 상태에서 출력을 내지 않는 것을 먼저 중요하게 봅니다.\n\n"
+                    "그 다음 error를 world frame에서 계산하고 yaw 상태에 따라 damping을 강화합니다. "
+                    "이후 world force를 body frame으로 회전해 기체가 실제로 낼 수 있는 축으로 바꾸고, manual XY가 active면 auto force를 0으로 눌러 pilot 우선 정책을 구현합니다. "
+                    "마지막에는 saturation과 deadband를 적용해 actuator-friendly한 force로 publish합니다."
+                ),
+                parameter_notes=(
+                    ("`kp_x`, `kd_x`, `kp_y`, `kd_y`", "오차와 속도를 force로 바꾸는 식에 직접 들어갑니다."),
+                    ("`yaw_rate_damping_gain`, `manual_yaw_damping_boost`", "yaw motion이 클수록 derivative 성분을 얼마나 더 키울지 정합니다."),
+                    ("`max_force_x`, `max_force_y`, `max_force_z`", "최종 force clamp 상한입니다."),
+                    ("`force_deadband`", "아주 작은 force를 0으로 눌러 actuator chatter를 줄입니다."),
+                ),
             ),
             ReviewItem(
                 heading="`on_parameter_update()`",
@@ -542,7 +632,8 @@ MODULES: tuple[ModuleConfig, ...] = (
                 heading="`__init__()`",
                 source_names=("__init__",),
                 meaning=(
-                    "입력 토픽, armed gating, manual override threshold, publish timer와 마지막 입력 상태들을 준비합니다."
+                    "입력 토픽, armed gating, manual override threshold, publish timer와 마지막 입력 상태들을 준비합니다. "
+                    "즉 이 함수는 merger가 어떤 축에서 누구 말을 우선 들을지 정하는 arbitration 환경을 초기화합니다."
                 ),
                 impact=(
                     "이 함수가 곧 이 노드의 arbitration 정책 초기 상태를 만듭니다. "
@@ -551,6 +642,20 @@ MODULES: tuple[ModuleConfig, ...] = (
                 review=(
                     "구조가 단순하고 목적이 분명합니다. "
                     "이런 중간 supervisory layer가 있으면 상위 제어기와 allocator를 느슨하게 연결할 수 있습니다."
+                ),
+                details=(
+                    "이 함수가 중요한 이유는 이 노드가 전체 시스템의 마지막 supervisory decision layer이기 때문입니다. "
+                    "상위 depth / position / attitude controller들이 각각 좋은 출력을 만들어도, 최종적으로 어떤 출력을 실제 thruster 쪽에 보낼지는 이 노드가 결정합니다.\n\n"
+                    "여기서 `manual_*_override_threshold`와 `manual_wrench_timeout_sec`가 함께 선언된다는 점이 중요합니다. "
+                    "즉 단순히 manual이 auto보다 우선하는 것이 아니라, manual이 '얼마나 커야 우선인지', '얼마 동안 유효한지'까지 여기서 정의됩니다. "
+                    "또 `publish_rate`가 timer 기반으로 사용되므로, 이 함수는 최종 output synchronization 정책도 함께 선언합니다."
+                ),
+                parameter_notes=(
+                    ("`manual_wrench_topic`, `depth_heave_topic`, `depth_active_topic`, `position_force_topic`, `attitude_torque_topic`", "merge 대상이 되는 모든 입력 채널입니다."),
+                    ("`output_wrench_topic`", "최종 arbitration 결과가 publish되는 출력 채널입니다."),
+                    ("`publish_rate`", "각 입력 callback 즉시 출력이 아니라 timer 기반으로 몇 Hz로 재발행할지 정합니다."),
+                    ("`manual_xy_override_threshold`, `manual_heave_override_threshold`, `manual_yaw_override_threshold`", "축별로 manual이 auto를 이기기 시작하는 경계값입니다."),
+                    ("`manual_wrench_timeout_sec`", "manual 입력을 stale로 보고 무시하기 시작하는 시간입니다."),
                 ),
             ),
             ReviewItem(
@@ -594,6 +699,20 @@ MODULES: tuple[ModuleConfig, ...] = (
                 review=(
                     "정책은 명료하고 읽기 쉽습니다. "
                     "다만 `last_position_force`, `last_depth_heave`, `last_attitude_torque`에도 freshness를 넣지 않으면 상위 노드 장애 시 마지막 값이 계속 살아남습니다."
+                ),
+                details=(
+                    "이 함수는 사실상 전체 제어기의 최종 의사결정표입니다. "
+                    "먼저 armed state를 확인해 출력 자체를 허용할지 결정하고, 그 다음 manual input freshness를 검사해 stale manual을 자동으로 0으로 만듭니다. "
+                    "이후 각 축별로 다른 규칙을 적용합니다: surge/sway는 manual XY threshold를 넘으면 manual, 아니면 position force를 씁니다. "
+                    "heave는 depth_active 여부가 중요해서, depth hold가 켜져 있으면 manual heave보다 depth controller 출력을 우선 해석합니다. "
+                    "roll/pitch는 attitude auto torque가 항상 이기고, yaw는 manual yaw가 threshold를 넘을 때만 auto yaw hold를 덮어씁니다.\n\n"
+                    "즉 이 함수는 단순 merge가 아니라, '축마다 다른 운용 철학을 구현하는 arbitration state machine'입니다."
+                ),
+                parameter_notes=(
+                    ("`manual_xy_override_threshold`", "surge/sway에서 position hold를 manual이 끊는 기준입니다."),
+                    ("`manual_heave_override_threshold`", "depth hold가 비활성일 때 heave를 manual이 강제로 가져오는 기준입니다."),
+                    ("`manual_yaw_override_threshold`", "yaw hold보다 manual yaw를 우선하는 기준입니다."),
+                    ("`manual_wrench_timeout_sec`", "이 시간이 지나면 마지막 manual 입력을 더 이상 믿지 않습니다."),
                 ),
             ),
             ReviewItem(
@@ -665,7 +784,8 @@ MODULES: tuple[ModuleConfig, ...] = (
                 heading="`__init__()`",
                 source_names=("__init__",),
                 meaning=(
-                    "thruster sign, gain, compensation, priority, output shaping, runtime tuning 관련 모든 파라미터를 선언합니다."
+                    "thruster sign, gain, compensation, priority, output shaping, runtime tuning 관련 모든 파라미터를 선언합니다. "
+                    "즉 allocator가 단순 행렬 연산 노드인지, 실제 기체 거동까지 반영하는 smart output layer인지가 여기서 결정됩니다."
                 ),
                 impact=(
                     "allocator가 단순 `TAM * u = τ` 계산기가 아니라 실제 운용형 shaping node라는 점이 여기서 드러납니다."
@@ -673,6 +793,27 @@ MODULES: tuple[ModuleConfig, ...] = (
                 review=(
                     "파라미터가 많지만 역할이 분명합니다. "
                     "다만 `fx = -msg.force.x`처럼 본체 쪽 부호 해석이 하드코딩되어 있어서 문서화가 꼭 필요합니다."
+                ),
+                details=(
+                    "지금 보여주신 화면에서 가장 빈약하게 보였던 부분이 바로 이 함수입니다. 실제로는 이 함수가 allocator 전체 성격을 거의 다 설명해 줍니다. "
+                    "첫 번째 덩어리는 `wrench_cmd_topic`, `thruster_cmd_topic`, `imu_topic` 같은 입출력 연결입니다. "
+                    "두 번째 덩어리는 `heave_gain`, `horizontal_output_gain`, `yaw_output_gain`, `vertical_output_gain`처럼 force/torque 축별 gain입니다. "
+                    "세 번째 덩어리는 `torque_first_allocation`, `rear_vertical_bias`, `pitch_torque_gain`처럼 allocation 우선순위와 기체 성향을 반영하는 파라미터입니다.\n\n"
+                    "그리고 이 코드의 개성을 가장 잘 보여주는 것은 뒤쪽 compensation 파라미터들입니다. "
+                    "`level_horizontal_compensation_*`, `attitude_priority_horizontal_slowdown_*`, `surge_pitch_moment_*`, `imu_pitch_hold_*`는 "
+                    "단순한 `TAM pseudo-inverse`를 넘어서 실제 기체가 기울고, 전진하고, 자세를 유지할 때 어떤 출력을 내야 하는지를 allocator 수준에서 조정합니다. "
+                    "즉 이 함수는 allocator의 철학서에 가깝습니다."
+                ),
+                parameter_notes=(
+                    ("`wrench_cmd_topic`, `thruster_cmd_topic`, `imu_topic`", "allocator가 무엇을 입력으로 받고 무엇을 출력할지 정합니다."),
+                    ("`heave_gain`, `horizontal_output_gain`, `vertical_output_gain`, `yaw_output_gain`", "각 축 요구를 실제 thruster 명령으로 얼마나 크게 반영할지 정하는 기본 gain입니다."),
+                    ("`torque_first_allocation`", "수직 그룹에서 heave보다 자세 토크를 먼저 만족시킬지 결정합니다."),
+                    ("`rear_vertical_bias`, `pitch_torque_gain`", "수직 thruster 분배 성향과 pitch 복원 특성을 조정합니다."),
+                    ("`level_horizontal_compensation_*`", "기체가 기울어진 상태에서 수평 이동이 heave로 새는 문제를 allocator 단계에서 보정합니다."),
+                    ("`attitude_priority_horizontal_slowdown_*`", "자세 토크 요구가 크면 horizontal 출력을 얼마나 줄일지 정합니다."),
+                    ("`surge_pitch_moment_*`", "surge thrust가 만드는 pitch moment를 allocator 차원에서 보상합니다."),
+                    ("`imu_pitch_hold_*`", "현재 pitch와 target pitch 차이를 보고 추가적인 hold 보상을 넣습니다."),
+                    ("`slew_rate`, `max_output`, `output_scale`, `output_deadband`", "최종 actuator-friendly output shaping과 saturation 성격을 결정합니다."),
                 ),
             ),
             ReviewItem(
@@ -745,6 +886,19 @@ MODULES: tuple[ModuleConfig, ...] = (
                 review=(
                     "코드의 의도는 분명합니다. "
                     "다만 `Fx` 하드코딩 반전과 heuristic saturation은 읽는 사람에게 반드시 설명이 필요합니다."
+                ),
+                details=(
+                    "이 함수는 allocator의 본체입니다. 먼저 입력 wrench를 읽고 내부 좌표계 기준으로 `fx`, `fy`, `fz`, `tx`, `ty`, `tz`를 해석합니다. "
+                    "여기서 `fx = -msg.force.x`처럼 축 부호를 내부 convention에 맞게 뒤집는 부분이 있기 때문에, 이 함수는 좌표계 해석의 실제 출발점이기도 합니다.\n\n"
+                    "그 다음 수평 성분(`Fx`, `Fy`, `Tz`)과 수직 성분(`Fz`, `Tx`, `Ty`)을 분리해서 allocation을 수행하고, "
+                    "보상 항들을 추가한 뒤 priority allocation, normalization, deadband, slew-rate를 순서대로 적용합니다. "
+                    "즉 이 함수는 단순 수학 공식이 아니라 '요구 wrench를 실제 thruster array가 낼 수 있는 형태로 번역하는 전체 파이프라인'입니다."
+                ),
+                parameter_notes=(
+                    ("`horizontal_output_gain`, `vertical_output_gain`, `yaw_output_gain`, `heave_gain`", "입력 wrench를 thruster 명령 크기로 스케일링하는 데 직접 들어갑니다."),
+                    ("`torque_first_allocation`", "수직 allocation에서 heave와 자세 토크 중 무엇을 먼저 보장할지 결정합니다."),
+                    ("`level_horizontal_compensation_*`, `surge_pitch_moment_*`, `imu_pitch_hold_*`", "allocation 중간에 추가되는 보상 항의 크기와 활성 조건을 정합니다."),
+                    ("`slew_rate`, `max_output`, `output_scale`, `output_deadband`", "최종 thruster 출력을 다듬는 마지막 shaping 파라미터입니다."),
                 ),
             ),
             ReviewItem(
@@ -872,6 +1026,10 @@ def render_parameter_list_html(parameters: tuple[tuple[str, str], ...]) -> str:
     return '<ul class="parameter-list">' + "".join(items) + "</ul>"
 
 
+def render_parameter_notes_markdown(parameters: tuple[tuple[str, str], ...]) -> list[str]:
+    return [f"- {name}: {description}" for name, description in parameters]
+
+
 def build_function_map(source: str) -> list[str]:
     names: list[str] = []
     for line in source.splitlines():
@@ -929,6 +1087,28 @@ def render_markdown_module(config: ModuleConfig, source: str) -> str:
                 "**리뷰 메모**",
                 "",
                 item.review,
+            ]
+        )
+        if item.details:
+            lines.extend(
+                [
+                    "",
+                    "**상세 해설**",
+                    "",
+                    item.details,
+                ]
+            )
+        if item.parameter_notes:
+            lines.extend(
+                [
+                    "",
+                    "**이 함수와 관련된 파라미터**",
+                    "",
+                    *render_parameter_notes_markdown(item.parameter_notes),
+                ]
+            )
+        lines.extend(
+            [
                 "",
                 "```python",
                 snippet,
@@ -980,6 +1160,8 @@ def render_html_module(config: ModuleConfig, source: str) -> str:
             {render_paragraphs(item.impact)}
             <h3>리뷰 메모</h3>
             {render_paragraphs(item.review)}
+            {'<h3>상세 해설</h3>' + render_paragraphs(item.details) if item.details else ''}
+            {'<h3>이 함수와 관련된 파라미터</h3>' + render_parameter_list_html(item.parameter_notes) if item.parameter_notes else ''}
           </article>
         </div>
       </section>

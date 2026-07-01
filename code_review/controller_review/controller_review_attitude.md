@@ -138,7 +138,7 @@ def wrap_to_pi(angle: float) -> float:
 
 **의미**
 
-노드의 토픽, 게인, 제한값, 보호 로직, yaw hold 정책을 전부 선언하고 상태 변수를 초기화합니다.
+노드의 토픽, 게인, 제한값, 보호 로직, yaw hold 정책을 전부 선언하고 상태 변수를 초기화합니다. 즉 이 함수는 단순 constructor가 아니라 이 controller가 어떤 철학으로 동작할지 정의하는 설정 진입점입니다.
 
 **영향**
 
@@ -146,7 +146,23 @@ def wrap_to_pi(angle: float) -> float:
 
 **리뷰 메모**
 
-파라미터가 많지만 모두 의미가 분명합니다. 다만 수동 입력 freshness를 위한 timestamp/state가 없는 점은 후반 제어 루프에서 stale manual state로 이어질 수 있습니다.
+파라미터가 많지만 모두 의미가 분명합니다. 특히 이 함수 하나만 읽어도 이 자세 제어기가 `단순 자세 PID`가 아니라 `manual yaw override`, `trim hold`, `translation 보호`, `orientation filtering`을 가진 운용형 controller라는 점을 알 수 있습니다. 다만 수동 입력 freshness를 위한 timestamp/state가 없는 점은 후반 제어 루프에서 stale manual state로 이어질 수 있습니다.
+
+**상세 해설**
+
+이 함수에서 먼저 보아야 할 것은 파라미터가 어떤 덩어리로 나뉘는지입니다. 첫 번째 덩어리는 `imu_topic`, `manual_wrench_topic`, `output_torque_topic` 같은 입출력 토픽입니다. 두 번째 덩어리는 `kp_*`, `ki_*`, `kd_*`로 대표되는 기본 제어 게인입니다. 세 번째 덩어리는 `tx_limit`, `ty_limit`, `tz_limit`, `rp_torque_slew_rate` 같은 출력 shaping / safety 관련 파라미터입니다. 마지막으로 이 코드의 성격을 가장 잘 보여주는 것은 `yaw_hold_enabled`, `capture_yaw_target_on_release`, `xy_motion_protect_threshold`, `translation_tilt_ff_*`, `orientation_filter_*` 같은 운용 정책 파라미터입니다.
+
+즉 이 함수는 단순히 숫자를 로드하는 함수가 아니라, 기체를 어떤 감각으로 조종할 것인지 선언하는 정책 테이블입니다. 그래서 이 함수 설명이 빈약하면 전체 코드 해석이 얕아질 수밖에 없습니다.
+
+**이 함수와 관련된 파라미터**
+
+- `imu_topic`, `manual_wrench_topic`, `output_torque_topic`: 센서 입력, pilot 입력, 최종 torque 출력이 어디를 통해 흐르는지 정합니다.
+- `kp_roll/pitch/yaw`, `ki_roll/pitch`, `kd_roll/pitch/yaw`: 자세 오차에 대한 복원력과 damping의 기본 강도를 정하는 핵심 제어 파라미터입니다.
+- `tx_limit`, `ty_limit`, `tz_limit`: 각 축 torque saturation 상한입니다. 기체를 세우는 힘보다 actuator 보호를 우선할 때 중요합니다.
+- `rp_torque_slew_rate`: roll/pitch torque가 한 주기에서 얼마나 급하게 바뀔 수 있는지 제한합니다.
+- `yaw_hold_enabled`, `capture_yaw_target_on_release`, `yaw_hold_settle_time_sec`: yaw stick을 놓은 뒤 heading hold가 어떤 감각으로 복귀할지 결정합니다.
+- `xy_motion_protect_threshold`, `strong_xy_motion_threshold`, `rp_scale_when_*`: translation 중 자세 hold를 얼마나 약하게 또는 강하게 유지할지 결정합니다.
+- `orientation_filter_*`: IMU 자세를 control attitude로 쓸 때 얼마나 부드럽게 필터링할지 정합니다.
 
 ```python
 def __init__(self):
@@ -597,6 +613,12 @@ def _translation_tilt_feedforward(self, manual_surge: float, manual_sway: float)
 **리뷰 메모**
 
 구조는 매우 좋고 운용 의도도 분명합니다. 다만 manual wrench freshness가 없어서 `yaw_manual_active`, `heave_protect`, `xy_soft_trim`이 오래 남을 수 있는 리스크가 있습니다.
+
+**상세 해설**
+
+이 함수는 실제로 여러 개의 작은 상태 머신이 겹쳐진 형태입니다. 먼저 IMU/target/control_enabled 상태를 보고 제어를 수행할지 결정합니다. 그 다음 roll/pitch는 angle error + integral + rate damping으로 계산하고, yaw는 heading hold 상태인지 manual yaw 상태인지에 따라 완전히 다른 정책을 탑니다. 여기에 translation 중 trim 유지 약화, heave 중 yaw 보호, large tilt disable, body-rate limit, slew-rate 제한이 순서대로 겹칩니다.
+
+그래서 이 함수는 단순 PID 함수가 아니라, 실제 조종 감각을 조합하는 중앙 orchestration 함수라고 보는 편이 정확합니다. 문제 분석 시에도 '게인이 이상하다'보다 '지금 어떤 보호 모드가 켜졌는가'를 먼저 봐야 하는 이유가 여기 있습니다.
 
 ```python
 def control_loop(self):

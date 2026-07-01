@@ -126,7 +126,7 @@ def quat_to_rpy(x: float, y: float, z: float, w: float):
 
 **의미**
 
-thruster sign, gain, compensation, priority, output shaping, runtime tuning 관련 모든 파라미터를 선언합니다.
+thruster sign, gain, compensation, priority, output shaping, runtime tuning 관련 모든 파라미터를 선언합니다. 즉 allocator가 단순 행렬 연산 노드인지, 실제 기체 거동까지 반영하는 smart output layer인지가 여기서 결정됩니다.
 
 **영향**
 
@@ -135,6 +135,24 @@ allocator가 단순 `TAM * u = τ` 계산기가 아니라 실제 운용형 shapi
 **리뷰 메모**
 
 파라미터가 많지만 역할이 분명합니다. 다만 `fx = -msg.force.x`처럼 본체 쪽 부호 해석이 하드코딩되어 있어서 문서화가 꼭 필요합니다.
+
+**상세 해설**
+
+지금 보여주신 화면에서 가장 빈약하게 보였던 부분이 바로 이 함수입니다. 실제로는 이 함수가 allocator 전체 성격을 거의 다 설명해 줍니다. 첫 번째 덩어리는 `wrench_cmd_topic`, `thruster_cmd_topic`, `imu_topic` 같은 입출력 연결입니다. 두 번째 덩어리는 `heave_gain`, `horizontal_output_gain`, `yaw_output_gain`, `vertical_output_gain`처럼 force/torque 축별 gain입니다. 세 번째 덩어리는 `torque_first_allocation`, `rear_vertical_bias`, `pitch_torque_gain`처럼 allocation 우선순위와 기체 성향을 반영하는 파라미터입니다.
+
+그리고 이 코드의 개성을 가장 잘 보여주는 것은 뒤쪽 compensation 파라미터들입니다. `level_horizontal_compensation_*`, `attitude_priority_horizontal_slowdown_*`, `surge_pitch_moment_*`, `imu_pitch_hold_*`는 단순한 `TAM pseudo-inverse`를 넘어서 실제 기체가 기울고, 전진하고, 자세를 유지할 때 어떤 출력을 내야 하는지를 allocator 수준에서 조정합니다. 즉 이 함수는 allocator의 철학서에 가깝습니다.
+
+**이 함수와 관련된 파라미터**
+
+- `wrench_cmd_topic`, `thruster_cmd_topic`, `imu_topic`: allocator가 무엇을 입력으로 받고 무엇을 출력할지 정합니다.
+- `heave_gain`, `horizontal_output_gain`, `vertical_output_gain`, `yaw_output_gain`: 각 축 요구를 실제 thruster 명령으로 얼마나 크게 반영할지 정하는 기본 gain입니다.
+- `torque_first_allocation`: 수직 그룹에서 heave보다 자세 토크를 먼저 만족시킬지 결정합니다.
+- `rear_vertical_bias`, `pitch_torque_gain`: 수직 thruster 분배 성향과 pitch 복원 특성을 조정합니다.
+- `level_horizontal_compensation_*`: 기체가 기울어진 상태에서 수평 이동이 heave로 새는 문제를 allocator 단계에서 보정합니다.
+- `attitude_priority_horizontal_slowdown_*`: 자세 토크 요구가 크면 horizontal 출력을 얼마나 줄일지 정합니다.
+- `surge_pitch_moment_*`: surge thrust가 만드는 pitch moment를 allocator 차원에서 보상합니다.
+- `imu_pitch_hold_*`: 현재 pitch와 target pitch 차이를 보고 추가적인 hold 보상을 넣습니다.
+- `slew_rate`, `max_output`, `output_scale`, `output_deadband`: 최종 actuator-friendly output shaping과 saturation 성격을 결정합니다.
 
 ```python
 def __init__(self):
@@ -689,6 +707,19 @@ def apply_slew_rate(self, target):
 **리뷰 메모**
 
 코드의 의도는 분명합니다. 다만 `Fx` 하드코딩 반전과 heuristic saturation은 읽는 사람에게 반드시 설명이 필요합니다.
+
+**상세 해설**
+
+이 함수는 allocator의 본체입니다. 먼저 입력 wrench를 읽고 내부 좌표계 기준으로 `fx`, `fy`, `fz`, `tx`, `ty`, `tz`를 해석합니다. 여기서 `fx = -msg.force.x`처럼 축 부호를 내부 convention에 맞게 뒤집는 부분이 있기 때문에, 이 함수는 좌표계 해석의 실제 출발점이기도 합니다.
+
+그 다음 수평 성분(`Fx`, `Fy`, `Tz`)과 수직 성분(`Fz`, `Tx`, `Ty`)을 분리해서 allocation을 수행하고, 보상 항들을 추가한 뒤 priority allocation, normalization, deadband, slew-rate를 순서대로 적용합니다. 즉 이 함수는 단순 수학 공식이 아니라 '요구 wrench를 실제 thruster array가 낼 수 있는 형태로 번역하는 전체 파이프라인'입니다.
+
+**이 함수와 관련된 파라미터**
+
+- `horizontal_output_gain`, `vertical_output_gain`, `yaw_output_gain`, `heave_gain`: 입력 wrench를 thruster 명령 크기로 스케일링하는 데 직접 들어갑니다.
+- `torque_first_allocation`: 수직 allocation에서 heave와 자세 토크 중 무엇을 먼저 보장할지 결정합니다.
+- `level_horizontal_compensation_*`, `surge_pitch_moment_*`, `imu_pitch_hold_*`: allocation 중간에 추가되는 보상 항의 크기와 활성 조건을 정합니다.
+- `slew_rate`, `max_output`, `output_scale`, `output_deadband`: 최종 thruster 출력을 다듬는 마지막 shaping 파라미터입니다.
 
 ```python
 def callback(self, msg: Wrench):

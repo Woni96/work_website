@@ -171,6 +171,8 @@ def wrap_to_pi(angle: float) -&gt; float:
             <p>이 유틸리티가 안정적이어야 목표 자세 계산과 yaw wrapping이 깨지지 않습니다. 특히 <code>wrap_to_pi()</code>는 yaw 오차가 <code>+π/-π</code> 경계에서 튀는 문제를 막아줍니다.</p>
             <h3>리뷰 메모</h3>
             <p>이 계층은 제어식의 기반이라서 작아 보여도 중요합니다. 자세 제어가 갑자기 반대로 튀거나 yaw 오차가 크게 보이는 문제는 여기서 시작되는 경우가 많습니다.</p>
+            
+            
           </article>
         </div>
       </section> <section id="init" class="review-section">
@@ -462,11 +464,14 @@ def wrap_to_pi(angle: float) -&gt; float:
           </article>
           <article class="review-card prose-card">
             <h3>의미</h3>
-            <p>노드의 토픽, 게인, 제한값, 보호 로직, yaw hold 정책을 전부 선언하고 상태 변수를 초기화합니다.</p>
+            <p>노드의 토픽, 게인, 제한값, 보호 로직, yaw hold 정책을 전부 선언하고 상태 변수를 초기화합니다. 즉 이 함수는 단순 constructor가 아니라 이 controller가 어떤 철학으로 동작할지 정의하는 설정 진입점입니다.</p>
             <h3>영향</h3>
             <p>이 함수가 곧 제어기의 운용 정책 선언부입니다. 어떤 입력을 받고 어떤 보호 로직이 켜지는지, yaw stick을 놓았을 때 어떤 감각으로 복귀하는지가 여기서 결정됩니다.</p>
             <h3>리뷰 메모</h3>
-            <p>파라미터가 많지만 모두 의미가 분명합니다. 다만 수동 입력 freshness를 위한 timestamp/state가 없는 점은 후반 제어 루프에서 stale manual state로 이어질 수 있습니다.</p>
+            <p>파라미터가 많지만 모두 의미가 분명합니다. 특히 이 함수 하나만 읽어도 이 자세 제어기가 <code>단순 자세 PID</code>가 아니라 <code>manual yaw override</code>, <code>trim hold</code>, <code>translation 보호</code>, <code>orientation filtering</code>을 가진 운용형 controller라는 점을 알 수 있습니다. 다만 수동 입력 freshness를 위한 timestamp/state가 없는 점은 후반 제어 루프에서 stale manual state로 이어질 수 있습니다.</p>
+            <h3>상세 해설</h3><p>이 함수에서 먼저 보아야 할 것은 파라미터가 어떤 덩어리로 나뉘는지입니다. 첫 번째 덩어리는 <code>imu_topic</code>, <code>manual_wrench_topic</code>, <code>output_torque_topic</code> 같은 입출력 토픽입니다. 두 번째 덩어리는 <code>kp_*</code>, <code>ki_*</code>, <code>kd_*</code>로 대표되는 기본 제어 게인입니다. 세 번째 덩어리는 <code>tx_limit</code>, <code>ty_limit</code>, <code>tz_limit</code>, <code>rp_torque_slew_rate</code> 같은 출력 shaping / safety 관련 파라미터입니다. 마지막으로 이 코드의 성격을 가장 잘 보여주는 것은 <code>yaw_hold_enabled</code>, <code>capture_yaw_target_on_release</code>, <code>xy_motion_protect_threshold</code>, <code>translation_tilt_ff_*</code>, <code>orientation_filter_*</code> 같은 운용 정책 파라미터입니다.</p>
+<p>즉 이 함수는 단순히 숫자를 로드하는 함수가 아니라, 기체를 어떤 감각으로 조종할 것인지 선언하는 정책 테이블입니다. 그래서 이 함수 설명이 빈약하면 전체 코드 해석이 얕아질 수밖에 없습니다.</p>
+            <h3>이 함수와 관련된 파라미터</h3><ul class="parameter-list"><li><strong><code>imu_topic</code>, <code>manual_wrench_topic</code>, <code>output_torque_topic</code></strong><span>센서 입력, pilot 입력, 최종 torque 출력이 어디를 통해 흐르는지 정합니다.</span></li><li><strong><code>kp_roll/pitch/yaw</code>, <code>ki_roll/pitch</code>, <code>kd_roll/pitch/yaw</code></strong><span>자세 오차에 대한 복원력과 damping의 기본 강도를 정하는 핵심 제어 파라미터입니다.</span></li><li><strong><code>tx_limit</code>, <code>ty_limit</code>, <code>tz_limit</code></strong><span>각 축 torque saturation 상한입니다. 기체를 세우는 힘보다 actuator 보호를 우선할 때 중요합니다.</span></li><li><strong><code>rp_torque_slew_rate</code></strong><span>roll/pitch torque가 한 주기에서 얼마나 급하게 바뀔 수 있는지 제한합니다.</span></li><li><strong><code>yaw_hold_enabled</code>, <code>capture_yaw_target_on_release</code>, <code>yaw_hold_settle_time_sec</code></strong><span>yaw stick을 놓은 뒤 heading hold가 어떤 감각으로 복귀할지 결정합니다.</span></li><li><strong><code>xy_motion_protect_threshold</code>, <code>strong_xy_motion_threshold</code>, <code>rp_scale_when_*</code></strong><span>translation 중 자세 hold를 얼마나 약하게 또는 강하게 유지할지 결정합니다.</span></li><li><strong><code>orientation_filter_*</code></strong><span>IMU 자세를 control attitude로 쓸 때 얼마나 부드럽게 필터링할지 정합니다.</span></li></ul>
           </article>
         </div>
       </section> <section id="section" class="review-section">
@@ -511,6 +516,8 @@ def _capture_current_yaw_as_target(self):
             <p>사용자가 조작을 놓았을 때 기체가 어느 자세로 돌아갈지 결정합니다. 운용감이 좋은지, trim이 유지되는지, yaw hold가 자연스러운지가 이 계층에 달려 있습니다.</p>
             <h3>리뷰 메모</h3>
             <p>이 코드의 운용 감각은 꽤 좋습니다. 특히 yaw target을 현재 yaw로 다시 잡는 설계는 실제 조종 감각을 부드럽게 만듭니다.</p>
+            
+            
           </article>
         </div>
       </section> <section id="imu-callback" class="review-section">
@@ -554,6 +561,8 @@ def _capture_current_yaw_as_target(self):
             <p>제어기의 모든 피드백이 여기서 들어옵니다. 처음 IMU를 받으면 초기 target을 캡처하기 때문에, 이 함수는 센서 수신과 target initialization을 동시에 담당합니다.</p>
             <h3>리뷰 메모</h3>
             <p>초기 target capture와 IMU 상태 갱신이 한 곳에 모여 있어 흐름은 명확합니다. 다만 manual freshness와는 독립이라 이후 control loop가 오래된 manual 입력을 그대로 읽을 수 있습니다.</p>
+            
+            
           </article>
         </div>
       </section> <section id="update-control-attitude-filter" class="review-section">
@@ -602,6 +611,8 @@ def _update_control_attitude_filter(self, dt: float):
             <p>센서 노이즈와 순간 흔들림을 줄이고 제어 대상 자세를 더 부드럽게 만듭니다. 즉 이 함수는 제어 입력의 품질을 개선하는 내부 observer 역할을 합니다.</p>
             <h3>리뷰 메모</h3>
             <p>이 필터는 attitude hold를 덜 거칠게 만들어 주는 좋은 계층입니다. 또한 <code>dt</code>가 비정상이면 reset하도록 만들어 센서 타이밍 문제에 비교적 안전합니다.</p>
+            
+            
           </article>
         </div>
       </section> <section id="translation-tilt-feedforward" class="review-section">
@@ -636,6 +647,8 @@ def _update_control_attitude_filter(self, dt: float):
             <p>이 함수가 켜지면 단순 PID 복원보다 더 적극적으로 자세를 유지하려고 합니다. 특히 기체가 이동하면서 생기는 pitch-up / roll-off 경향을 선제적으로 누를 수 있습니다.</p>
             <h3>리뷰 메모</h3>
             <p>기능 자체는 고급스럽지만, 튜닝 의존성이 큽니다. gain이 과하면 조종감이 뻣뻣해질 수 있어 실제 운용 로그와 함께 봐야 합니다.</p>
+            
+            
           </article>
         </div>
       </section> <section id="control-loop" class="review-section">
@@ -866,6 +879,9 @@ def _update_control_attitude_filter(self, dt: float):
             <p>이 함수의 동작이 곧 조종감입니다. 조종자가 translation 중인지, heave를 주는지, yaw stick을 놓았는지에 따라 토크 출력 정책이 바뀝니다.</p>
             <h3>리뷰 메모</h3>
             <p>구조는 매우 좋고 운용 의도도 분명합니다. 다만 manual wrench freshness가 없어서 <code>yaw_manual_active</code>, <code>heave_protect</code>, <code>xy_soft_trim</code>이 오래 남을 수 있는 리스크가 있습니다.</p>
+            <h3>상세 해설</h3><p>이 함수는 실제로 여러 개의 작은 상태 머신이 겹쳐진 형태입니다. 먼저 IMU/target/control_enabled 상태를 보고 제어를 수행할지 결정합니다. 그 다음 roll/pitch는 angle error + integral + rate damping으로 계산하고, yaw는 heading hold 상태인지 manual yaw 상태인지에 따라 완전히 다른 정책을 탑니다. 여기에 translation 중 trim 유지 약화, heave 중 yaw 보호, large tilt disable, body-rate limit, slew-rate 제한이 순서대로 겹칩니다.</p>
+<p>그래서 이 함수는 단순 PID 함수가 아니라, 실제 조종 감각을 조합하는 중앙 orchestration 함수라고 보는 편이 정확합니다. 문제 분석 시에도 &#x27;게인이 이상하다&#x27;보다 &#x27;지금 어떤 보호 모드가 켜졌는가&#x27;를 먼저 봐야 하는 이유가 여기 있습니다.</p>
+            
           </article>
         </div>
       </section> <section id="on-parameter-update" class="review-section">
@@ -1002,6 +1018,8 @@ def _update_control_attitude_filter(self, dt: float):
             <p>GUI나 runtime tuning에서 실시간으로 gain과 정책을 바꿀 수 있게 해줍니다. 실험 속도를 크게 올리는 대신, 파라미터 변경 시 즉시 제어 감각이 달라집니다.</p>
             <h3>리뷰 메모</h3>
             <p>runtime tuning을 적극적으로 지원하는 점은 강점입니다. 동시에 리뷰 관점에서는 파라미터 변화가 control loop에 어떤 영향을 주는지 문서가 꼭 필요하다는 뜻이기도 합니다.</p>
+            
+            
           </article>
         </div>
       </section>

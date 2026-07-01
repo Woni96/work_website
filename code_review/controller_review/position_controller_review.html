@@ -147,6 +147,8 @@ def quat_rotate_vector(q, v):
             <p>이 계층이 있어야 yaw가 바뀌어도 같은 world 위치를 유지할 수 있습니다. 즉 이 controller의 존재 이유 자체가 여기서 시작됩니다.</p>
             <h3>리뷰 메모</h3>
             <p>수학 유틸리티는 단순하지만 매우 중요합니다. 좌표계가 꼬이면 controller tuning 문제가 아니라 frame mismatch 문제가 됩니다.</p>
+            
+            
           </article>
         </div>
       </section> <section id="init" class="review-section">
@@ -312,11 +314,14 @@ def quat_rotate_vector(q, v):
           </article>
           <article class="review-card prose-card">
             <h3>의미</h3>
-            <p>DVL 입력 방식, gain, yaw damping, manual override, frame 정책, velocity integration fallback까지 초기화합니다.</p>
+            <p>DVL 입력 방식, gain, yaw damping, manual override, frame 정책, velocity integration fallback까지 초기화합니다. 즉 이 함수는 position hold가 어떤 센서 구성과 어떤 좌표계 해석을 전제로 돌아갈지를 정의합니다.</p>
             <h3>영향</h3>
             <p>position hold가 absolute position 기반인지 velocity integration 기반인지, manual release 시 target을 다시 잡을지, 어떤 frame으로 publish할지가 모두 여기서 결정됩니다.</p>
             <h3>리뷰 메모</h3>
             <p>실전 운용형 controller답게 파라미터 구성이 좋습니다. 다만 manual freshness timeout이 없어서 수동 입력이 stale일 때 hold 복귀가 늦어질 수 있습니다.</p>
+            <h3>상세 해설</h3><p>이 함수는 position controller를 단순 PD controller 이상으로 만들어 주는 핵심 구간입니다. 먼저 <code>dvl_topic</code>, <code>dvl_position_topic</code>, <code>imu_topic</code> 등으로 어떤 센서 조합을 사용할지 선언합니다. 그 다음 <code>kp_x/kd_x</code>, <code>kp_y/kd_y</code>로 기본 복원력과 감쇠를 정하고, <code>yaw_rate_damping_gain</code>, <code>manual_yaw_damping_boost</code>로 yaw 운동 중 position hold를 얼마나 보수적으로 할지 결정합니다.</p>
+<p>또 <code>use_dvl_position</code>, <code>integrate_dvl_velocity_when_position_unavailable</code>는 absolute position 기반인지 dead-reckoning fallback 기반인지 선택하게 해 줍니다. 즉 이 함수는 &#x27;위치제어기&#x27;를 초기화하는 것이 아니라, 실제 field condition에서 어떤 센서 가정과 어떤 hold 감각으로 운영할지 선언하는 함수라고 보는 편이 정확합니다.</p>
+            <h3>이 함수와 관련된 파라미터</h3><ul class="parameter-list"><li><strong><code>dvl_topic</code>, <code>dvl_position_topic</code>, <code>imu_topic</code>, <code>manual_wrench_topic</code></strong><span>position hold가 의존하는 센서와 pilot 입력 채널입니다.</span></li><li><strong><code>kp_x</code>, <code>kd_x</code>, <code>kp_y</code>, <code>kd_y</code></strong><span>XY 위치 오차를 planar force로 바꾸는 핵심 PD 게인입니다.</span></li><li><strong><code>yaw_rate_damping_gain</code>, <code>manual_yaw_damping_boost</code>, <code>manual_yaw_override_threshold</code></strong><span>yaw 운동/조작이 있을 때 XY hold를 얼마나 보수적으로 만들지 결정합니다.</span></li><li><strong><code>manual_xy_override_threshold</code>, <code>capture_target_on_manual_release</code></strong><span>manual XY 조작 중 auto hold를 끊고, release 후 hold target을 다시 잡는 정책입니다.</span></li><li><strong><code>valid_timeout_sec</code></strong><span>DVL 기반 reference가 stale인지 판단하는 유효 시간입니다.</span></li><li><strong><code>use_dvl_position</code>, <code>integrate_dvl_velocity_when_position_unavailable</code></strong><span>absolute position과 velocity fallback 중 어떤 전략을 쓸지 정합니다.</span></li><li><strong><code>dvl_mount_roll_deg</code>, <code>dvl_mount_pitch_deg</code>, <code>dvl_mount_yaw_deg</code></strong><span>DVL 장착 방향이 body frame과 어긋날 때 이를 보정합니다.</span></li></ul>
           </article>
         </div>
       </section> <section id="section" class="review-section">
@@ -370,6 +375,8 @@ def _dvl_position_is_finite(self, msg: PointStamped) -&gt; bool:
             <p>센서가 유효하지 않으면 output을 0으로 내리고, enable edge에서 hold target을 다시 캡처할 수 있습니다.</p>
             <h3>리뷰 메모</h3>
             <p>이 보조 계층 덕분에 publish 조건이 깔끔합니다. 실제 control law보다 앞단의 상태 판정이 잘 분리된 점이 장점입니다.</p>
+            
+            
           </article>
         </div>
       </section> <section id="manual-wrench-callback" class="review-section">
@@ -409,6 +416,8 @@ def _dvl_position_is_finite(self, msg: PointStamped) -&gt; bool:
             <p>조종자가 이동을 끝내고 stick을 놓았을 때 그 자리에서 poshold가 다시 잠기게 만드는 함수입니다.</p>
             <h3>리뷰 메모</h3>
             <p>운용감은 좋지만 freshness timeout이 없어서 마지막 manual XY가 남으면 poshold 복귀가 안 될 수 있습니다. 현재 코드의 대표적인 개선 후보입니다.</p>
+            
+            
           </article>
         </div>
       </section> <section id="dvl" class="review-section">
@@ -502,6 +511,8 @@ def dvl_callback(self, msg: DVLData):
             <p>센서 구성에 따라 absolute hold와 dead-reckoning hold를 모두 지원하게 해줍니다.</p>
             <h3>리뷰 메모</h3>
             <p>유연성이 높고 실제 운용에 유리합니다. 특히 <code>use_dvl_position=False</code> fallback 설계는 테스트 단계에서 큰 장점이 됩니다.</p>
+            
+            
           </article>
         </div>
       </section> <section id="publish-position-estimate" class="review-section">
@@ -530,6 +541,8 @@ def dvl_callback(self, msg: DVLData):
             <p>상위 시각화, 디버깅, 로깅에서 controller 내부 상태를 그대로 볼 수 있게 해줍니다.</p>
             <h3>리뷰 메모</h3>
             <p>작은 함수지만 디버깅 가치가 큽니다. 이런 상태 출력이 없으면 position hold 문제를 센서 문제와 구분하기 어렵습니다.</p>
+            
+            
           </article>
         </div>
       </section> <section id="publish-control-output" class="review-section">
@@ -596,6 +609,9 @@ def dvl_callback(self, msg: DVLData):
             <p>이 함수가 실제 position hold의 감각을 결정합니다. 특히 yaw 회전 중 damping boost와 body-frame force 변환이 핵심입니다.</p>
             <h3>리뷰 메모</h3>
             <p>구조는 명확하고 PD hold로서 좋습니다. 다만 <code>force_body_z</code>를 최종 출력에 포함시키는 부분은 설계 의도를 명시하지 않으면 depth와의 coupling을 읽는 사람이 헷갈릴 수 있습니다.</p>
+            <h3>상세 해설</h3><p>이 함수는 실제 position hold의 중심입니다. 하지만 단순히 오차를 force로 바꾸기 전에 먼저 <code>target_initialized</code>, <code>valid reference</code>, <code>armed</code>, <code>control_enabled</code>를 확인합니다. 즉 이 코드는 좋은 출력을 만드는 것보다, 잘못된 상태에서 출력을 내지 않는 것을 먼저 중요하게 봅니다.</p>
+<p>그 다음 error를 world frame에서 계산하고 yaw 상태에 따라 damping을 강화합니다. 이후 world force를 body frame으로 회전해 기체가 실제로 낼 수 있는 축으로 바꾸고, manual XY가 active면 auto force를 0으로 눌러 pilot 우선 정책을 구현합니다. 마지막에는 saturation과 deadband를 적용해 actuator-friendly한 force로 publish합니다.</p>
+            <h3>이 함수와 관련된 파라미터</h3><ul class="parameter-list"><li><strong><code>kp_x</code>, <code>kd_x</code>, <code>kp_y</code>, <code>kd_y</code></strong><span>오차와 속도를 force로 바꾸는 식에 직접 들어갑니다.</span></li><li><strong><code>yaw_rate_damping_gain</code>, <code>manual_yaw_damping_boost</code></strong><span>yaw motion이 클수록 derivative 성분을 얼마나 더 키울지 정합니다.</span></li><li><strong><code>max_force_x</code>, <code>max_force_y</code>, <code>max_force_z</code></strong><span>최종 force clamp 상한입니다.</span></li><li><strong><code>force_deadband</code></strong><span>아주 작은 force를 0으로 눌러 actuator chatter를 줄입니다.</span></li></ul>
           </article>
         </div>
       </section> <section id="on-parameter-update" class="review-section">
@@ -687,6 +703,8 @@ def dvl_callback(self, msg: DVLData):
             <p>테스트 중 poshold의 stiffness와 damping을 바로 바꿀 수 있습니다.</p>
             <h3>리뷰 메모</h3>
             <p>runtime tuning은 강점이지만, 어떤 파라미터가 어떤 함수를 통해 결과에 연결되는지 문서가 꼭 필요합니다. 이번 리뷰 문서가 그 연결을 설명하는 역할을 합니다.</p>
+            
+            
           </article>
         </div>
       </section>

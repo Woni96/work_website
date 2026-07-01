@@ -159,6 +159,8 @@ def quat_to_rpy(x: float, y: float, z: float, w: float):
             <p>allocation 행렬과 IMU 기반 보상 항의 수학적 기반을 제공합니다.</p>
             <h3>리뷰 메모</h3>
             <p>작은 함수지만 allocator가 단순 mixer가 아니라 IMU-aware allocation이라는 점을 보여줍니다.</p>
+            
+            
           </article>
         </div>
       </section> <section id="init" class="review-section">
@@ -424,11 +426,14 @@ def quat_to_rpy(x: float, y: float, z: float, w: float):
           </article>
           <article class="review-card prose-card">
             <h3>의미</h3>
-            <p>thruster sign, gain, compensation, priority, output shaping, runtime tuning 관련 모든 파라미터를 선언합니다.</p>
+            <p>thruster sign, gain, compensation, priority, output shaping, runtime tuning 관련 모든 파라미터를 선언합니다. 즉 allocator가 단순 행렬 연산 노드인지, 실제 기체 거동까지 반영하는 smart output layer인지가 여기서 결정됩니다.</p>
             <h3>영향</h3>
             <p>allocator가 단순 <code>TAM * u = τ</code> 계산기가 아니라 실제 운용형 shaping node라는 점이 여기서 드러납니다.</p>
             <h3>리뷰 메모</h3>
             <p>파라미터가 많지만 역할이 분명합니다. 다만 <code>fx = -msg.force.x</code>처럼 본체 쪽 부호 해석이 하드코딩되어 있어서 문서화가 꼭 필요합니다.</p>
+            <h3>상세 해설</h3><p>지금 보여주신 화면에서 가장 빈약하게 보였던 부분이 바로 이 함수입니다. 실제로는 이 함수가 allocator 전체 성격을 거의 다 설명해 줍니다. 첫 번째 덩어리는 <code>wrench_cmd_topic</code>, <code>thruster_cmd_topic</code>, <code>imu_topic</code> 같은 입출력 연결입니다. 두 번째 덩어리는 <code>heave_gain</code>, <code>horizontal_output_gain</code>, <code>yaw_output_gain</code>, <code>vertical_output_gain</code>처럼 force/torque 축별 gain입니다. 세 번째 덩어리는 <code>torque_first_allocation</code>, <code>rear_vertical_bias</code>, <code>pitch_torque_gain</code>처럼 allocation 우선순위와 기체 성향을 반영하는 파라미터입니다.</p>
+<p>그리고 이 코드의 개성을 가장 잘 보여주는 것은 뒤쪽 compensation 파라미터들입니다. <code>level_horizontal_compensation_*</code>, <code>attitude_priority_horizontal_slowdown_*</code>, <code>surge_pitch_moment_*</code>, <code>imu_pitch_hold_*</code>는 단순한 <code>TAM pseudo-inverse</code>를 넘어서 실제 기체가 기울고, 전진하고, 자세를 유지할 때 어떤 출력을 내야 하는지를 allocator 수준에서 조정합니다. 즉 이 함수는 allocator의 철학서에 가깝습니다.</p>
+            <h3>이 함수와 관련된 파라미터</h3><ul class="parameter-list"><li><strong><code>wrench_cmd_topic</code>, <code>thruster_cmd_topic</code>, <code>imu_topic</code></strong><span>allocator가 무엇을 입력으로 받고 무엇을 출력할지 정합니다.</span></li><li><strong><code>heave_gain</code>, <code>horizontal_output_gain</code>, <code>vertical_output_gain</code>, <code>yaw_output_gain</code></strong><span>각 축 요구를 실제 thruster 명령으로 얼마나 크게 반영할지 정하는 기본 gain입니다.</span></li><li><strong><code>torque_first_allocation</code></strong><span>수직 그룹에서 heave보다 자세 토크를 먼저 만족시킬지 결정합니다.</span></li><li><strong><code>rear_vertical_bias</code>, <code>pitch_torque_gain</code></strong><span>수직 thruster 분배 성향과 pitch 복원 특성을 조정합니다.</span></li><li><strong><code>level_horizontal_compensation_*</code></strong><span>기체가 기울어진 상태에서 수평 이동이 heave로 새는 문제를 allocator 단계에서 보정합니다.</span></li><li><strong><code>attitude_priority_horizontal_slowdown_*</code></strong><span>자세 토크 요구가 크면 horizontal 출력을 얼마나 줄일지 정합니다.</span></li><li><strong><code>surge_pitch_moment_*</code></strong><span>surge thrust가 만드는 pitch moment를 allocator 차원에서 보상합니다.</span></li><li><strong><code>imu_pitch_hold_*</code></strong><span>현재 pitch와 target pitch 차이를 보고 추가적인 hold 보상을 넣습니다.</span></li><li><strong><code>slew_rate</code>, <code>max_output</code>, <code>output_scale</code>, <code>output_deadband</code></strong><span>최종 actuator-friendly output shaping과 saturation 성격을 결정합니다.</span></li></ul>
           </article>
         </div>
       </section> <section id="imu-attitude" class="review-section">
@@ -475,6 +480,8 @@ def joy_speed_scale_callback(self, msg: Float64):
             <p>이 함수들이 있어 allocator는 단순 분배가 아니라 현재 자세와 운용 상태를 고려하는 smart mixer가 됩니다.</p>
             <h3>리뷰 메모</h3>
             <p>상위 controller와 allocator가 느슨하지만 의미 있게 연결되어 있습니다.</p>
+            
+            
           </article>
         </div>
       </section> <section id="compensation" class="review-section">
@@ -570,6 +577,8 @@ def imu_pitch_hold_compensation(self, fx: float) -&gt; float:
             <p>이 함수들이 켜지면 allocator는 단순 분배기에서 벗어나, 기체 자세와 운동 모드에 따라 더 실용적인 출력을 냅니다.</p>
             <h3>리뷰 메모</h3>
             <p>이 부분이 가장 실험적이면서도 고급스럽습니다. 동시에 gain 의존성이 큰 영역이므로 기능별 로그와 문서가 꼭 있어야 합니다.</p>
+            
+            
           </article>
         </div>
       </section> <section id="init-matrices" class="review-section">
@@ -653,6 +662,8 @@ def imu_pitch_hold_compensation(self, fx: float) -&gt; float:
             <p>기체 배치가 이 함수에 담깁니다. 행렬이 틀리면 heave만 줘도 pitch가 생기고, yaw만 줘도 sway가 생깁니다.</p>
             <h3>리뷰 메모</h3>
             <p>allocator 해석의 핵심입니다. 실제 모델과 이 함수의 thruster geometry가 맞는지 항상 함께 검증해야 합니다.</p>
+            
+            
           </article>
         </div>
       </section> <section id="allocation-shaping" class="review-section">
@@ -728,6 +739,8 @@ def apply_slew_rate(self, target):
             <p>수치적으로는 같은 wrench라도 actuator 친화성은 크게 달라집니다. 이 함수들이 saturation 시 거동과 응답 속도를 정합니다.</p>
             <h3>리뷰 메모</h3>
             <p>현재 allocator가 heuristic allocator라는 점이 가장 잘 드러나는 구간입니다. 이 계층 덕분에 practical하지만, 최적화 기반 allocator와는 성격이 다릅니다.</p>
+            
+            
           </article>
         </div>
       </section> <section id="callback" class="review-section">
@@ -875,6 +888,9 @@ def apply_slew_rate(self, target):
             <p>이 함수가 곧 thruster command의 최종 형태를 결정합니다. 어떤 축 요구가 우선되는지, saturation에서 무엇을 희생하는지가 여기서 결정됩니다.</p>
             <h3>리뷰 메모</h3>
             <p>코드의 의도는 분명합니다. 다만 <code>Fx</code> 하드코딩 반전과 heuristic saturation은 읽는 사람에게 반드시 설명이 필요합니다.</p>
+            <h3>상세 해설</h3><p>이 함수는 allocator의 본체입니다. 먼저 입력 wrench를 읽고 내부 좌표계 기준으로 <code>fx</code>, <code>fy</code>, <code>fz</code>, <code>tx</code>, <code>ty</code>, <code>tz</code>를 해석합니다. 여기서 <code>fx = -msg.force.x</code>처럼 축 부호를 내부 convention에 맞게 뒤집는 부분이 있기 때문에, 이 함수는 좌표계 해석의 실제 출발점이기도 합니다.</p>
+<p>그 다음 수평 성분(<code>Fx</code>, <code>Fy</code>, <code>Tz</code>)과 수직 성분(<code>Fz</code>, <code>Tx</code>, <code>Ty</code>)을 분리해서 allocation을 수행하고, 보상 항들을 추가한 뒤 priority allocation, normalization, deadband, slew-rate를 순서대로 적용합니다. 즉 이 함수는 단순 수학 공식이 아니라 &#x27;요구 wrench를 실제 thruster array가 낼 수 있는 형태로 번역하는 전체 파이프라인&#x27;입니다.</p>
+            <h3>이 함수와 관련된 파라미터</h3><ul class="parameter-list"><li><strong><code>horizontal_output_gain</code>, <code>vertical_output_gain</code>, <code>yaw_output_gain</code>, <code>heave_gain</code></strong><span>입력 wrench를 thruster 명령 크기로 스케일링하는 데 직접 들어갑니다.</span></li><li><strong><code>torque_first_allocation</code></strong><span>수직 allocation에서 heave와 자세 토크 중 무엇을 먼저 보장할지 결정합니다.</span></li><li><strong><code>level_horizontal_compensation_*</code>, <code>surge_pitch_moment_*</code>, <code>imu_pitch_hold_*</code></strong><span>allocation 중간에 추가되는 보상 항의 크기와 활성 조건을 정합니다.</span></li><li><strong><code>slew_rate</code>, <code>max_output</code>, <code>output_scale</code>, <code>output_deadband</code></strong><span>최종 thruster 출력을 다듬는 마지막 shaping 파라미터입니다.</span></li></ul>
           </article>
         </div>
       </section> <section id="on-parameter-update" class="review-section">
@@ -998,6 +1014,8 @@ def apply_slew_rate(self, target):
             <p>allocator tuning을 빠르게 반복할 수 있게 해줍니다.</p>
             <h3>리뷰 메모</h3>
             <p>실험 속도를 크게 올리는 좋은 구조입니다. 이번 리뷰 문서에서 함수-파라미터 연결을 설명하는 이유도 이 함수 때문입니다.</p>
+            
+            
           </article>
         </div>
       </section>
