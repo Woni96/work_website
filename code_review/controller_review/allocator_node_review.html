@@ -1,0 +1,1807 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Allocator Review</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body class="detail-body">
+  <div class="detail-shell">
+    <aside class="detail-sidebar">
+      <a class="back-link" href="index.html">← 리뷰 홈으로</a>
+      <p class="eyebrow">Controller Code Review</p>
+      <h1>Allocator Review</h1>
+      <p class="meta"><code>code_review/code/allocator_node.py</code></p>
+      <nav class="toc">
+        <a href="#role">역할</a>
+        <a href="#map">함수 맵</a>
+        <a href="#section">기본 유틸리티</a>
+<a href="#init">`__init__()`</a>
+<a href="#imu-attitude">IMU / Attitude 입력 함수</a>
+<a href="#compensation">Compensation 함수들</a>
+<a href="#init-matrices">`init_matrices()`</a>
+<a href="#allocation-shaping">Allocation / Shaping 보조 함수</a>
+<a href="#callback">`callback()`</a>
+<a href="#on-parameter-update">`on_parameter_update()`</a>
+        <a href="#full-source">전체 코드</a>
+      </nav>
+    </aside>
+
+    <main class="detail-content">
+      <section id="role" class="hero">
+        <div>
+          <p class="eyebrow">Module Overview</p>
+          <h2>Allocator Review</h2>
+          <p>이 코드는 최종 <code>Wrench(Fx, Fy, Fz, Tx, Ty, Tz)</code>를 8개 thruster 명령으로 바꾸는 control allocation 노드입니다.</p>
+          <p>설계의 핵심은 <code>수평 4개(Fx, Fy, Tz)</code>와 <code>수직 4개(Fz, Tx, Ty)</code>를 분리해서 pseudo-inverse와 priority logic으로 다루는 것입니다.</p>
+          <p>리뷰 포인트는 <code>행렬이 실제 기체 배치를 어떻게 표현하는지</code>, <code>수평/수직 allocator가 어떤 철학으로 분리되는지</code>, <code>compensation 항이 왜 필요한지</code>, <code>최종 shaping과 slew-rate가 actuator에 어떤 영향을 주는지</code>입니다.</p>
+        </div>
+      </section>
+
+      <section id="map" class="panel">
+        <div class="panel-heading">
+          <div>
+            <p class="section-kicker">Function Map</p>
+            <h2>이 파일에 있는 함수들</h2>
+          </div>
+        </div>
+        <div class="review-card">
+          <ul class="function-map">
+            <li><code>normalize()</code></li>
+<li><code>normalize_group_unit()</code></li>
+<li><code>quat_to_rotation_z_row()</code></li>
+<li><code>quat_to_rpy()</code></li>
+<li><code>__init__()</code></li>
+<li><code>imu_callback()</code></li>
+<li><code>cmd_attitude_callback()</code></li>
+<li><code>cmd_attitude_trim_callback()</code></li>
+<li><code>output_scale_callback()</code></li>
+<li><code>joy_speed_scale_callback()</code></li>
+<li><code>level_horizontal_heave_compensation()</code></li>
+<li><code>attitude_priority_horizontal_scale()</code></li>
+<li><code>surge_pitch_moment_compensation()</code></li>
+<li><code>imu_pitch_hold_compensation()</code></li>
+<li><code>init_matrices()</code></li>
+<li><code>apply_deadband()</code></li>
+<li><code>add_component_with_headroom()</code></li>
+<li><code>allocate_priority_components()</code></li>
+<li><code>apply_slew_rate()</code></li>
+<li><code>callback()</code></li>
+<li><code>on_parameter_update()</code></li>
+<li><code>main()</code></li>
+          </ul>
+        </div>
+      </section>
+
+      <section id="section" class="review-section">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">Function Review</p>
+            <h2>기본 유틸리티</h2>
+          </div>
+        </div>
+        <div class="review-grid">
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>행렬 생성과 IMU 보상 계산에 필요한 벡터/자세 유틸리티입니다.</p>
+            <h3>영향</h3>
+            <p>allocation 행렬과 IMU 기반 보상 항의 수학적 기반을 제공합니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>작은 함수지만 allocator가 단순 mixer가 아니라 IMU-aware allocation이라는 점을 보여줍니다.</p>
+          </article>
+          <article class="review-card code-card">
+            <h3>실제 코드</h3>
+            <pre><code>def normalize(v):
+    v = np.array(v, dtype=float)
+    n = np.linalg.norm(v)
+    if n &lt; 1e-9:
+        return v
+    return v / n
+
+def normalize_group_unit(v):
+    arr = np.array(v, dtype=float)
+    max_abs = float(np.max(np.abs(arr)))
+    if max_abs &gt; 1.0:
+        arr = arr / max_abs
+    return arr
+
+def quat_to_rotation_z_row(x: float, y: float, z: float, w: float):
+    n = math.sqrt(x * x + y * y + z * z + w * w)
+    if n &lt; 1e-12:
+        return (0.0, 0.0, 1.0)
+    x /= n
+    y /= n
+    z /= n
+    w /= n
+
+    return (
+        2.0 * (x * z - w * y),
+        2.0 * (y * z + w * x),
+        1.0 - 2.0 * (x * x + y * y),
+    )
+
+def quat_to_rpy(x: float, y: float, z: float, w: float):
+    n = math.sqrt(x * x + y * y + z * z + w * w)
+    if n &lt; 1e-12:
+        return 0.0, 0.0, 0.0
+    x /= n
+    y /= n
+    z /= n
+    w /= n
+
+    sinr_cosp = 2.0 * (w * x + y * z)
+    cosr_cosp = 1.0 - 2.0 * (x * x + y * y)
+    roll = math.atan2(sinr_cosp, cosr_cosp)
+
+    sinp = 2.0 * (w * y - z * x)
+    if abs(sinp) &gt;= 1.0:
+        pitch = math.copysign(math.pi / 2.0, sinp)
+    else:
+        pitch = math.asin(sinp)
+
+    siny_cosp = 2.0 * (w * z + x * y)
+    cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
+    yaw = math.atan2(siny_cosp, cosy_cosp)
+
+    return roll, pitch, yaw</code></pre>
+          </article>
+        </div>
+      </section> <section id="init" class="review-section">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">Function Review</p>
+            <h2>`__init__()`</h2>
+          </div>
+        </div>
+        <div class="review-grid">
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>thruster sign, gain, compensation, priority, output shaping, runtime tuning 관련 모든 파라미터를 선언합니다.</p>
+            <h3>영향</h3>
+            <p>allocator가 단순 <code>TAM * u = τ</code> 계산기가 아니라 실제 운용형 shaping node라는 점이 여기서 드러납니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>파라미터가 많지만 역할이 분명합니다. 다만 <code>fx = -msg.force.x</code>처럼 본체 쪽 부호 해석이 하드코딩되어 있어서 문서화가 꼭 필요합니다.</p>
+          </article>
+          <article class="review-card code-card">
+            <h3>실제 코드</h3>
+            <pre><code>def __init__(self):
+    super().__init__(&#x27;allocator_node&#x27;)
+
+    # 실제 plugin / can 방향 반대면 여기 부호만 바꾸면 됨
+    self.signs = np.array([
+        1.0, 1.0, 1.0, 1.0,   # thruster 1~4
+        1.0, 1.0, 1.0, 1.0    # thruster 5~8
+    ], dtype=float)
+
+    # -------------------------
+    # parameters
+    # -------------------------
+    self.declare_parameter(&#x27;wrench_cmd_topic&#x27;, &#x27;/rov/wrench_cmd&#x27;)
+    self.declare_parameter(&#x27;thruster_cmd_topic&#x27;, &#x27;/thruster_cmd&#x27;)
+    self.declare_parameter(&#x27;imu_topic&#x27;, &#x27;/imu&#x27;)
+    self.declare_parameter(&#x27;cmd_attitude_topic&#x27;, &#x27;/cmd_attitude&#x27;)
+    self.declare_parameter(&#x27;cmd_attitude_trim_topic&#x27;, &#x27;/cmd_attitude_trim&#x27;)
+    self.declare_parameter(&#x27;output_scale_topic&#x27;, &#x27;/rov/output_scale&#x27;)
+    self.declare_parameter(&#x27;joy_speed_scale_topic&#x27;, &#x27;/rov/joy_speed_scale&#x27;)
+    self.declare_parameter(&#x27;use_joy_speed_scale_for_output&#x27;, False)
+    self.declare_parameter(&#x27;heave_gain&#x27;, 1.4)
+    self.declare_parameter(&#x27;horizontal_output_gain&#x27;, 2.5)
+    self.declare_parameter(&#x27;yaw_output_gain&#x27;, 0.35)
+    self.declare_parameter(&#x27;vertical_output_gain&#x27;, 3.0)
+    self.declare_parameter(&#x27;rear_vertical_bias&#x27;, 0.0)
+    self.declare_parameter(&#x27;pitch_torque_gain&#x27;, 1.5)
+    self.declare_parameter(&#x27;torque_first_allocation&#x27;, True)
+    self.declare_parameter(&#x27;slew_rate&#x27;, 4.0)
+    self.declare_parameter(&#x27;max_output&#x27;, 1.0)
+    self.declare_parameter(&#x27;output_scale&#x27;, 0.25)
+    self.declare_parameter(&#x27;output_deadband&#x27;, 0.02)
+    self.declare_parameter(&#x27;level_horizontal_compensation_enabled&#x27;, True)
+    self.declare_parameter(&#x27;level_horizontal_compensation_gain&#x27;, 1.0)
+    self.declare_parameter(&#x27;level_horizontal_compensation_max&#x27;, 0.5)
+    self.declare_parameter(&#x27;level_horizontal_compensation_heave_sign&#x27;, -1.0)
+    self.declare_parameter(&#x27;level_horizontal_compensation_min_z&#x27;, 0.35)
+    self.declare_parameter(&#x27;level_horizontal_compensation_uses_spare_only&#x27;, True)
+    self.declare_parameter(&#x27;attitude_priority_horizontal_slowdown_enabled&#x27;, False)
+    self.declare_parameter(&#x27;attitude_priority_horizontal_slowdown_start&#x27;, 0.06)
+    self.declare_parameter(&#x27;attitude_priority_horizontal_slowdown_full&#x27;, 0.12)
+    self.declare_parameter(&#x27;attitude_priority_horizontal_min_scale&#x27;, 0.25)
+    self.declare_parameter(&#x27;surge_pitch_moment_compensation_enabled&#x27;, False)
+    self.declare_parameter(&#x27;surge_pitch_moment_gain&#x27;, -0.12)
+    self.declare_parameter(&#x27;surge_pitch_moment_max&#x27;, 0.12)
+    self.declare_parameter(&#x27;surge_pitch_moment_min_surge&#x27;, 0.03)
+    self.declare_parameter(&#x27;surge_pitch_moment_target_gate_enabled&#x27;, True)
+    self.declare_parameter(&#x27;surge_pitch_moment_min_target_deg&#x27;, 3.0)
+    self.declare_parameter(&#x27;surge_pitch_moment_full_target_deg&#x27;, 20.0)
+    self.declare_parameter(&#x27;imu_pitch_hold_compensation_enabled&#x27;, False)
+    self.declare_parameter(&#x27;imu_pitch_hold_gain&#x27;, 0.25)
+    self.declare_parameter(&#x27;imu_pitch_hold_max&#x27;, 0.10)
+    self.declare_parameter(&#x27;imu_pitch_hold_deadband_deg&#x27;, 1.0)
+    self.declare_parameter(&#x27;imu_pitch_hold_min_surge&#x27;, 0.03)
+
+    self.wrench_cmd_topic = str(self.get_parameter(&#x27;wrench_cmd_topic&#x27;).value)
+    self.thruster_cmd_topic = str(self.get_parameter(&#x27;thruster_cmd_topic&#x27;).value)
+    self.imu_topic = str(self.get_parameter(&#x27;imu_topic&#x27;).value)
+    self.cmd_attitude_topic = str(self.get_parameter(&#x27;cmd_attitude_topic&#x27;).value)
+    self.cmd_attitude_trim_topic = str(self.get_parameter(&#x27;cmd_attitude_trim_topic&#x27;).value)
+    self.output_scale_topic = str(self.get_parameter(&#x27;output_scale_topic&#x27;).value)
+    self.joy_speed_scale_topic = str(self.get_parameter(&#x27;joy_speed_scale_topic&#x27;).value)
+    self.use_joy_speed_scale_for_output = bool(
+        self.get_parameter(&#x27;use_joy_speed_scale_for_output&#x27;).value
+    )
+    self.heave_gain = float(self.get_parameter(&#x27;heave_gain&#x27;).value)
+    self.horizontal_output_gain = float(self.get_parameter(&#x27;horizontal_output_gain&#x27;).value)
+    self.yaw_output_gain = float(self.get_parameter(&#x27;yaw_output_gain&#x27;).value)
+    self.vertical_output_gain = float(self.get_parameter(&#x27;vertical_output_gain&#x27;).value)
+    self.rear_vertical_bias = float(self.get_parameter(&#x27;rear_vertical_bias&#x27;).value)
+    self.pitch_torque_gain = float(self.get_parameter(&#x27;pitch_torque_gain&#x27;).value)
+    self.torque_first_allocation = bool(self.get_parameter(&#x27;torque_first_allocation&#x27;).value)
+    self.slew_rate = float(self.get_parameter(&#x27;slew_rate&#x27;).value)
+    self.max_output = float(self.get_parameter(&#x27;max_output&#x27;).value)
+    self.output_scale = float(self.get_parameter(&#x27;output_scale&#x27;).value)
+    self.output_deadband = float(self.get_parameter(&#x27;output_deadband&#x27;).value)
+    self.level_horizontal_compensation_enabled = bool(
+        self.get_parameter(&#x27;level_horizontal_compensation_enabled&#x27;).value
+    )
+    self.level_horizontal_compensation_gain = float(
+        self.get_parameter(&#x27;level_horizontal_compensation_gain&#x27;).value
+    )
+    self.level_horizontal_compensation_max = float(
+        self.get_parameter(&#x27;level_horizontal_compensation_max&#x27;).value
+    )
+    self.level_horizontal_compensation_heave_sign = float(
+        self.get_parameter(&#x27;level_horizontal_compensation_heave_sign&#x27;).value
+    )
+    self.level_horizontal_compensation_min_z = float(
+        self.get_parameter(&#x27;level_horizontal_compensation_min_z&#x27;).value
+    )
+    self.level_horizontal_compensation_uses_spare_only = bool(
+        self.get_parameter(&#x27;level_horizontal_compensation_uses_spare_only&#x27;).value
+    )
+    self.attitude_priority_horizontal_slowdown_enabled = bool(
+        self.get_parameter(&#x27;attitude_priority_horizontal_slowdown_enabled&#x27;).value
+    )
+    self.attitude_priority_horizontal_slowdown_start = float(
+        self.get_parameter(&#x27;attitude_priority_horizontal_slowdown_start&#x27;).value
+    )
+    self.attitude_priority_horizontal_slowdown_full = float(
+        self.get_parameter(&#x27;attitude_priority_horizontal_slowdown_full&#x27;).value
+    )
+    self.attitude_priority_horizontal_min_scale = float(
+        self.get_parameter(&#x27;attitude_priority_horizontal_min_scale&#x27;).value
+    )
+    self.surge_pitch_moment_compensation_enabled = bool(
+        self.get_parameter(&#x27;surge_pitch_moment_compensation_enabled&#x27;).value
+    )
+    self.surge_pitch_moment_gain = float(
+        self.get_parameter(&#x27;surge_pitch_moment_gain&#x27;).value
+    )
+    self.surge_pitch_moment_max = float(
+        self.get_parameter(&#x27;surge_pitch_moment_max&#x27;).value
+    )
+    self.surge_pitch_moment_min_surge = float(
+        self.get_parameter(&#x27;surge_pitch_moment_min_surge&#x27;).value
+    )
+    self.surge_pitch_moment_target_gate_enabled = bool(
+        self.get_parameter(&#x27;surge_pitch_moment_target_gate_enabled&#x27;).value
+    )
+    self.surge_pitch_moment_min_target = math.radians(
+        float(self.get_parameter(&#x27;surge_pitch_moment_min_target_deg&#x27;).value)
+    )
+    self.surge_pitch_moment_full_target = math.radians(
+        float(self.get_parameter(&#x27;surge_pitch_moment_full_target_deg&#x27;).value)
+    )
+    self.imu_pitch_hold_compensation_enabled = bool(
+        self.get_parameter(&#x27;imu_pitch_hold_compensation_enabled&#x27;).value
+    )
+    self.imu_pitch_hold_gain = float(
+        self.get_parameter(&#x27;imu_pitch_hold_gain&#x27;).value
+    )
+    self.imu_pitch_hold_max = float(
+        self.get_parameter(&#x27;imu_pitch_hold_max&#x27;).value
+    )
+    self.imu_pitch_hold_deadband = math.radians(
+        float(self.get_parameter(&#x27;imu_pitch_hold_deadband_deg&#x27;).value)
+    )
+    self.imu_pitch_hold_min_surge = float(
+        self.get_parameter(&#x27;imu_pitch_hold_min_surge&#x27;).value
+    )
+
+    # torque gain
+    self.roll_torque_gain = 1.0
+    self.yaw_torque_gain = 1.0
+
+    # 이전 출력 저장 (slew rate용)
+    self.prev_thrust = np.zeros(8, dtype=float)
+    self.last_slew_time = None
+    self.have_imu = False
+    self.world_z_from_body = (0.0, 0.0, 1.0)
+    self.current_roll = 0.0
+    self.current_pitch = 0.0
+    self.current_yaw = 0.0
+    self.target_roll = 0.0
+    self.target_pitch = 0.0
+
+    self.sub = self.create_subscription(
+        Wrench,
+        self.wrench_cmd_topic,
+        self.callback,
+        CONTROL_SUB_QOS
+    )
+    self.imu_sub = self.create_subscription(
+        Imu,
+        self.imu_topic,
+        self.imu_callback,
+        CONTROL_SUB_QOS
+    )
+    self.cmd_attitude_sub = self.create_subscription(
+        Vector3,
+        self.cmd_attitude_topic,
+        self.cmd_attitude_callback,
+        CONTROL_SUB_QOS
+    )
+    self.cmd_attitude_trim_sub = self.create_subscription(
+        Vector3,
+        self.cmd_attitude_trim_topic,
+        self.cmd_attitude_trim_callback,
+        CONTROL_SUB_QOS
+    )
+    self.output_scale_sub = self.create_subscription(
+        Float64,
+        self.output_scale_topic,
+        self.output_scale_callback,
+        CONTROL_SUB_QOS
+    )
+    self.joy_speed_scale_sub = self.create_subscription(
+        Float64,
+        self.joy_speed_scale_topic,
+        self.joy_speed_scale_callback,
+        CONTROL_SUB_QOS
+    )
+
+    self.pub = self.create_publisher(
+        Float64MultiArray,
+        self.thruster_cmd_topic,
+        10
+    )
+
+    self.init_matrices()
+
+    # 런타임 파라미터 업데이트 콜백 등록
+    self.add_on_set_parameters_callback(self.on_parameter_update)
+
+    self.get_logger().info(&#x27;Allocator node started (priority allocator)&#x27;)
+    self.get_logger().info(
+        f&#x27;wrench_cmd_topic={self.wrench_cmd_topic}, &#x27;
+        f&#x27;thruster_cmd_topic={self.thruster_cmd_topic}, &#x27;
+        f&#x27;imu_topic={self.imu_topic}, &#x27;
+        f&#x27;cmd_attitude_topic={self.cmd_attitude_topic}, &#x27;
+        f&#x27;cmd_attitude_trim_topic={self.cmd_attitude_trim_topic}, &#x27;
+        f&#x27;output_scale_topic={self.output_scale_topic}, &#x27;
+        f&#x27;joy_speed_scale_topic={self.joy_speed_scale_topic}, &#x27;
+        f&#x27;use_joy_speed_scale_for_output={self.use_joy_speed_scale_for_output}, &#x27;
+        f&#x27;heave_gain={self.heave_gain:.3f}, &#x27;
+        f&#x27;horizontal_output_gain={self.horizontal_output_gain:.3f}, &#x27;
+        f&#x27;yaw_output_gain={self.yaw_output_gain:.3f}, &#x27;
+        f&#x27;vertical_output_gain={self.vertical_output_gain:.3f}, &#x27;
+        f&#x27;rear_vertical_bias={self.rear_vertical_bias:.3f}, &#x27;
+        f&#x27;pitch_torque_gain={self.pitch_torque_gain:.3f}, &#x27;
+        f&#x27;torque_first_allocation={self.torque_first_allocation}, &#x27;
+        f&#x27;slew_rate={self.slew_rate:.3f}/s, &#x27;
+        f&#x27;max_output={self.max_output:.3f}, &#x27;
+        f&#x27;output_scale={self.output_scale:.3f}, &#x27;
+        f&#x27;output_deadband={self.output_deadband:.3f}, &#x27;
+        f&#x27;level_horizontal_compensation=&#x27;
+        f&#x27;{self.level_horizontal_compensation_enabled}, &#x27;
+        f&#x27;gain={self.level_horizontal_compensation_gain:.3f}, &#x27;
+        f&#x27;max={self.level_horizontal_compensation_max:.3f}, &#x27;
+        f&#x27;heave_sign={self.level_horizontal_compensation_heave_sign:.3f}, &#x27;
+        f&#x27;min_z={self.level_horizontal_compensation_min_z:.3f}, &#x27;
+        f&#x27;level_comp_spare_only={self.level_horizontal_compensation_uses_spare_only}, &#x27;
+        f&#x27;attitude_priority_horizontal_slowdown=&#x27;
+        f&#x27;{self.attitude_priority_horizontal_slowdown_enabled}, &#x27;
+        f&#x27;start={self.attitude_priority_horizontal_slowdown_start:.3f}, &#x27;
+        f&#x27;full={self.attitude_priority_horizontal_slowdown_full:.3f}, &#x27;
+        f&#x27;min_scale={self.attitude_priority_horizontal_min_scale:.3f}, &#x27;
+        f&#x27;surge_pitch_moment_comp={self.surge_pitch_moment_compensation_enabled}, &#x27;
+        f&#x27;surge_pitch_gain={self.surge_pitch_moment_gain:.3f}, &#x27;
+        f&#x27;surge_pitch_max={self.surge_pitch_moment_max:.3f}, &#x27;
+        f&#x27;surge_pitch_min_surge={self.surge_pitch_moment_min_surge:.3f}, &#x27;
+        f&#x27;surge_pitch_target_gate={self.surge_pitch_moment_target_gate_enabled}, &#x27;
+        f&#x27;imu_pitch_hold_comp={self.imu_pitch_hold_compensation_enabled}, &#x27;
+        f&#x27;imu_pitch_hold_gain={self.imu_pitch_hold_gain:.3f}, &#x27;
+        f&#x27;imu_pitch_hold_max={self.imu_pitch_hold_max:.3f}, &#x27;
+        f&#x27;roll_torque_gain={self.roll_torque_gain:.3f}, &#x27;
+        f&#x27;pitch_torque_gain={self.pitch_torque_gain:.3f}, &#x27;
+        f&#x27;yaw_torque_gain={self.yaw_torque_gain:.3f}&#x27;
+    )</code></pre>
+          </article>
+        </div>
+      </section> <section id="imu-attitude" class="review-section">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">Function Review</p>
+            <h2>IMU / Attitude 입력 함수</h2>
+          </div>
+        </div>
+        <div class="review-grid">
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>allocator가 현재 자세, 목표 trim, 출력 scale 상태를 받아 compensation과 output shaping에 반영하는 입력 계층입니다.</p>
+            <h3>영향</h3>
+            <p>이 함수들이 있어 allocator는 단순 분배가 아니라 현재 자세와 운용 상태를 고려하는 smart mixer가 됩니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>상위 controller와 allocator가 느슨하지만 의미 있게 연결되어 있습니다.</p>
+          </article>
+          <article class="review-card code-card">
+            <h3>실제 코드</h3>
+            <pre><code>def imu_callback(self, msg: Imu):
+    q = msg.orientation
+    self.world_z_from_body = quat_to_rotation_z_row(q.x, q.y, q.z, q.w)
+    self.current_roll, self.current_pitch, self.current_yaw = quat_to_rpy(
+        q.x, q.y, q.z, q.w
+    )
+    self.have_imu = True
+
+def cmd_attitude_callback(self, msg: Vector3):
+    if not math.isnan(float(msg.x)):
+        self.target_roll = float(msg.x)
+    if not math.isnan(float(msg.y)):
+        self.target_pitch = float(msg.y)
+
+def cmd_attitude_trim_callback(self, msg: Vector3):
+    if not math.isnan(float(msg.x)):
+        self.target_roll = float(msg.x)
+    if not math.isnan(float(msg.y)):
+        self.target_pitch = float(msg.y)
+
+def output_scale_callback(self, msg: Float64):
+    self.output_scale = float(np.clip(float(msg.data), 0.0, 1.0))
+
+def joy_speed_scale_callback(self, msg: Float64):
+    if self.use_joy_speed_scale_for_output:
+        self.output_scale_callback(msg)</code></pre>
+          </article>
+        </div>
+      </section> <section id="compensation" class="review-section">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">Function Review</p>
+            <h2>Compensation 함수들</h2>
+          </div>
+        </div>
+        <div class="review-grid">
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>수평 이동으로 인한 heave 누수, attitude demand가 클 때 horizontal 약화, surge에 따른 pitch moment, IMU 기반 pitch hold 보상 등 실제 기체 거동을 보정합니다.</p>
+            <h3>영향</h3>
+            <p>이 함수들이 켜지면 allocator는 단순 분배기에서 벗어나, 기체 자세와 운동 모드에 따라 더 실용적인 출력을 냅니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>이 부분이 가장 실험적이면서도 고급스럽습니다. 동시에 gain 의존성이 큰 영역이므로 기능별 로그와 문서가 꼭 있어야 합니다.</p>
+          </article>
+          <article class="review-card code-card">
+            <h3>실제 코드</h3>
+            <pre><code>def level_horizontal_heave_compensation(self, fx: float, fy: float) -&gt; float:
+    if not self.level_horizontal_compensation_enabled or not self.have_imu:
+        return 0.0
+
+    zx, zy, zz = self.world_z_from_body
+    min_z = max(1e-6, abs(float(self.level_horizontal_compensation_min_z)))
+    if abs(zz) &lt; min_z:
+        return 0.0
+
+    comp = -(zx * fx + zy * fy) / zz
+    comp *= float(self.level_horizontal_compensation_gain)
+    comp *= float(self.level_horizontal_compensation_heave_sign)
+    limit = max(0.0, abs(float(self.level_horizontal_compensation_max)))
+    return float(np.clip(comp, -limit, limit))
+
+def attitude_priority_horizontal_scale(self, tx_scaled: float, ty_scaled: float) -&gt; float:
+    if not self.attitude_priority_horizontal_slowdown_enabled:
+        return 1.0
+
+    demand = max(abs(float(tx_scaled)), abs(float(ty_scaled)))
+    start = max(0.0, float(self.attitude_priority_horizontal_slowdown_start))
+    full = max(start + 1e-6, float(self.attitude_priority_horizontal_slowdown_full))
+    min_scale = float(np.clip(self.attitude_priority_horizontal_min_scale, 0.0, 1.0))
+
+    if demand &lt;= start:
+        return 1.0
+    if demand &gt;= full:
+        return min_scale
+
+    ratio = (demand - start) / (full - start)
+    return 1.0 - ratio * (1.0 - min_scale)
+
+def surge_pitch_moment_compensation(self, fx: float) -&gt; float:
+    if not self.surge_pitch_moment_compensation_enabled:
+        return 0.0
+    if abs(float(fx)) &lt; max(0.0, float(self.surge_pitch_moment_min_surge)):
+        return 0.0
+
+    target_pitch = float(self.target_pitch)
+    target_abs = abs(target_pitch)
+    if self.surge_pitch_moment_target_gate_enabled:
+        min_target = max(0.0, float(self.surge_pitch_moment_min_target))
+        if target_abs &lt; min_target:
+            return 0.0
+
+        # Problem case: moving in the same geometric direction as the trim
+        # makes surge thrust create a pitch moment that levels the vehicle.
+        # Internal fx is inverted from the pilot surge command.
+        if target_pitch * float(fx) &gt;= 0.0:
+            return 0.0
+
+    full_target = max(
+        max(0.0, float(self.surge_pitch_moment_min_target)) + 1e-6,
+        abs(float(self.surge_pitch_moment_full_target))
+    )
+    target_scale = float(np.clip(target_abs / full_target, 0.0, 1.0))
+
+    comp = float(self.surge_pitch_moment_gain) * float(fx) * target_scale
+    limit = max(0.0, abs(float(self.surge_pitch_moment_max)))
+    return float(np.clip(comp, -limit, limit))
+
+def imu_pitch_hold_compensation(self, fx: float) -&gt; float:
+    if not self.imu_pitch_hold_compensation_enabled or not self.have_imu:
+        return 0.0
+    if abs(float(fx)) &lt; max(0.0, float(self.imu_pitch_hold_min_surge)):
+        return 0.0
+
+    pitch_error = self.target_pitch - self.current_pitch
+    if abs(pitch_error) &lt; max(0.0, float(self.imu_pitch_hold_deadband)):
+        return 0.0
+
+    drive = min(1.0, abs(float(fx)))
+    comp = float(self.imu_pitch_hold_gain) * pitch_error * drive
+    limit = max(0.0, abs(float(self.imu_pitch_hold_max)))
+    return float(np.clip(comp, -limit, limit))</code></pre>
+          </article>
+        </div>
+      </section> <section id="init-matrices" class="review-section">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">Function Review</p>
+            <h2>`init_matrices()`</h2>
+          </div>
+        </div>
+        <div class="review-grid">
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>thruster 위치/방향으로 TAM, 수평 H 행렬, 수직 V 행렬, pseudo-inverse를 구성합니다.</p>
+            <h3>영향</h3>
+            <p>기체 배치가 이 함수에 담깁니다. 행렬이 틀리면 heave만 줘도 pitch가 생기고, yaw만 줘도 sway가 생깁니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>allocator 해석의 핵심입니다. 실제 모델과 이 함수의 thruster geometry가 맞는지 항상 함께 검증해야 합니다.</p>
+          </article>
+          <article class="review-card code-card">
+            <h3>실제 코드</h3>
+            <pre><code>def init_matrices(self):
+    # =========================
+    # thrusters.yaml / model.sdf 기반
+    # 1~4: horizontal (Fx, Fy, Tz)
+    # 5~8: vertical   (Fz, Tx, Ty)
+    # 이 값이 실제 모델과 어긋나면 heave 시 불필요한 자세 토크가 생긴다.
+    # =========================
+    thrusters = [
+        # horizontal 1~4
+        ([0.20, -0.13, 0.0], [0.7071, -0.7071, 0.0]),
+        ([0.20,  0.13, 0.0], [0.7071,  0.7071, 0.0]),
+        ([-0.20, -0.13, 0.0], [0.7071,  0.7071, 0.0]),
+        ([-0.20,  0.13, 0.0], [0.7071, -0.7071, 0.0]),
+
+        # vertical 5~8
+        ([0.20, -0.27, 0.0], [0.0, 0.0, 1.0]),
+        ([0.20,  0.27, 0.0], [0.0, 0.0, 1.0]),
+        ([-0.20, -0.27, 0.0], [0.0, 0.0, 1.0]),
+        ([-0.20,  0.27, 0.0], [0.0, 0.0, 1.0]),
+    ]
+
+    self.TAM = np.zeros((6, 8), dtype=float)
+
+    for i, (pos, direc) in enumerate(thrusters):
+        p = np.array(pos, dtype=float)
+        d = normalize(direc)
+
+        # force
+        self.TAM[0:3, i] = d
+
+        # torque = r x F
+        self.TAM[3:6, i] = np.cross(p, d)
+
+    self.get_logger().info(f&#x27;Full TAM:\n{self.TAM}&#x27;)
+
+    # -------------------------
+    # Horizontal submatrix
+    # rows: Fx, Fy, Tz
+    # cols: thrusters 1~4
+    # -------------------------
+    self.H = np.array([
+        self.TAM[0, 0:4],   # Fx
+        self.TAM[1, 0:4],   # Fy
+        self.TAM[5, 0:4],   # Tz
+    ], dtype=float)
+
+    self.H_pinv = np.linalg.pinv(self.H)
+
+    # -------------------------
+    # Vertical submatrix
+    # rows: Fz, Tx, Ty
+    # cols: thrusters 5~8
+    # -------------------------
+    self.V = np.array([
+        self.TAM[2, 4:8],   # Fz
+        self.TAM[3, 4:8],   # Tx
+        self.TAM[4, 4:8],   # Ty
+    ], dtype=float)
+
+    self.V_pinv = np.linalg.pinv(self.V)
+
+    self.get_logger().info(f&#x27;Horizontal matrix H:\n{self.H}&#x27;)
+    self.get_logger().info(f&#x27;Vertical matrix V:\n{self.V}&#x27;)</code></pre>
+          </article>
+        </div>
+      </section> <section id="allocation-shaping" class="review-section">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">Function Review</p>
+            <h2>Allocation / Shaping 보조 함수</h2>
+          </div>
+        </div>
+        <div class="review-grid">
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>출력 deadband 제거, 남은 헤드룸 안에서 성분 추가, priority allocation, slew-rate 제한을 담당합니다.</p>
+            <h3>영향</h3>
+            <p>수치적으로는 같은 wrench라도 actuator 친화성은 크게 달라집니다. 이 함수들이 saturation 시 거동과 응답 속도를 정합니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>현재 allocator가 heuristic allocator라는 점이 가장 잘 드러나는 구간입니다. 이 계층 덕분에 practical하지만, 최적화 기반 allocator와는 성격이 다릅니다.</p>
+          </article>
+          <article class="review-card code-card">
+            <h3>실제 코드</h3>
+            <pre><code>def apply_deadband(self, arr):
+    out = np.array(arr, dtype=float)
+    out[np.abs(out) &lt; self.output_deadband] = 0.0
+    return out
+
+def add_component_with_headroom(self, base, addition):
+    base = np.array(base, dtype=float)
+    addition = np.array(addition, dtype=float)
+    if float(np.max(np.abs(addition))) &lt; 1e-9:
+        return base
+
+    if float(np.max(np.abs(base + addition))) &lt;= 1.0:
+        return base + addition
+
+    scale = 1.0
+    for base_value, add_value in zip(base, addition):
+        if abs(add_value) &lt; 1e-9:
+            continue
+        if add_value &gt; 0.0:
+            allowed = (1.0 - base_value) / add_value
+        else:
+            allowed = (-1.0 - base_value) / add_value
+        scale = min(scale, allowed)
+
+    scale = float(np.clip(scale, 0.0, 1.0))
+    return base + addition * scale
+
+def allocate_priority_components(self, components):
+    out = np.zeros(4, dtype=float)
+    for component in components:
+        out = self.add_component_with_headroom(out, component)
+    return out
+
+def apply_slew_rate(self, target):
+    target = np.array(target, dtype=float)
+    now = self.get_clock().now()
+
+    if self.last_slew_time is None:
+        dt = 0.0
+    else:
+        dt = (now - self.last_slew_time).nanoseconds * 1e-9
+
+    self.last_slew_time = now
+
+    if dt &lt;= 0.0:
+        max_delta = 0.0
+    else:
+        # Cap dt so a callback pause does not allow one large output jump.
+        max_delta = max(0.0, self.slew_rate) * min(dt, 0.1)
+
+    delta = target - self.prev_thrust
+    delta = np.clip(delta, -max_delta, max_delta)
+    out = self.prev_thrust + delta
+    self.prev_thrust = out.copy()
+    return out</code></pre>
+          </article>
+        </div>
+      </section> <section id="callback" class="review-section">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">Function Review</p>
+            <h2>`callback()`</h2>
+          </div>
+        </div>
+        <div class="review-grid">
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>최종 wrench를 받아 부호 해석, scaling, horizontal/vertical allocation, compensation, shaping, saturation, publish까지 한 번에 수행합니다.</p>
+            <h3>영향</h3>
+            <p>이 함수가 곧 thruster command의 최종 형태를 결정합니다. 어떤 축 요구가 우선되는지, saturation에서 무엇을 희생하는지가 여기서 결정됩니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>코드의 의도는 분명합니다. 다만 <code>Fx</code> 하드코딩 반전과 heuristic saturation은 읽는 사람에게 반드시 설명이 필요합니다.</p>
+          </article>
+          <article class="review-card code-card">
+            <h3>실제 코드</h3>
+            <pre><code>def callback(self, msg: Wrench):
+    # -------------------------
+    # 원하는 wrench
+    # -------------------------
+    fx = float(msg.force.x)*-1
+    fy = float(msg.force.y)
+    fz = float(msg.force.z)
+    tx = float(msg.torque.x)
+    ty = float(msg.torque.y)
+    tz = float(msg.torque.z)
+
+    # Keep pilot/position horizontal motion level in the world frame while
+    # the vehicle is intentionally pitched or rolled for attitude hold.
+    level_comp_fz = self.level_horizontal_heave_compensation(fx, fy)
+
+    # gain 적용
+    fz_scaled = self.heave_gain * fz
+    level_comp_fz_scaled = self.heave_gain * level_comp_fz
+    tx_scaled = self.roll_torque_gain * tx
+    ty_scaled = (
+        self.pitch_torque_gain * ty +
+        self.surge_pitch_moment_compensation(fx) +
+        self.imu_pitch_hold_compensation(fx)
+    )
+    tz_scaled = self.yaw_torque_gain * tz
+
+    horizontal_scale = self.attitude_priority_horizontal_scale(tx_scaled, ty_scaled)
+    fx *= horizontal_scale
+    fy *= horizontal_scale
+
+    # -------------------------
+    # horizontal allocation
+    #   1~4번 thruster만 사용
+    #   Fx, Fy, Tz 담당
+    # -------------------------
+    horiz_force_cmd = np.array([fx, fy, 0.0], dtype=float)
+    horiz_yaw_cmd = np.array([0.0, 0.0, tz_scaled], dtype=float)
+    u_h = (
+        (self.H_pinv @ horiz_force_cmd) * self.horizontal_output_gain +
+        (self.H_pinv @ horiz_yaw_cmd) * self.yaw_output_gain
+    )
+
+    # -------------------------
+    # vertical allocation
+    #   5~8번 thruster만 사용
+    #   Fz, Tx, Ty 담당
+    # -------------------------
+    vert_heave_cmd = np.array([fz_scaled, 0.0, 0.0], dtype=float)
+    vert_torque_cmd = np.array([0.0, tx_scaled, ty_scaled], dtype=float)
+    vert_level_cmd = np.array([level_comp_fz_scaled, 0.0, 0.0], dtype=float)
+
+    u_v_heave = (self.V_pinv @ vert_heave_cmd) * self.vertical_output_gain
+    u_v_torque = (self.V_pinv @ vert_torque_cmd) * self.vertical_output_gain
+    u_v_level = (self.V_pinv @ vert_level_cmd) * self.vertical_output_gain
+
+    if self.torque_first_allocation:
+        components = [u_v_torque, u_v_heave]
+    else:
+        components = [u_v_heave, u_v_torque]
+
+    u_v = self.allocate_priority_components(components)
+    if self.level_horizontal_compensation_uses_spare_only:
+        u_v = self.add_component_with_headroom(u_v, u_v_level)
+    else:
+        u_v = u_v + u_v_level
+
+    # Rear-heavy trim: calibrated pitch feed-forward. With the current
+    # thruster signs/mapping, this raises the rear relative to the front.
+    vertical_active = (
+        np.linalg.norm([fz_scaled, level_comp_fz_scaled, tx_scaled, ty_scaled]) &gt; 1e-6
+    )
+    if vertical_active and abs(self.rear_vertical_bias) &gt; 1e-9:
+        u_v[0] += self.rear_vertical_bias
+        u_v[1] += self.rear_vertical_bias
+        u_v[2] -= self.rear_vertical_bias
+        u_v[3] -= self.rear_vertical_bias
+
+    # -------------------------
+    # combine (decoupled normalization)
+    # horizontal(1~4) and vertical(5~8) groups are normalized independently
+    # so yaw demand won&#x27;t scale down vertical heave compensation.
+    # -------------------------
+    u_h = normalize_group_unit(u_h)
+    u_v = normalize_group_unit(u_v)
+
+    thrust = np.zeros(8, dtype=float)
+    thrust[0:4] = u_h
+    thrust[4:8] = u_v
+
+    # 실제 plugin / can 방향 반대일 경우 대비
+    thrust = thrust * self.signs
+    output_scale = float(np.clip(self.output_scale, 0.0, 1.0))
+    thrust *= output_scale
+    max_output = float(np.clip(self.max_output, 0.0, 1.0))
+    thrust = np.clip(thrust, -max_output, max_output)
+
+    # -------------------------
+    # slew rate + deadband
+    # -------------------------
+    thrust = self.apply_slew_rate(thrust)
+    thrust = self.apply_deadband(thrust)
+
+    # -------------------------
+    # publish
+    # -------------------------
+    out = Float64MultiArray()
+    out.data = thrust.tolist()
+    self.pub.publish(out)
+
+    # -------------------------
+    # debug log
+    # -------------------------
+    # self.get_logger().info(
+    #     f&#x27;wrench=[Fx={fx:.3f}, Fy={fy:.3f}, Fz={fz:.3f}, &#x27;
+    #     f&#x27;Tx={tx:.3f}, Ty={ty:.3f}, Tz={tz:.3f}]&#x27;
+    # )
+    # self.get_logger().info(
+    #     f&#x27;scaled=[Fx={fx:.3f}, Fy={fy:.3f}, Fz={fz_scaled:.3f}, &#x27;
+    #     f&#x27;Tx={tx_scaled:.3f}, Ty={ty_scaled:.3f}, Tz={tz_scaled:.3f}]&#x27;
+    # )
+    # self.get_logger().info(
+    #     f&#x27;u_h={np.round(u_h, 4).tolist()}, &#x27;
+    #     f&#x27;u_v={np.round(u_v, 4).tolist()}&#x27;
+    # )
+    # self.get_logger().info(
+    #     f&#x27;thrust(norm)={np.round(thrust, 4).tolist()}&#x27;
+    # )</code></pre>
+          </article>
+        </div>
+      </section> <section id="on-parameter-update" class="review-section">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">Function Review</p>
+            <h2>`on_parameter_update()`</h2>
+          </div>
+        </div>
+        <div class="review-grid">
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>allocation gain, compensation, slew, output scale을 런타임에 갱신합니다.</p>
+            <h3>영향</h3>
+            <p>allocator tuning을 빠르게 반복할 수 있게 해줍니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>실험 속도를 크게 올리는 좋은 구조입니다. 이번 리뷰 문서에서 함수-파라미터 연결을 설명하는 이유도 이 함수 때문입니다.</p>
+          </article>
+          <article class="review-card code-card">
+            <h3>실제 코드</h3>
+            <pre><code>def on_parameter_update(self, params):
+    try:
+        for p in params:
+            if p.name == &#x27;heave_gain&#x27;:
+                self.heave_gain = float(p.value)
+            elif p.name == &#x27;horizontal_output_gain&#x27;:
+                self.horizontal_output_gain = float(p.value)
+            elif p.name == &#x27;yaw_output_gain&#x27;:
+                self.yaw_output_gain = float(p.value)
+            elif p.name == &#x27;vertical_output_gain&#x27;:
+                self.vertical_output_gain = float(p.value)
+            elif p.name == &#x27;rear_vertical_bias&#x27;:
+                self.rear_vertical_bias = float(p.value)
+            elif p.name == &#x27;pitch_torque_gain&#x27;:
+                self.pitch_torque_gain = float(p.value)
+            elif p.name == &#x27;torque_first_allocation&#x27;:
+                self.torque_first_allocation = bool(p.value)
+            elif p.name == &#x27;level_horizontal_compensation_enabled&#x27;:
+                self.level_horizontal_compensation_enabled = bool(p.value)
+            elif p.name == &#x27;level_horizontal_compensation_gain&#x27;:
+                self.level_horizontal_compensation_gain = float(p.value)
+            elif p.name == &#x27;level_horizontal_compensation_max&#x27;:
+                self.level_horizontal_compensation_max = float(p.value)
+            elif p.name == &#x27;level_horizontal_compensation_heave_sign&#x27;:
+                self.level_horizontal_compensation_heave_sign = float(p.value)
+            elif p.name == &#x27;level_horizontal_compensation_min_z&#x27;:
+                self.level_horizontal_compensation_min_z = float(p.value)
+            elif p.name == &#x27;level_horizontal_compensation_uses_spare_only&#x27;:
+                self.level_horizontal_compensation_uses_spare_only = bool(p.value)
+            elif p.name == &#x27;attitude_priority_horizontal_slowdown_enabled&#x27;:
+                self.attitude_priority_horizontal_slowdown_enabled = bool(p.value)
+            elif p.name == &#x27;attitude_priority_horizontal_slowdown_start&#x27;:
+                self.attitude_priority_horizontal_slowdown_start = float(p.value)
+            elif p.name == &#x27;attitude_priority_horizontal_slowdown_full&#x27;:
+                self.attitude_priority_horizontal_slowdown_full = float(p.value)
+            elif p.name == &#x27;attitude_priority_horizontal_min_scale&#x27;:
+                self.attitude_priority_horizontal_min_scale = float(p.value)
+            elif p.name == &#x27;surge_pitch_moment_compensation_enabled&#x27;:
+                self.surge_pitch_moment_compensation_enabled = bool(p.value)
+            elif p.name == &#x27;surge_pitch_moment_gain&#x27;:
+                self.surge_pitch_moment_gain = float(p.value)
+            elif p.name == &#x27;surge_pitch_moment_max&#x27;:
+                self.surge_pitch_moment_max = float(p.value)
+            elif p.name == &#x27;surge_pitch_moment_min_surge&#x27;:
+                self.surge_pitch_moment_min_surge = float(p.value)
+            elif p.name == &#x27;surge_pitch_moment_target_gate_enabled&#x27;:
+                self.surge_pitch_moment_target_gate_enabled = bool(p.value)
+            elif p.name == &#x27;surge_pitch_moment_min_target_deg&#x27;:
+                self.surge_pitch_moment_min_target = math.radians(float(p.value))
+            elif p.name == &#x27;surge_pitch_moment_full_target_deg&#x27;:
+                self.surge_pitch_moment_full_target = math.radians(float(p.value))
+            elif p.name == &#x27;imu_pitch_hold_compensation_enabled&#x27;:
+                self.imu_pitch_hold_compensation_enabled = bool(p.value)
+            elif p.name == &#x27;imu_pitch_hold_gain&#x27;:
+                self.imu_pitch_hold_gain = float(p.value)
+            elif p.name == &#x27;imu_pitch_hold_max&#x27;:
+                self.imu_pitch_hold_max = float(p.value)
+            elif p.name == &#x27;imu_pitch_hold_deadband_deg&#x27;:
+                self.imu_pitch_hold_deadband = math.radians(float(p.value))
+            elif p.name == &#x27;imu_pitch_hold_min_surge&#x27;:
+                self.imu_pitch_hold_min_surge = float(p.value)
+            elif p.name == &#x27;slew_rate&#x27;:
+                self.slew_rate = float(p.value)
+            elif p.name == &#x27;max_output&#x27;:
+                self.max_output = float(p.value)
+            elif p.name == &#x27;output_scale&#x27;:
+                self.output_scale = float(p.value)
+            elif p.name == &#x27;use_joy_speed_scale_for_output&#x27;:
+                self.use_joy_speed_scale_for_output = bool(p.value)
+            elif p.name == &#x27;output_deadband&#x27;:
+                self.output_deadband = float(p.value)
+
+        self.get_logger().info(
+            f&#x27;Allocator parameters updated: &#x27;
+            f&#x27;heave_gain={self.heave_gain:.3f}, &#x27;
+            f&#x27;horizontal_output_gain={self.horizontal_output_gain:.3f}, &#x27;
+            f&#x27;yaw_output_gain={self.yaw_output_gain:.3f}, &#x27;
+            f&#x27;vertical_output_gain={self.vertical_output_gain:.3f}, &#x27;
+            f&#x27;rear_vertical_bias={self.rear_vertical_bias:.3f}, &#x27;
+            f&#x27;pitch_torque_gain={self.pitch_torque_gain:.3f}, &#x27;
+            f&#x27;torque_first_allocation={self.torque_first_allocation}, &#x27;
+            f&#x27;level_horizontal_compensation={self.level_horizontal_compensation_enabled}, &#x27;
+            f&#x27;level_horizontal_compensation_gain={self.level_horizontal_compensation_gain:.3f}, &#x27;
+            f&#x27;level_horizontal_compensation_max={self.level_horizontal_compensation_max:.3f}, &#x27;
+            f&#x27;level_horizontal_compensation_heave_sign={self.level_horizontal_compensation_heave_sign:.3f}, &#x27;
+            f&#x27;level_horizontal_compensation_spare_only={self.level_horizontal_compensation_uses_spare_only}, &#x27;
+            f&#x27;attitude_priority_horizontal_slowdown={self.attitude_priority_horizontal_slowdown_enabled}, &#x27;
+            f&#x27;attitude_priority_horizontal_min_scale={self.attitude_priority_horizontal_min_scale:.3f}, &#x27;
+            f&#x27;surge_pitch_moment_comp={self.surge_pitch_moment_compensation_enabled}, &#x27;
+            f&#x27;surge_pitch_moment_gain={self.surge_pitch_moment_gain:.3f}, &#x27;
+            f&#x27;surge_pitch_moment_min_surge={self.surge_pitch_moment_min_surge:.3f}, &#x27;
+            f&#x27;surge_pitch_moment_target_gate={self.surge_pitch_moment_target_gate_enabled}, &#x27;
+            f&#x27;imu_pitch_hold_comp={self.imu_pitch_hold_compensation_enabled}, &#x27;
+            f&#x27;imu_pitch_hold_gain={self.imu_pitch_hold_gain:.3f}, &#x27;
+            f&#x27;slew_rate={self.slew_rate:.3f}/s, &#x27;
+            f&#x27;max_output={self.max_output:.3f}, &#x27;
+            f&#x27;output_scale={self.output_scale:.3f}, &#x27;
+            f&#x27;use_joy_speed_scale_for_output={self.use_joy_speed_scale_for_output}, &#x27;
+            f&#x27;output_deadband={self.output_deadband:.3f}&#x27;
+        )
+        return SetParametersResult(successful=True)
+    except Exception as e:
+        return SetParametersResult(successful=False, reason=str(e))</code></pre>
+          </article>
+        </div>
+      </section>
+
+      <section id="full-source" class="panel">
+        <div class="panel-heading">
+          <div>
+            <p class="section-kicker">Full Source</p>
+            <h2>전체 코드</h2>
+          </div>
+        </div>
+        <details class="source-details" open>
+          <summary>전체 파일 펼치기 / 접기</summary>
+          <pre><code>#!/usr/bin/env python3
+import math
+
+import rclpy
+from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+from geometry_msgs.msg import Vector3, Wrench
+from sensor_msgs.msg import Imu
+from std_msgs.msg import Float64, Float64MultiArray
+from rcl_interfaces.msg import SetParametersResult
+
+import numpy as np
+
+
+CONTROL_SUB_QOS = QoSProfile(
+    depth=10,
+    reliability=ReliabilityPolicy.BEST_EFFORT,
+    durability=DurabilityPolicy.VOLATILE,
+)
+
+
+def normalize(v):
+    v = np.array(v, dtype=float)
+    n = np.linalg.norm(v)
+    if n &lt; 1e-9:
+        return v
+    return v / n
+
+
+def normalize_group_unit(v):
+    arr = np.array(v, dtype=float)
+    max_abs = float(np.max(np.abs(arr)))
+    if max_abs &gt; 1.0:
+        arr = arr / max_abs
+    return arr
+
+
+def quat_to_rotation_z_row(x: float, y: float, z: float, w: float):
+    n = math.sqrt(x * x + y * y + z * z + w * w)
+    if n &lt; 1e-12:
+        return (0.0, 0.0, 1.0)
+    x /= n
+    y /= n
+    z /= n
+    w /= n
+
+    return (
+        2.0 * (x * z - w * y),
+        2.0 * (y * z + w * x),
+        1.0 - 2.0 * (x * x + y * y),
+    )
+
+
+def quat_to_rpy(x: float, y: float, z: float, w: float):
+    n = math.sqrt(x * x + y * y + z * z + w * w)
+    if n &lt; 1e-12:
+        return 0.0, 0.0, 0.0
+    x /= n
+    y /= n
+    z /= n
+    w /= n
+
+    sinr_cosp = 2.0 * (w * x + y * z)
+    cosr_cosp = 1.0 - 2.0 * (x * x + y * y)
+    roll = math.atan2(sinr_cosp, cosr_cosp)
+
+    sinp = 2.0 * (w * y - z * x)
+    if abs(sinp) &gt;= 1.0:
+        pitch = math.copysign(math.pi / 2.0, sinp)
+    else:
+        pitch = math.asin(sinp)
+
+    siny_cosp = 2.0 * (w * z + x * y)
+    cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
+    yaw = math.atan2(siny_cosp, cosy_cosp)
+
+    return roll, pitch, yaw
+
+
+class AllocatorNode(Node):
+
+    def __init__(self):
+        super().__init__(&#x27;allocator_node&#x27;)
+
+        # 실제 plugin / can 방향 반대면 여기 부호만 바꾸면 됨
+        self.signs = np.array([
+            1.0, 1.0, 1.0, 1.0,   # thruster 1~4
+            1.0, 1.0, 1.0, 1.0    # thruster 5~8
+        ], dtype=float)
+
+        # -------------------------
+        # parameters
+        # -------------------------
+        self.declare_parameter(&#x27;wrench_cmd_topic&#x27;, &#x27;/rov/wrench_cmd&#x27;)
+        self.declare_parameter(&#x27;thruster_cmd_topic&#x27;, &#x27;/thruster_cmd&#x27;)
+        self.declare_parameter(&#x27;imu_topic&#x27;, &#x27;/imu&#x27;)
+        self.declare_parameter(&#x27;cmd_attitude_topic&#x27;, &#x27;/cmd_attitude&#x27;)
+        self.declare_parameter(&#x27;cmd_attitude_trim_topic&#x27;, &#x27;/cmd_attitude_trim&#x27;)
+        self.declare_parameter(&#x27;output_scale_topic&#x27;, &#x27;/rov/output_scale&#x27;)
+        self.declare_parameter(&#x27;joy_speed_scale_topic&#x27;, &#x27;/rov/joy_speed_scale&#x27;)
+        self.declare_parameter(&#x27;use_joy_speed_scale_for_output&#x27;, False)
+        self.declare_parameter(&#x27;heave_gain&#x27;, 1.4)
+        self.declare_parameter(&#x27;horizontal_output_gain&#x27;, 2.5)
+        self.declare_parameter(&#x27;yaw_output_gain&#x27;, 0.35)
+        self.declare_parameter(&#x27;vertical_output_gain&#x27;, 3.0)
+        self.declare_parameter(&#x27;rear_vertical_bias&#x27;, 0.0)
+        self.declare_parameter(&#x27;pitch_torque_gain&#x27;, 1.5)
+        self.declare_parameter(&#x27;torque_first_allocation&#x27;, True)
+        self.declare_parameter(&#x27;slew_rate&#x27;, 4.0)
+        self.declare_parameter(&#x27;max_output&#x27;, 1.0)
+        self.declare_parameter(&#x27;output_scale&#x27;, 0.25)
+        self.declare_parameter(&#x27;output_deadband&#x27;, 0.02)
+        self.declare_parameter(&#x27;level_horizontal_compensation_enabled&#x27;, True)
+        self.declare_parameter(&#x27;level_horizontal_compensation_gain&#x27;, 1.0)
+        self.declare_parameter(&#x27;level_horizontal_compensation_max&#x27;, 0.5)
+        self.declare_parameter(&#x27;level_horizontal_compensation_heave_sign&#x27;, -1.0)
+        self.declare_parameter(&#x27;level_horizontal_compensation_min_z&#x27;, 0.35)
+        self.declare_parameter(&#x27;level_horizontal_compensation_uses_spare_only&#x27;, True)
+        self.declare_parameter(&#x27;attitude_priority_horizontal_slowdown_enabled&#x27;, False)
+        self.declare_parameter(&#x27;attitude_priority_horizontal_slowdown_start&#x27;, 0.06)
+        self.declare_parameter(&#x27;attitude_priority_horizontal_slowdown_full&#x27;, 0.12)
+        self.declare_parameter(&#x27;attitude_priority_horizontal_min_scale&#x27;, 0.25)
+        self.declare_parameter(&#x27;surge_pitch_moment_compensation_enabled&#x27;, False)
+        self.declare_parameter(&#x27;surge_pitch_moment_gain&#x27;, -0.12)
+        self.declare_parameter(&#x27;surge_pitch_moment_max&#x27;, 0.12)
+        self.declare_parameter(&#x27;surge_pitch_moment_min_surge&#x27;, 0.03)
+        self.declare_parameter(&#x27;surge_pitch_moment_target_gate_enabled&#x27;, True)
+        self.declare_parameter(&#x27;surge_pitch_moment_min_target_deg&#x27;, 3.0)
+        self.declare_parameter(&#x27;surge_pitch_moment_full_target_deg&#x27;, 20.0)
+        self.declare_parameter(&#x27;imu_pitch_hold_compensation_enabled&#x27;, False)
+        self.declare_parameter(&#x27;imu_pitch_hold_gain&#x27;, 0.25)
+        self.declare_parameter(&#x27;imu_pitch_hold_max&#x27;, 0.10)
+        self.declare_parameter(&#x27;imu_pitch_hold_deadband_deg&#x27;, 1.0)
+        self.declare_parameter(&#x27;imu_pitch_hold_min_surge&#x27;, 0.03)
+
+        self.wrench_cmd_topic = str(self.get_parameter(&#x27;wrench_cmd_topic&#x27;).value)
+        self.thruster_cmd_topic = str(self.get_parameter(&#x27;thruster_cmd_topic&#x27;).value)
+        self.imu_topic = str(self.get_parameter(&#x27;imu_topic&#x27;).value)
+        self.cmd_attitude_topic = str(self.get_parameter(&#x27;cmd_attitude_topic&#x27;).value)
+        self.cmd_attitude_trim_topic = str(self.get_parameter(&#x27;cmd_attitude_trim_topic&#x27;).value)
+        self.output_scale_topic = str(self.get_parameter(&#x27;output_scale_topic&#x27;).value)
+        self.joy_speed_scale_topic = str(self.get_parameter(&#x27;joy_speed_scale_topic&#x27;).value)
+        self.use_joy_speed_scale_for_output = bool(
+            self.get_parameter(&#x27;use_joy_speed_scale_for_output&#x27;).value
+        )
+        self.heave_gain = float(self.get_parameter(&#x27;heave_gain&#x27;).value)
+        self.horizontal_output_gain = float(self.get_parameter(&#x27;horizontal_output_gain&#x27;).value)
+        self.yaw_output_gain = float(self.get_parameter(&#x27;yaw_output_gain&#x27;).value)
+        self.vertical_output_gain = float(self.get_parameter(&#x27;vertical_output_gain&#x27;).value)
+        self.rear_vertical_bias = float(self.get_parameter(&#x27;rear_vertical_bias&#x27;).value)
+        self.pitch_torque_gain = float(self.get_parameter(&#x27;pitch_torque_gain&#x27;).value)
+        self.torque_first_allocation = bool(self.get_parameter(&#x27;torque_first_allocation&#x27;).value)
+        self.slew_rate = float(self.get_parameter(&#x27;slew_rate&#x27;).value)
+        self.max_output = float(self.get_parameter(&#x27;max_output&#x27;).value)
+        self.output_scale = float(self.get_parameter(&#x27;output_scale&#x27;).value)
+        self.output_deadband = float(self.get_parameter(&#x27;output_deadband&#x27;).value)
+        self.level_horizontal_compensation_enabled = bool(
+            self.get_parameter(&#x27;level_horizontal_compensation_enabled&#x27;).value
+        )
+        self.level_horizontal_compensation_gain = float(
+            self.get_parameter(&#x27;level_horizontal_compensation_gain&#x27;).value
+        )
+        self.level_horizontal_compensation_max = float(
+            self.get_parameter(&#x27;level_horizontal_compensation_max&#x27;).value
+        )
+        self.level_horizontal_compensation_heave_sign = float(
+            self.get_parameter(&#x27;level_horizontal_compensation_heave_sign&#x27;).value
+        )
+        self.level_horizontal_compensation_min_z = float(
+            self.get_parameter(&#x27;level_horizontal_compensation_min_z&#x27;).value
+        )
+        self.level_horizontal_compensation_uses_spare_only = bool(
+            self.get_parameter(&#x27;level_horizontal_compensation_uses_spare_only&#x27;).value
+        )
+        self.attitude_priority_horizontal_slowdown_enabled = bool(
+            self.get_parameter(&#x27;attitude_priority_horizontal_slowdown_enabled&#x27;).value
+        )
+        self.attitude_priority_horizontal_slowdown_start = float(
+            self.get_parameter(&#x27;attitude_priority_horizontal_slowdown_start&#x27;).value
+        )
+        self.attitude_priority_horizontal_slowdown_full = float(
+            self.get_parameter(&#x27;attitude_priority_horizontal_slowdown_full&#x27;).value
+        )
+        self.attitude_priority_horizontal_min_scale = float(
+            self.get_parameter(&#x27;attitude_priority_horizontal_min_scale&#x27;).value
+        )
+        self.surge_pitch_moment_compensation_enabled = bool(
+            self.get_parameter(&#x27;surge_pitch_moment_compensation_enabled&#x27;).value
+        )
+        self.surge_pitch_moment_gain = float(
+            self.get_parameter(&#x27;surge_pitch_moment_gain&#x27;).value
+        )
+        self.surge_pitch_moment_max = float(
+            self.get_parameter(&#x27;surge_pitch_moment_max&#x27;).value
+        )
+        self.surge_pitch_moment_min_surge = float(
+            self.get_parameter(&#x27;surge_pitch_moment_min_surge&#x27;).value
+        )
+        self.surge_pitch_moment_target_gate_enabled = bool(
+            self.get_parameter(&#x27;surge_pitch_moment_target_gate_enabled&#x27;).value
+        )
+        self.surge_pitch_moment_min_target = math.radians(
+            float(self.get_parameter(&#x27;surge_pitch_moment_min_target_deg&#x27;).value)
+        )
+        self.surge_pitch_moment_full_target = math.radians(
+            float(self.get_parameter(&#x27;surge_pitch_moment_full_target_deg&#x27;).value)
+        )
+        self.imu_pitch_hold_compensation_enabled = bool(
+            self.get_parameter(&#x27;imu_pitch_hold_compensation_enabled&#x27;).value
+        )
+        self.imu_pitch_hold_gain = float(
+            self.get_parameter(&#x27;imu_pitch_hold_gain&#x27;).value
+        )
+        self.imu_pitch_hold_max = float(
+            self.get_parameter(&#x27;imu_pitch_hold_max&#x27;).value
+        )
+        self.imu_pitch_hold_deadband = math.radians(
+            float(self.get_parameter(&#x27;imu_pitch_hold_deadband_deg&#x27;).value)
+        )
+        self.imu_pitch_hold_min_surge = float(
+            self.get_parameter(&#x27;imu_pitch_hold_min_surge&#x27;).value
+        )
+
+        # torque gain
+        self.roll_torque_gain = 1.0
+        self.yaw_torque_gain = 1.0
+
+        # 이전 출력 저장 (slew rate용)
+        self.prev_thrust = np.zeros(8, dtype=float)
+        self.last_slew_time = None
+        self.have_imu = False
+        self.world_z_from_body = (0.0, 0.0, 1.0)
+        self.current_roll = 0.0
+        self.current_pitch = 0.0
+        self.current_yaw = 0.0
+        self.target_roll = 0.0
+        self.target_pitch = 0.0
+
+        self.sub = self.create_subscription(
+            Wrench,
+            self.wrench_cmd_topic,
+            self.callback,
+            CONTROL_SUB_QOS
+        )
+        self.imu_sub = self.create_subscription(
+            Imu,
+            self.imu_topic,
+            self.imu_callback,
+            CONTROL_SUB_QOS
+        )
+        self.cmd_attitude_sub = self.create_subscription(
+            Vector3,
+            self.cmd_attitude_topic,
+            self.cmd_attitude_callback,
+            CONTROL_SUB_QOS
+        )
+        self.cmd_attitude_trim_sub = self.create_subscription(
+            Vector3,
+            self.cmd_attitude_trim_topic,
+            self.cmd_attitude_trim_callback,
+            CONTROL_SUB_QOS
+        )
+        self.output_scale_sub = self.create_subscription(
+            Float64,
+            self.output_scale_topic,
+            self.output_scale_callback,
+            CONTROL_SUB_QOS
+        )
+        self.joy_speed_scale_sub = self.create_subscription(
+            Float64,
+            self.joy_speed_scale_topic,
+            self.joy_speed_scale_callback,
+            CONTROL_SUB_QOS
+        )
+
+        self.pub = self.create_publisher(
+            Float64MultiArray,
+            self.thruster_cmd_topic,
+            10
+        )
+
+        self.init_matrices()
+
+        # 런타임 파라미터 업데이트 콜백 등록
+        self.add_on_set_parameters_callback(self.on_parameter_update)
+
+        self.get_logger().info(&#x27;Allocator node started (priority allocator)&#x27;)
+        self.get_logger().info(
+            f&#x27;wrench_cmd_topic={self.wrench_cmd_topic}, &#x27;
+            f&#x27;thruster_cmd_topic={self.thruster_cmd_topic}, &#x27;
+            f&#x27;imu_topic={self.imu_topic}, &#x27;
+            f&#x27;cmd_attitude_topic={self.cmd_attitude_topic}, &#x27;
+            f&#x27;cmd_attitude_trim_topic={self.cmd_attitude_trim_topic}, &#x27;
+            f&#x27;output_scale_topic={self.output_scale_topic}, &#x27;
+            f&#x27;joy_speed_scale_topic={self.joy_speed_scale_topic}, &#x27;
+            f&#x27;use_joy_speed_scale_for_output={self.use_joy_speed_scale_for_output}, &#x27;
+            f&#x27;heave_gain={self.heave_gain:.3f}, &#x27;
+            f&#x27;horizontal_output_gain={self.horizontal_output_gain:.3f}, &#x27;
+            f&#x27;yaw_output_gain={self.yaw_output_gain:.3f}, &#x27;
+            f&#x27;vertical_output_gain={self.vertical_output_gain:.3f}, &#x27;
+            f&#x27;rear_vertical_bias={self.rear_vertical_bias:.3f}, &#x27;
+            f&#x27;pitch_torque_gain={self.pitch_torque_gain:.3f}, &#x27;
+            f&#x27;torque_first_allocation={self.torque_first_allocation}, &#x27;
+            f&#x27;slew_rate={self.slew_rate:.3f}/s, &#x27;
+            f&#x27;max_output={self.max_output:.3f}, &#x27;
+            f&#x27;output_scale={self.output_scale:.3f}, &#x27;
+            f&#x27;output_deadband={self.output_deadband:.3f}, &#x27;
+            f&#x27;level_horizontal_compensation=&#x27;
+            f&#x27;{self.level_horizontal_compensation_enabled}, &#x27;
+            f&#x27;gain={self.level_horizontal_compensation_gain:.3f}, &#x27;
+            f&#x27;max={self.level_horizontal_compensation_max:.3f}, &#x27;
+            f&#x27;heave_sign={self.level_horizontal_compensation_heave_sign:.3f}, &#x27;
+            f&#x27;min_z={self.level_horizontal_compensation_min_z:.3f}, &#x27;
+            f&#x27;level_comp_spare_only={self.level_horizontal_compensation_uses_spare_only}, &#x27;
+            f&#x27;attitude_priority_horizontal_slowdown=&#x27;
+            f&#x27;{self.attitude_priority_horizontal_slowdown_enabled}, &#x27;
+            f&#x27;start={self.attitude_priority_horizontal_slowdown_start:.3f}, &#x27;
+            f&#x27;full={self.attitude_priority_horizontal_slowdown_full:.3f}, &#x27;
+            f&#x27;min_scale={self.attitude_priority_horizontal_min_scale:.3f}, &#x27;
+            f&#x27;surge_pitch_moment_comp={self.surge_pitch_moment_compensation_enabled}, &#x27;
+            f&#x27;surge_pitch_gain={self.surge_pitch_moment_gain:.3f}, &#x27;
+            f&#x27;surge_pitch_max={self.surge_pitch_moment_max:.3f}, &#x27;
+            f&#x27;surge_pitch_min_surge={self.surge_pitch_moment_min_surge:.3f}, &#x27;
+            f&#x27;surge_pitch_target_gate={self.surge_pitch_moment_target_gate_enabled}, &#x27;
+            f&#x27;imu_pitch_hold_comp={self.imu_pitch_hold_compensation_enabled}, &#x27;
+            f&#x27;imu_pitch_hold_gain={self.imu_pitch_hold_gain:.3f}, &#x27;
+            f&#x27;imu_pitch_hold_max={self.imu_pitch_hold_max:.3f}, &#x27;
+            f&#x27;roll_torque_gain={self.roll_torque_gain:.3f}, &#x27;
+            f&#x27;pitch_torque_gain={self.pitch_torque_gain:.3f}, &#x27;
+            f&#x27;yaw_torque_gain={self.yaw_torque_gain:.3f}&#x27;
+        )
+
+    def imu_callback(self, msg: Imu):
+        q = msg.orientation
+        self.world_z_from_body = quat_to_rotation_z_row(q.x, q.y, q.z, q.w)
+        self.current_roll, self.current_pitch, self.current_yaw = quat_to_rpy(
+            q.x, q.y, q.z, q.w
+        )
+        self.have_imu = True
+
+    def cmd_attitude_callback(self, msg: Vector3):
+        if not math.isnan(float(msg.x)):
+            self.target_roll = float(msg.x)
+        if not math.isnan(float(msg.y)):
+            self.target_pitch = float(msg.y)
+
+    def cmd_attitude_trim_callback(self, msg: Vector3):
+        if not math.isnan(float(msg.x)):
+            self.target_roll = float(msg.x)
+        if not math.isnan(float(msg.y)):
+            self.target_pitch = float(msg.y)
+
+    def output_scale_callback(self, msg: Float64):
+        self.output_scale = float(np.clip(float(msg.data), 0.0, 1.0))
+
+    def joy_speed_scale_callback(self, msg: Float64):
+        if self.use_joy_speed_scale_for_output:
+            self.output_scale_callback(msg)
+
+    def level_horizontal_heave_compensation(self, fx: float, fy: float) -&gt; float:
+        if not self.level_horizontal_compensation_enabled or not self.have_imu:
+            return 0.0
+
+        zx, zy, zz = self.world_z_from_body
+        min_z = max(1e-6, abs(float(self.level_horizontal_compensation_min_z)))
+        if abs(zz) &lt; min_z:
+            return 0.0
+
+        comp = -(zx * fx + zy * fy) / zz
+        comp *= float(self.level_horizontal_compensation_gain)
+        comp *= float(self.level_horizontal_compensation_heave_sign)
+        limit = max(0.0, abs(float(self.level_horizontal_compensation_max)))
+        return float(np.clip(comp, -limit, limit))
+
+    def attitude_priority_horizontal_scale(self, tx_scaled: float, ty_scaled: float) -&gt; float:
+        if not self.attitude_priority_horizontal_slowdown_enabled:
+            return 1.0
+
+        demand = max(abs(float(tx_scaled)), abs(float(ty_scaled)))
+        start = max(0.0, float(self.attitude_priority_horizontal_slowdown_start))
+        full = max(start + 1e-6, float(self.attitude_priority_horizontal_slowdown_full))
+        min_scale = float(np.clip(self.attitude_priority_horizontal_min_scale, 0.0, 1.0))
+
+        if demand &lt;= start:
+            return 1.0
+        if demand &gt;= full:
+            return min_scale
+
+        ratio = (demand - start) / (full - start)
+        return 1.0 - ratio * (1.0 - min_scale)
+
+    def surge_pitch_moment_compensation(self, fx: float) -&gt; float:
+        if not self.surge_pitch_moment_compensation_enabled:
+            return 0.0
+        if abs(float(fx)) &lt; max(0.0, float(self.surge_pitch_moment_min_surge)):
+            return 0.0
+
+        target_pitch = float(self.target_pitch)
+        target_abs = abs(target_pitch)
+        if self.surge_pitch_moment_target_gate_enabled:
+            min_target = max(0.0, float(self.surge_pitch_moment_min_target))
+            if target_abs &lt; min_target:
+                return 0.0
+
+            # Problem case: moving in the same geometric direction as the trim
+            # makes surge thrust create a pitch moment that levels the vehicle.
+            # Internal fx is inverted from the pilot surge command.
+            if target_pitch * float(fx) &gt;= 0.0:
+                return 0.0
+
+        full_target = max(
+            max(0.0, float(self.surge_pitch_moment_min_target)) + 1e-6,
+            abs(float(self.surge_pitch_moment_full_target))
+        )
+        target_scale = float(np.clip(target_abs / full_target, 0.0, 1.0))
+
+        comp = float(self.surge_pitch_moment_gain) * float(fx) * target_scale
+        limit = max(0.0, abs(float(self.surge_pitch_moment_max)))
+        return float(np.clip(comp, -limit, limit))
+
+    def imu_pitch_hold_compensation(self, fx: float) -&gt; float:
+        if not self.imu_pitch_hold_compensation_enabled or not self.have_imu:
+            return 0.0
+        if abs(float(fx)) &lt; max(0.0, float(self.imu_pitch_hold_min_surge)):
+            return 0.0
+
+        pitch_error = self.target_pitch - self.current_pitch
+        if abs(pitch_error) &lt; max(0.0, float(self.imu_pitch_hold_deadband)):
+            return 0.0
+
+        drive = min(1.0, abs(float(fx)))
+        comp = float(self.imu_pitch_hold_gain) * pitch_error * drive
+        limit = max(0.0, abs(float(self.imu_pitch_hold_max)))
+        return float(np.clip(comp, -limit, limit))
+
+    def init_matrices(self):
+        # =========================
+        # thrusters.yaml / model.sdf 기반
+        # 1~4: horizontal (Fx, Fy, Tz)
+        # 5~8: vertical   (Fz, Tx, Ty)
+        # 이 값이 실제 모델과 어긋나면 heave 시 불필요한 자세 토크가 생긴다.
+        # =========================
+        thrusters = [
+            # horizontal 1~4
+            ([0.20, -0.13, 0.0], [0.7071, -0.7071, 0.0]),
+            ([0.20,  0.13, 0.0], [0.7071,  0.7071, 0.0]),
+            ([-0.20, -0.13, 0.0], [0.7071,  0.7071, 0.0]),
+            ([-0.20,  0.13, 0.0], [0.7071, -0.7071, 0.0]),
+
+            # vertical 5~8
+            ([0.20, -0.27, 0.0], [0.0, 0.0, 1.0]),
+            ([0.20,  0.27, 0.0], [0.0, 0.0, 1.0]),
+            ([-0.20, -0.27, 0.0], [0.0, 0.0, 1.0]),
+            ([-0.20,  0.27, 0.0], [0.0, 0.0, 1.0]),
+        ]
+
+        self.TAM = np.zeros((6, 8), dtype=float)
+
+        for i, (pos, direc) in enumerate(thrusters):
+            p = np.array(pos, dtype=float)
+            d = normalize(direc)
+
+            # force
+            self.TAM[0:3, i] = d
+
+            # torque = r x F
+            self.TAM[3:6, i] = np.cross(p, d)
+
+        self.get_logger().info(f&#x27;Full TAM:\n{self.TAM}&#x27;)
+
+        # -------------------------
+        # Horizontal submatrix
+        # rows: Fx, Fy, Tz
+        # cols: thrusters 1~4
+        # -------------------------
+        self.H = np.array([
+            self.TAM[0, 0:4],   # Fx
+            self.TAM[1, 0:4],   # Fy
+            self.TAM[5, 0:4],   # Tz
+        ], dtype=float)
+
+        self.H_pinv = np.linalg.pinv(self.H)
+
+        # -------------------------
+        # Vertical submatrix
+        # rows: Fz, Tx, Ty
+        # cols: thrusters 5~8
+        # -------------------------
+        self.V = np.array([
+            self.TAM[2, 4:8],   # Fz
+            self.TAM[3, 4:8],   # Tx
+            self.TAM[4, 4:8],   # Ty
+        ], dtype=float)
+
+        self.V_pinv = np.linalg.pinv(self.V)
+
+        self.get_logger().info(f&#x27;Horizontal matrix H:\n{self.H}&#x27;)
+        self.get_logger().info(f&#x27;Vertical matrix V:\n{self.V}&#x27;)
+
+    def apply_deadband(self, arr):
+        out = np.array(arr, dtype=float)
+        out[np.abs(out) &lt; self.output_deadband] = 0.0
+        return out
+
+    def add_component_with_headroom(self, base, addition):
+        base = np.array(base, dtype=float)
+        addition = np.array(addition, dtype=float)
+        if float(np.max(np.abs(addition))) &lt; 1e-9:
+            return base
+
+        if float(np.max(np.abs(base + addition))) &lt;= 1.0:
+            return base + addition
+
+        scale = 1.0
+        for base_value, add_value in zip(base, addition):
+            if abs(add_value) &lt; 1e-9:
+                continue
+            if add_value &gt; 0.0:
+                allowed = (1.0 - base_value) / add_value
+            else:
+                allowed = (-1.0 - base_value) / add_value
+            scale = min(scale, allowed)
+
+        scale = float(np.clip(scale, 0.0, 1.0))
+        return base + addition * scale
+
+    def allocate_priority_components(self, components):
+        out = np.zeros(4, dtype=float)
+        for component in components:
+            out = self.add_component_with_headroom(out, component)
+        return out
+
+    def apply_slew_rate(self, target):
+        target = np.array(target, dtype=float)
+        now = self.get_clock().now()
+
+        if self.last_slew_time is None:
+            dt = 0.0
+        else:
+            dt = (now - self.last_slew_time).nanoseconds * 1e-9
+
+        self.last_slew_time = now
+
+        if dt &lt;= 0.0:
+            max_delta = 0.0
+        else:
+            # Cap dt so a callback pause does not allow one large output jump.
+            max_delta = max(0.0, self.slew_rate) * min(dt, 0.1)
+
+        delta = target - self.prev_thrust
+        delta = np.clip(delta, -max_delta, max_delta)
+        out = self.prev_thrust + delta
+        self.prev_thrust = out.copy()
+        return out
+
+    def callback(self, msg: Wrench):
+        # -------------------------
+        # 원하는 wrench
+        # -------------------------
+        fx = float(msg.force.x)*-1
+        fy = float(msg.force.y)
+        fz = float(msg.force.z)
+        tx = float(msg.torque.x)
+        ty = float(msg.torque.y)
+        tz = float(msg.torque.z)
+
+        # Keep pilot/position horizontal motion level in the world frame while
+        # the vehicle is intentionally pitched or rolled for attitude hold.
+        level_comp_fz = self.level_horizontal_heave_compensation(fx, fy)
+
+        # gain 적용
+        fz_scaled = self.heave_gain * fz
+        level_comp_fz_scaled = self.heave_gain * level_comp_fz
+        tx_scaled = self.roll_torque_gain * tx
+        ty_scaled = (
+            self.pitch_torque_gain * ty +
+            self.surge_pitch_moment_compensation(fx) +
+            self.imu_pitch_hold_compensation(fx)
+        )
+        tz_scaled = self.yaw_torque_gain * tz
+
+        horizontal_scale = self.attitude_priority_horizontal_scale(tx_scaled, ty_scaled)
+        fx *= horizontal_scale
+        fy *= horizontal_scale
+
+        # -------------------------
+        # horizontal allocation
+        #   1~4번 thruster만 사용
+        #   Fx, Fy, Tz 담당
+        # -------------------------
+        horiz_force_cmd = np.array([fx, fy, 0.0], dtype=float)
+        horiz_yaw_cmd = np.array([0.0, 0.0, tz_scaled], dtype=float)
+        u_h = (
+            (self.H_pinv @ horiz_force_cmd) * self.horizontal_output_gain +
+            (self.H_pinv @ horiz_yaw_cmd) * self.yaw_output_gain
+        )
+
+        # -------------------------
+        # vertical allocation
+        #   5~8번 thruster만 사용
+        #   Fz, Tx, Ty 담당
+        # -------------------------
+        vert_heave_cmd = np.array([fz_scaled, 0.0, 0.0], dtype=float)
+        vert_torque_cmd = np.array([0.0, tx_scaled, ty_scaled], dtype=float)
+        vert_level_cmd = np.array([level_comp_fz_scaled, 0.0, 0.0], dtype=float)
+
+        u_v_heave = (self.V_pinv @ vert_heave_cmd) * self.vertical_output_gain
+        u_v_torque = (self.V_pinv @ vert_torque_cmd) * self.vertical_output_gain
+        u_v_level = (self.V_pinv @ vert_level_cmd) * self.vertical_output_gain
+
+        if self.torque_first_allocation:
+            components = [u_v_torque, u_v_heave]
+        else:
+            components = [u_v_heave, u_v_torque]
+
+        u_v = self.allocate_priority_components(components)
+        if self.level_horizontal_compensation_uses_spare_only:
+            u_v = self.add_component_with_headroom(u_v, u_v_level)
+        else:
+            u_v = u_v + u_v_level
+
+        # Rear-heavy trim: calibrated pitch feed-forward. With the current
+        # thruster signs/mapping, this raises the rear relative to the front.
+        vertical_active = (
+            np.linalg.norm([fz_scaled, level_comp_fz_scaled, tx_scaled, ty_scaled]) &gt; 1e-6
+        )
+        if vertical_active and abs(self.rear_vertical_bias) &gt; 1e-9:
+            u_v[0] += self.rear_vertical_bias
+            u_v[1] += self.rear_vertical_bias
+            u_v[2] -= self.rear_vertical_bias
+            u_v[3] -= self.rear_vertical_bias
+
+        # -------------------------
+        # combine (decoupled normalization)
+        # horizontal(1~4) and vertical(5~8) groups are normalized independently
+        # so yaw demand won&#x27;t scale down vertical heave compensation.
+        # -------------------------
+        u_h = normalize_group_unit(u_h)
+        u_v = normalize_group_unit(u_v)
+
+        thrust = np.zeros(8, dtype=float)
+        thrust[0:4] = u_h
+        thrust[4:8] = u_v
+
+        # 실제 plugin / can 방향 반대일 경우 대비
+        thrust = thrust * self.signs
+        output_scale = float(np.clip(self.output_scale, 0.0, 1.0))
+        thrust *= output_scale
+        max_output = float(np.clip(self.max_output, 0.0, 1.0))
+        thrust = np.clip(thrust, -max_output, max_output)
+
+        # -------------------------
+        # slew rate + deadband
+        # -------------------------
+        thrust = self.apply_slew_rate(thrust)
+        thrust = self.apply_deadband(thrust)
+
+        # -------------------------
+        # publish
+        # -------------------------
+        out = Float64MultiArray()
+        out.data = thrust.tolist()
+        self.pub.publish(out)
+
+        # -------------------------
+        # debug log
+        # -------------------------
+        # self.get_logger().info(
+        #     f&#x27;wrench=[Fx={fx:.3f}, Fy={fy:.3f}, Fz={fz:.3f}, &#x27;
+        #     f&#x27;Tx={tx:.3f}, Ty={ty:.3f}, Tz={tz:.3f}]&#x27;
+        # )
+        # self.get_logger().info(
+        #     f&#x27;scaled=[Fx={fx:.3f}, Fy={fy:.3f}, Fz={fz_scaled:.3f}, &#x27;
+        #     f&#x27;Tx={tx_scaled:.3f}, Ty={ty_scaled:.3f}, Tz={tz_scaled:.3f}]&#x27;
+        # )
+        # self.get_logger().info(
+        #     f&#x27;u_h={np.round(u_h, 4).tolist()}, &#x27;
+        #     f&#x27;u_v={np.round(u_v, 4).tolist()}&#x27;
+        # )
+        # self.get_logger().info(
+        #     f&#x27;thrust(norm)={np.round(thrust, 4).tolist()}&#x27;
+        # )
+
+    def on_parameter_update(self, params):
+        try:
+            for p in params:
+                if p.name == &#x27;heave_gain&#x27;:
+                    self.heave_gain = float(p.value)
+                elif p.name == &#x27;horizontal_output_gain&#x27;:
+                    self.horizontal_output_gain = float(p.value)
+                elif p.name == &#x27;yaw_output_gain&#x27;:
+                    self.yaw_output_gain = float(p.value)
+                elif p.name == &#x27;vertical_output_gain&#x27;:
+                    self.vertical_output_gain = float(p.value)
+                elif p.name == &#x27;rear_vertical_bias&#x27;:
+                    self.rear_vertical_bias = float(p.value)
+                elif p.name == &#x27;pitch_torque_gain&#x27;:
+                    self.pitch_torque_gain = float(p.value)
+                elif p.name == &#x27;torque_first_allocation&#x27;:
+                    self.torque_first_allocation = bool(p.value)
+                elif p.name == &#x27;level_horizontal_compensation_enabled&#x27;:
+                    self.level_horizontal_compensation_enabled = bool(p.value)
+                elif p.name == &#x27;level_horizontal_compensation_gain&#x27;:
+                    self.level_horizontal_compensation_gain = float(p.value)
+                elif p.name == &#x27;level_horizontal_compensation_max&#x27;:
+                    self.level_horizontal_compensation_max = float(p.value)
+                elif p.name == &#x27;level_horizontal_compensation_heave_sign&#x27;:
+                    self.level_horizontal_compensation_heave_sign = float(p.value)
+                elif p.name == &#x27;level_horizontal_compensation_min_z&#x27;:
+                    self.level_horizontal_compensation_min_z = float(p.value)
+                elif p.name == &#x27;level_horizontal_compensation_uses_spare_only&#x27;:
+                    self.level_horizontal_compensation_uses_spare_only = bool(p.value)
+                elif p.name == &#x27;attitude_priority_horizontal_slowdown_enabled&#x27;:
+                    self.attitude_priority_horizontal_slowdown_enabled = bool(p.value)
+                elif p.name == &#x27;attitude_priority_horizontal_slowdown_start&#x27;:
+                    self.attitude_priority_horizontal_slowdown_start = float(p.value)
+                elif p.name == &#x27;attitude_priority_horizontal_slowdown_full&#x27;:
+                    self.attitude_priority_horizontal_slowdown_full = float(p.value)
+                elif p.name == &#x27;attitude_priority_horizontal_min_scale&#x27;:
+                    self.attitude_priority_horizontal_min_scale = float(p.value)
+                elif p.name == &#x27;surge_pitch_moment_compensation_enabled&#x27;:
+                    self.surge_pitch_moment_compensation_enabled = bool(p.value)
+                elif p.name == &#x27;surge_pitch_moment_gain&#x27;:
+                    self.surge_pitch_moment_gain = float(p.value)
+                elif p.name == &#x27;surge_pitch_moment_max&#x27;:
+                    self.surge_pitch_moment_max = float(p.value)
+                elif p.name == &#x27;surge_pitch_moment_min_surge&#x27;:
+                    self.surge_pitch_moment_min_surge = float(p.value)
+                elif p.name == &#x27;surge_pitch_moment_target_gate_enabled&#x27;:
+                    self.surge_pitch_moment_target_gate_enabled = bool(p.value)
+                elif p.name == &#x27;surge_pitch_moment_min_target_deg&#x27;:
+                    self.surge_pitch_moment_min_target = math.radians(float(p.value))
+                elif p.name == &#x27;surge_pitch_moment_full_target_deg&#x27;:
+                    self.surge_pitch_moment_full_target = math.radians(float(p.value))
+                elif p.name == &#x27;imu_pitch_hold_compensation_enabled&#x27;:
+                    self.imu_pitch_hold_compensation_enabled = bool(p.value)
+                elif p.name == &#x27;imu_pitch_hold_gain&#x27;:
+                    self.imu_pitch_hold_gain = float(p.value)
+                elif p.name == &#x27;imu_pitch_hold_max&#x27;:
+                    self.imu_pitch_hold_max = float(p.value)
+                elif p.name == &#x27;imu_pitch_hold_deadband_deg&#x27;:
+                    self.imu_pitch_hold_deadband = math.radians(float(p.value))
+                elif p.name == &#x27;imu_pitch_hold_min_surge&#x27;:
+                    self.imu_pitch_hold_min_surge = float(p.value)
+                elif p.name == &#x27;slew_rate&#x27;:
+                    self.slew_rate = float(p.value)
+                elif p.name == &#x27;max_output&#x27;:
+                    self.max_output = float(p.value)
+                elif p.name == &#x27;output_scale&#x27;:
+                    self.output_scale = float(p.value)
+                elif p.name == &#x27;use_joy_speed_scale_for_output&#x27;:
+                    self.use_joy_speed_scale_for_output = bool(p.value)
+                elif p.name == &#x27;output_deadband&#x27;:
+                    self.output_deadband = float(p.value)
+
+            self.get_logger().info(
+                f&#x27;Allocator parameters updated: &#x27;
+                f&#x27;heave_gain={self.heave_gain:.3f}, &#x27;
+                f&#x27;horizontal_output_gain={self.horizontal_output_gain:.3f}, &#x27;
+                f&#x27;yaw_output_gain={self.yaw_output_gain:.3f}, &#x27;
+                f&#x27;vertical_output_gain={self.vertical_output_gain:.3f}, &#x27;
+                f&#x27;rear_vertical_bias={self.rear_vertical_bias:.3f}, &#x27;
+                f&#x27;pitch_torque_gain={self.pitch_torque_gain:.3f}, &#x27;
+                f&#x27;torque_first_allocation={self.torque_first_allocation}, &#x27;
+                f&#x27;level_horizontal_compensation={self.level_horizontal_compensation_enabled}, &#x27;
+                f&#x27;level_horizontal_compensation_gain={self.level_horizontal_compensation_gain:.3f}, &#x27;
+                f&#x27;level_horizontal_compensation_max={self.level_horizontal_compensation_max:.3f}, &#x27;
+                f&#x27;level_horizontal_compensation_heave_sign={self.level_horizontal_compensation_heave_sign:.3f}, &#x27;
+                f&#x27;level_horizontal_compensation_spare_only={self.level_horizontal_compensation_uses_spare_only}, &#x27;
+                f&#x27;attitude_priority_horizontal_slowdown={self.attitude_priority_horizontal_slowdown_enabled}, &#x27;
+                f&#x27;attitude_priority_horizontal_min_scale={self.attitude_priority_horizontal_min_scale:.3f}, &#x27;
+                f&#x27;surge_pitch_moment_comp={self.surge_pitch_moment_compensation_enabled}, &#x27;
+                f&#x27;surge_pitch_moment_gain={self.surge_pitch_moment_gain:.3f}, &#x27;
+                f&#x27;surge_pitch_moment_min_surge={self.surge_pitch_moment_min_surge:.3f}, &#x27;
+                f&#x27;surge_pitch_moment_target_gate={self.surge_pitch_moment_target_gate_enabled}, &#x27;
+                f&#x27;imu_pitch_hold_comp={self.imu_pitch_hold_compensation_enabled}, &#x27;
+                f&#x27;imu_pitch_hold_gain={self.imu_pitch_hold_gain:.3f}, &#x27;
+                f&#x27;slew_rate={self.slew_rate:.3f}/s, &#x27;
+                f&#x27;max_output={self.max_output:.3f}, &#x27;
+                f&#x27;output_scale={self.output_scale:.3f}, &#x27;
+                f&#x27;use_joy_speed_scale_for_output={self.use_joy_speed_scale_for_output}, &#x27;
+                f&#x27;output_deadband={self.output_deadband:.3f}&#x27;
+            )
+            return SetParametersResult(successful=True)
+        except Exception as e:
+            return SetParametersResult(successful=False, reason=str(e))
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = AllocatorNode()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == &#x27;__main__&#x27;:
+    main()</code></pre>
+        </details>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

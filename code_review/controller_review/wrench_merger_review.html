@@ -1,0 +1,784 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Wrench Merger Review</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body class="detail-body">
+  <div class="detail-shell">
+    <aside class="detail-sidebar">
+      <a class="back-link" href="index.html">← 리뷰 홈으로</a>
+      <p class="eyebrow">Controller Code Review</p>
+      <h1>Wrench Merger Review</h1>
+      <p class="meta"><code>code_review/code/wrench_merger.py</code></p>
+      <nav class="toc">
+        <a href="#role">역할</a>
+        <a href="#map">함수 맵</a>
+        <a href="#init">`__init__()`</a>
+<a href="#section">입력 저장 함수</a>
+<a href="#manual-wrench-is-fresh">`manual_wrench_is_fresh()`</a>
+<a href="#publish-merged-wrench">`publish_merged_wrench()`</a>
+<a href="#on-parameter-update">`on_parameter_update()`</a>
+        <a href="#full-source">전체 코드</a>
+      </nav>
+    </aside>
+
+    <main class="detail-content">
+      <section id="role" class="hero">
+        <div>
+          <p class="eyebrow">Module Overview</p>
+          <h2>Wrench Merger Review</h2>
+          <p>이 코드는 manual input, depth, position, attitude 출력을 축별 규칙으로 합쳐 최종 <code>Wrench</code>를 만드는 supervisory mixer입니다.</p>
+          <p>핵심 설계는 <code>manual override + auto hold arbitration</code>입니다. 각 축별로 manual과 auto의 우선순위를 다르게 해석해 최종 명령을 만듭니다.</p>
+          <p>리뷰 포인트는 <code>manual freshness가 어떻게 적용되는지</code>, <code>depth active일 때 heave를 어떻게 해석하는지</code>, <code>roll/pitch와 yaw의 arbitration 철학이 어떻게 다른지</code>입니다.</p>
+        </div>
+      </section>
+
+      <section id="map" class="panel">
+        <div class="panel-heading">
+          <div>
+            <p class="section-kicker">Function Map</p>
+            <h2>이 파일에 있는 함수들</h2>
+          </div>
+        </div>
+        <div class="review-card">
+          <ul class="function-map">
+            <li><code>__init__()</code></li>
+<li><code>manual_wrench_callback()</code></li>
+<li><code>depth_heave_callback()</code></li>
+<li><code>depth_active_callback()</code></li>
+<li><code>position_force_callback()</code></li>
+<li><code>attitude_torque_callback()</code></li>
+<li><code>armed_callback()</code></li>
+<li><code>publish_zero_wrench()</code></li>
+<li><code>manual_wrench_is_fresh()</code></li>
+<li><code>publish_merged_wrench()</code></li>
+<li><code>on_parameter_update()</code></li>
+<li><code>main()</code></li>
+          </ul>
+        </div>
+      </section>
+
+      <section id="init" class="review-section">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">Function Review</p>
+            <h2>`__init__()`</h2>
+          </div>
+        </div>
+        <div class="review-grid">
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>입력 토픽, armed gating, manual override threshold, publish timer와 마지막 입력 상태들을 준비합니다.</p>
+            <h3>영향</h3>
+            <p>이 함수가 곧 이 노드의 arbitration 정책 초기 상태를 만듭니다. 특히 timer 기반 publish는 입력 주기가 달라도 최종 wrench 주기를 일정하게 유지합니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>구조가 단순하고 목적이 분명합니다. 이런 중간 supervisory layer가 있으면 상위 제어기와 allocator를 느슨하게 연결할 수 있습니다.</p>
+          </article>
+          <article class="review-card code-card">
+            <h3>실제 코드</h3>
+            <pre><code>def __init__(self):
+    super().__init__(&#x27;wrench_merger&#x27;)
+
+    # Parameters
+    self.declare_parameter(&#x27;manual_wrench_topic&#x27;, &#x27;/rov/wrench_manual&#x27;)
+    self.declare_parameter(&#x27;depth_heave_topic&#x27;, &#x27;/ctrl/depth_heave&#x27;)
+    self.declare_parameter(&#x27;depth_active_topic&#x27;, &#x27;/ctrl/depth_active&#x27;)
+    self.declare_parameter(&#x27;position_force_topic&#x27;, &#x27;/ctrl/position_force&#x27;)
+    self.declare_parameter(&#x27;attitude_torque_topic&#x27;, &#x27;/ctrl/attitude_torque&#x27;)
+    self.declare_parameter(&#x27;output_wrench_topic&#x27;, &#x27;/rov/wrench_cmd&#x27;)
+    self.declare_parameter(&#x27;armed_topic&#x27;, &#x27;/rov/armed&#x27;)
+    self.declare_parameter(&#x27;publish_rate&#x27;, 50.0)
+
+    # manual heave override threshold
+    self.declare_parameter(&#x27;manual_heave_override_threshold&#x27;, 0.05)
+    self.declare_parameter(&#x27;manual_xy_override_threshold&#x27;, 0.05)
+    self.declare_parameter(&#x27;manual_yaw_override_threshold&#x27;, 0.02)
+    self.declare_parameter(&#x27;manual_wrench_timeout_sec&#x27;, 0.5)
+
+    self.manual_wrench_topic = self.get_parameter(
+        &#x27;manual_wrench_topic&#x27;).get_parameter_value().string_value
+    self.depth_heave_topic = self.get_parameter(
+        &#x27;depth_heave_topic&#x27;).get_parameter_value().string_value
+    self.depth_active_topic = self.get_parameter(
+        &#x27;depth_active_topic&#x27;).get_parameter_value().string_value
+    self.position_force_topic = self.get_parameter(
+        &#x27;position_force_topic&#x27;).get_parameter_value().string_value
+    self.attitude_torque_topic = self.get_parameter(
+        &#x27;attitude_torque_topic&#x27;).get_parameter_value().string_value
+    self.output_wrench_topic = self.get_parameter(
+        &#x27;output_wrench_topic&#x27;).get_parameter_value().string_value
+    self.armed_topic = self.get_parameter(
+        &#x27;armed_topic&#x27;).get_parameter_value().string_value
+    self.publish_rate = self.get_parameter(
+        &#x27;publish_rate&#x27;).get_parameter_value().double_value
+    self.manual_heave_override_threshold = self.get_parameter(
+        &#x27;manual_heave_override_threshold&#x27;).get_parameter_value().double_value
+    self.manual_xy_override_threshold = self.get_parameter(
+        &#x27;manual_xy_override_threshold&#x27;).get_parameter_value().double_value
+    self.manual_yaw_override_threshold = self.get_parameter(
+        &#x27;manual_yaw_override_threshold&#x27;).get_parameter_value().double_value
+    self.manual_wrench_timeout_sec = self.get_parameter(
+        &#x27;manual_wrench_timeout_sec&#x27;).get_parameter_value().double_value
+
+    # State
+    self.last_manual_wrench = Wrench()
+    self.last_manual_wrench_time = None
+    self.last_depth_heave = 0.0
+    self.depth_active = False
+    self.last_position_force = Wrench()
+    self.last_attitude_torque = Wrench()
+
+    self.manual_received = False
+    self.depth_received = False
+    self.depth_active_received = False
+    self.position_received = False
+    self.attitude_received = False
+    self.armed_received = False
+    self.armed = False
+    self._zero_log_counter = 0
+    self._merge_log_counter = 0
+
+    # Subscribers
+    self.manual_sub = self.create_subscription(
+        Wrench,
+        self.manual_wrench_topic,
+        self.manual_wrench_callback,
+        CONTROL_SUB_QOS
+    )
+
+    self.depth_sub = self.create_subscription(
+        Float64,
+        self.depth_heave_topic,
+        self.depth_heave_callback,
+        CONTROL_SUB_QOS
+    )
+    self.depth_active_sub = self.create_subscription(
+        Bool,
+        self.depth_active_topic,
+        self.depth_active_callback,
+        CONTROL_SUB_QOS
+    )
+
+    self.position_sub = self.create_subscription(
+        Wrench,
+        self.position_force_topic,
+        self.position_force_callback,
+        CONTROL_SUB_QOS
+    )
+
+    self.attitude_sub = self.create_subscription(
+        Wrench,
+        self.attitude_torque_topic,
+        self.attitude_torque_callback,
+        CONTROL_SUB_QOS
+    )
+
+    self.armed_sub = self.create_subscription(
+        Bool,
+        self.armed_topic,
+        self.armed_callback,
+        ARMED_QOS
+    )
+
+    # Publisher
+    self.wrench_pub = self.create_publisher(
+        Wrench,
+        self.output_wrench_topic,
+        10
+    )
+
+    period = 1.0 / self.publish_rate if self.publish_rate &gt; 0.0 else 0.05
+    self.timer = self.create_timer(period, self.publish_merged_wrench)
+
+    self.add_on_set_parameters_callback(self.on_parameter_update)
+    self.get_logger().info(&#x27;WrenchMerger initialized&#x27;)
+    self.get_logger().info(f&#x27;  manual_wrench_topic             = {self.manual_wrench_topic}&#x27;)
+    self.get_logger().info(f&#x27;  depth_heave_topic               = {self.depth_heave_topic}&#x27;)
+    self.get_logger().info(f&#x27;  depth_active_topic              = {self.depth_active_topic}&#x27;)
+    self.get_logger().info(f&#x27;  position_force_topic            = {self.position_force_topic}&#x27;)
+    self.get_logger().info(f&#x27;  attitude_torque_topic           = {self.attitude_torque_topic}&#x27;)
+    self.get_logger().info(f&#x27;  output_wrench_topic             = {self.output_wrench_topic}&#x27;)
+    self.get_logger().info(f&#x27;  armed_topic                     = {self.armed_topic}&#x27;)
+    self.get_logger().info(f&#x27;  publish_rate                    = {self.publish_rate:.1f} Hz&#x27;)
+    self.get_logger().info(f&#x27;  manual_heave_override_threshold = {self.manual_heave_override_threshold:.3f}&#x27;)
+    self.get_logger().info(f&#x27;  manual_xy_override_threshold    = {self.manual_xy_override_threshold:.3f}&#x27;)
+    self.get_logger().info(f&#x27;  manual_yaw_override_threshold   = {self.manual_yaw_override_threshold:.3f}&#x27;)
+    self.get_logger().info(f&#x27;  manual_wrench_timeout_sec       = {self.manual_wrench_timeout_sec:.3f}&#x27;)
+    self.get_logger().info(&#x27;  initial armed state             = False&#x27;)</code></pre>
+          </article>
+        </div>
+      </section> <section id="section" class="review-section">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">Function Review</p>
+            <h2>입력 저장 함수</h2>
+          </div>
+        </div>
+        <div class="review-grid">
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>각 제어기 출력을 최신값으로 저장하고 armed 상태를 갱신하는 함수들입니다.</p>
+            <h3>영향</h3>
+            <p>이 함수들이 직접 최종 출력은 만들지 않지만, timer 루프가 읽을 최신 상태를 보관합니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>timer 기반 merge 구조와 잘 맞습니다. 다만 manual 이외 auto 입력에 freshness timestamp가 없어 마지막 자동 출력이 오래 남을 수 있습니다.</p>
+          </article>
+          <article class="review-card code-card">
+            <h3>실제 코드</h3>
+            <pre><code>def manual_wrench_callback(self, msg: Wrench):
+    self.last_manual_wrench = msg
+    self.last_manual_wrench_time = self.get_clock().now()
+    self.manual_received = True
+
+def depth_heave_callback(self, msg: Float64):
+    self.last_depth_heave = msg.data
+    self.depth_received = True
+
+def depth_active_callback(self, msg: Bool):
+    self.depth_active = bool(msg.data)
+    self.depth_active_received = True
+
+def position_force_callback(self, msg: Wrench):
+    self.last_position_force = msg
+    self.position_received = True
+
+def attitude_torque_callback(self, msg: Wrench):
+    self.last_attitude_torque = msg
+    self.attitude_received = True
+
+def armed_callback(self, msg: Bool):
+    prev = self.armed
+    self.armed = bool(msg.data)
+    self.armed_received = True
+
+    if prev != self.armed:
+        self.get_logger().info(f&#x27;armed state changed: {self.armed}&#x27;)</code></pre>
+          </article>
+        </div>
+      </section> <section id="manual-wrench-is-fresh" class="review-section">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">Function Review</p>
+            <h2>`manual_wrench_is_fresh()`</h2>
+          </div>
+        </div>
+        <div class="review-grid">
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>manual input이 최근에 들어왔는지 판정하고 stale이면 사실상 zero wrench로 취급하게 만드는 안전 함수입니다.</p>
+            <h3>영향</h3>
+            <p>조종기 신호 유실 시 마지막 manual 명령이 latch되는 문제를 막아줍니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>현재 코드베이스에서 freshness 처리가 가장 깔끔하게 들어간 부분입니다. 같은 아이디어가 auto inputs에도 확장되면 훨씬 견고해집니다.</p>
+          </article>
+          <article class="review-card code-card">
+            <h3>실제 코드</h3>
+            <pre><code>def publish_zero_wrench(self):
+    self.wrench_pub.publish(Wrench())
+
+def manual_wrench_is_fresh(self) -&gt; bool:
+    if not self.manual_received:
+        return False
+    if self.manual_wrench_timeout_sec &lt;= 0.0:
+        return True
+    if self.last_manual_wrench_time is None:
+        return False
+
+    age = (
+        self.get_clock().now() - self.last_manual_wrench_time
+    ).nanoseconds * 1e-9
+    return age &lt;= self.manual_wrench_timeout_sec</code></pre>
+          </article>
+        </div>
+      </section> <section id="publish-merged-wrench" class="review-section">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">Function Review</p>
+            <h2>`publish_merged_wrench()`</h2>
+          </div>
+        </div>
+        <div class="review-grid">
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>armed gating, manual freshness 확인, 축별 override 규칙, depth active 정책, yaw arbitration을 적용해 최종 wrench를 publish합니다.</p>
+            <h3>영향</h3>
+            <p>이 함수가 전체 제어 시스템의 최종 의사결정자입니다. 같은 upper controller 출력이라도 여기서 어떤 축은 manual이 이기고 어떤 축은 auto가 이깁니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>정책은 명료하고 읽기 쉽습니다. 다만 <code>last_position_force</code>, <code>last_depth_heave</code>, <code>last_attitude_torque</code>에도 freshness를 넣지 않으면 상위 노드 장애 시 마지막 값이 계속 살아남습니다.</p>
+          </article>
+          <article class="review-card code-card">
+            <h3>실제 코드</h3>
+            <pre><code>def publish_merged_wrench(self):
+    # armed 신호를 아직 못 받았으면 안전하게 0 유지
+    if not self.armed_received:
+        self.publish_zero_wrench()
+        self._zero_log_counter += 1
+        if self._zero_log_counter % 100 == 1:
+            self.get_logger().warn(&#x27;armed state not received yet -&gt; publishing zero wrench&#x27;)
+        self.get_logger().debug(&#x27;armed state not received yet -&gt; publishing zero wrench&#x27;)
+        return
+
+    # disarm이면 어떤 자동제어가 살아있어도 최종 출력은 무조건 0
+    if not self.armed:
+        self.publish_zero_wrench()
+        self._zero_log_counter += 1
+        if self._zero_log_counter % 100 == 1:
+            self.get_logger().warn(&#x27;DISARMED -&gt; publishing zero wrench&#x27;)
+        self.get_logger().debug(&#x27;DISARMED -&gt; publishing zero wrench&#x27;)
+        return
+
+    manual_wrench = self.last_manual_wrench if self.manual_wrench_is_fresh() else Wrench()
+    merged = copy.deepcopy(manual_wrench)
+
+    manual_surge = manual_wrench.force.x
+    manual_sway = manual_wrench.force.y
+    manual_heave = manual_wrench.force.z
+
+    if abs(manual_surge) &gt; self.manual_xy_override_threshold:
+        merged.force.x = manual_surge
+    else:
+        merged.force.x = self.last_position_force.force.x
+
+    if abs(manual_sway) &gt; self.manual_xy_override_threshold:
+        merged.force.y = manual_sway
+    else:
+        merged.force.y = self.last_position_force.force.y
+
+    # BlueROV-style depth hold:
+    # when depth control is active, joystick heave is consumed by the
+    # depth controller as a climb/descent-rate request. The final heave
+    # output stays automatic so releasing the stick immediately holds depth.
+    if self.depth_active:
+        merged.force.z = self.last_depth_heave + self.last_position_force.force.z
+        heave_mode = &#x27;AUTO_DEPTH_HOLD&#x27;
+    elif abs(manual_heave) &gt; self.manual_heave_override_threshold:
+        merged.force.z = manual_heave
+        heave_mode = &#x27;MANUAL_HEAVE_OVERRIDE&#x27;
+    else:
+        merged.force.z = self.last_depth_heave + self.last_position_force.force.z
+        heave_mode = &#x27;AUTO_DEPTH_PLUS_POSITION_COMP&#x27;
+
+    # Attitude auto control overrides roll/pitch torques
+    merged.torque.x = self.last_attitude_torque.torque.x
+    merged.torque.y = self.last_attitude_torque.torque.y
+
+    # Keep manual yaw command responsive. If user yaw stick is active, manual wins.
+    manual_yaw = manual_wrench.torque.z
+    if abs(manual_yaw) &gt; self.manual_yaw_override_threshold:
+        merged.torque.z = manual_yaw
+    else:
+        merged.torque.z = self.last_attitude_torque.torque.z
+
+    self.wrench_pub.publish(merged)
+    self._merge_log_counter += 1
+    if self._merge_log_counter % 100 == 1:
+        self.get_logger().info(
+            f&#x27;merged wrench: heave_mode={heave_mode}, &#x27;
+            f&#x27;manual_heave={manual_heave:.4f}, &#x27;
+            f&#x27;depth_heave={self.last_depth_heave:.4f}, &#x27;
+            f&#x27;out_force_z={merged.force.z:.4f}&#x27;
+        )
+
+    # self.get_logger().debug(
+    #     f&#x27;armed={self.armed}, &#x27;
+    #     f&#x27;heave_mode={heave_mode}, &#x27;
+    #     f&#x27;manual_received={self.manual_received}, &#x27;
+    #     f&#x27;depth_received={self.depth_received}, &#x27;
+    #     f&#x27;attitude_received={self.attitude_received}, &#x27;
+    #     f&#x27;manual_heave={manual_heave:.3f}, auto_heave={self.last_depth_heave:.3f}, &#x27;
+    #     f&#x27;fx={merged.force.x:.3f}, fy={merged.force.y:.3f}, fz={merged.force.z:.3f}, &#x27;
+    #     f&#x27;tx={merged.torque.x:.3f}, ty={merged.torque.y:.3f}, tz={merged.torque.z:.3f}&#x27;
+    # )</code></pre>
+          </article>
+        </div>
+      </section> <section id="on-parameter-update" class="review-section">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">Function Review</p>
+            <h2>`on_parameter_update()`</h2>
+          </div>
+        </div>
+        <div class="review-grid">
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>publish rate와 override threshold를 런타임에 갱신하고 timer도 재생성합니다.</p>
+            <h3>영향</h3>
+            <p>운용자가 merge 주기와 manual override 감도를 실시간 조정할 수 있습니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>supervisory node답게 runtime tuning이 단순하고 이해하기 쉽습니다.</p>
+          </article>
+          <article class="review-card code-card">
+            <h3>실제 코드</h3>
+            <pre><code>def on_parameter_update(self, params):
+    try:
+        recreate_timer = False
+
+        for p in params:
+            if p.name == &#x27;publish_rate&#x27;:
+                self.publish_rate = float(p.value)
+                recreate_timer = True
+            elif p.name == &#x27;manual_heave_override_threshold&#x27;:
+                self.manual_heave_override_threshold = float(p.value)
+            elif p.name == &#x27;manual_xy_override_threshold&#x27;:
+                self.manual_xy_override_threshold = float(p.value)
+            elif p.name == &#x27;manual_yaw_override_threshold&#x27;:
+                self.manual_yaw_override_threshold = float(p.value)
+            elif p.name == &#x27;manual_wrench_timeout_sec&#x27;:
+                self.manual_wrench_timeout_sec = float(p.value)
+
+        if recreate_timer:
+            self.timer.cancel()
+            period = 1.0 / self.publish_rate if self.publish_rate &gt; 0.0 else 0.05
+            self.timer = self.create_timer(period, self.publish_merged_wrench)
+
+        self.get_logger().info(&#x27;WrenchMerger parameters updated at runtime&#x27;)
+        return SetParametersResult(successful=True)
+    except Exception as e:
+        return SetParametersResult(successful=False, reason=str(e))</code></pre>
+          </article>
+        </div>
+      </section>
+
+      <section id="full-source" class="panel">
+        <div class="panel-heading">
+          <div>
+            <p class="section-kicker">Full Source</p>
+            <h2>전체 코드</h2>
+          </div>
+        </div>
+        <details class="source-details" open>
+          <summary>전체 파일 펼치기 / 접기</summary>
+          <pre><code>import copy
+
+import rclpy
+from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+
+from geometry_msgs.msg import Wrench
+from std_msgs.msg import Float64, Bool
+from rcl_interfaces.msg import SetParametersResult
+
+
+ARMED_QOS = QoSProfile(
+    depth=1,
+    reliability=ReliabilityPolicy.RELIABLE,
+    durability=DurabilityPolicy.TRANSIENT_LOCAL,
+)
+
+CONTROL_SUB_QOS = QoSProfile(
+    depth=10,
+    reliability=ReliabilityPolicy.BEST_EFFORT,
+    durability=DurabilityPolicy.VOLATILE,
+)
+
+
+class WrenchMerger(Node):
+
+    def __init__(self):
+        super().__init__(&#x27;wrench_merger&#x27;)
+
+        # Parameters
+        self.declare_parameter(&#x27;manual_wrench_topic&#x27;, &#x27;/rov/wrench_manual&#x27;)
+        self.declare_parameter(&#x27;depth_heave_topic&#x27;, &#x27;/ctrl/depth_heave&#x27;)
+        self.declare_parameter(&#x27;depth_active_topic&#x27;, &#x27;/ctrl/depth_active&#x27;)
+        self.declare_parameter(&#x27;position_force_topic&#x27;, &#x27;/ctrl/position_force&#x27;)
+        self.declare_parameter(&#x27;attitude_torque_topic&#x27;, &#x27;/ctrl/attitude_torque&#x27;)
+        self.declare_parameter(&#x27;output_wrench_topic&#x27;, &#x27;/rov/wrench_cmd&#x27;)
+        self.declare_parameter(&#x27;armed_topic&#x27;, &#x27;/rov/armed&#x27;)
+        self.declare_parameter(&#x27;publish_rate&#x27;, 50.0)
+
+        # manual heave override threshold
+        self.declare_parameter(&#x27;manual_heave_override_threshold&#x27;, 0.05)
+        self.declare_parameter(&#x27;manual_xy_override_threshold&#x27;, 0.05)
+        self.declare_parameter(&#x27;manual_yaw_override_threshold&#x27;, 0.02)
+        self.declare_parameter(&#x27;manual_wrench_timeout_sec&#x27;, 0.5)
+
+        self.manual_wrench_topic = self.get_parameter(
+            &#x27;manual_wrench_topic&#x27;).get_parameter_value().string_value
+        self.depth_heave_topic = self.get_parameter(
+            &#x27;depth_heave_topic&#x27;).get_parameter_value().string_value
+        self.depth_active_topic = self.get_parameter(
+            &#x27;depth_active_topic&#x27;).get_parameter_value().string_value
+        self.position_force_topic = self.get_parameter(
+            &#x27;position_force_topic&#x27;).get_parameter_value().string_value
+        self.attitude_torque_topic = self.get_parameter(
+            &#x27;attitude_torque_topic&#x27;).get_parameter_value().string_value
+        self.output_wrench_topic = self.get_parameter(
+            &#x27;output_wrench_topic&#x27;).get_parameter_value().string_value
+        self.armed_topic = self.get_parameter(
+            &#x27;armed_topic&#x27;).get_parameter_value().string_value
+        self.publish_rate = self.get_parameter(
+            &#x27;publish_rate&#x27;).get_parameter_value().double_value
+        self.manual_heave_override_threshold = self.get_parameter(
+            &#x27;manual_heave_override_threshold&#x27;).get_parameter_value().double_value
+        self.manual_xy_override_threshold = self.get_parameter(
+            &#x27;manual_xy_override_threshold&#x27;).get_parameter_value().double_value
+        self.manual_yaw_override_threshold = self.get_parameter(
+            &#x27;manual_yaw_override_threshold&#x27;).get_parameter_value().double_value
+        self.manual_wrench_timeout_sec = self.get_parameter(
+            &#x27;manual_wrench_timeout_sec&#x27;).get_parameter_value().double_value
+
+        # State
+        self.last_manual_wrench = Wrench()
+        self.last_manual_wrench_time = None
+        self.last_depth_heave = 0.0
+        self.depth_active = False
+        self.last_position_force = Wrench()
+        self.last_attitude_torque = Wrench()
+
+        self.manual_received = False
+        self.depth_received = False
+        self.depth_active_received = False
+        self.position_received = False
+        self.attitude_received = False
+        self.armed_received = False
+        self.armed = False
+        self._zero_log_counter = 0
+        self._merge_log_counter = 0
+
+        # Subscribers
+        self.manual_sub = self.create_subscription(
+            Wrench,
+            self.manual_wrench_topic,
+            self.manual_wrench_callback,
+            CONTROL_SUB_QOS
+        )
+
+        self.depth_sub = self.create_subscription(
+            Float64,
+            self.depth_heave_topic,
+            self.depth_heave_callback,
+            CONTROL_SUB_QOS
+        )
+        self.depth_active_sub = self.create_subscription(
+            Bool,
+            self.depth_active_topic,
+            self.depth_active_callback,
+            CONTROL_SUB_QOS
+        )
+
+        self.position_sub = self.create_subscription(
+            Wrench,
+            self.position_force_topic,
+            self.position_force_callback,
+            CONTROL_SUB_QOS
+        )
+
+        self.attitude_sub = self.create_subscription(
+            Wrench,
+            self.attitude_torque_topic,
+            self.attitude_torque_callback,
+            CONTROL_SUB_QOS
+        )
+
+        self.armed_sub = self.create_subscription(
+            Bool,
+            self.armed_topic,
+            self.armed_callback,
+            ARMED_QOS
+        )
+
+        # Publisher
+        self.wrench_pub = self.create_publisher(
+            Wrench,
+            self.output_wrench_topic,
+            10
+        )
+
+        period = 1.0 / self.publish_rate if self.publish_rate &gt; 0.0 else 0.05
+        self.timer = self.create_timer(period, self.publish_merged_wrench)
+
+        self.add_on_set_parameters_callback(self.on_parameter_update)
+        self.get_logger().info(&#x27;WrenchMerger initialized&#x27;)
+        self.get_logger().info(f&#x27;  manual_wrench_topic             = {self.manual_wrench_topic}&#x27;)
+        self.get_logger().info(f&#x27;  depth_heave_topic               = {self.depth_heave_topic}&#x27;)
+        self.get_logger().info(f&#x27;  depth_active_topic              = {self.depth_active_topic}&#x27;)
+        self.get_logger().info(f&#x27;  position_force_topic            = {self.position_force_topic}&#x27;)
+        self.get_logger().info(f&#x27;  attitude_torque_topic           = {self.attitude_torque_topic}&#x27;)
+        self.get_logger().info(f&#x27;  output_wrench_topic             = {self.output_wrench_topic}&#x27;)
+        self.get_logger().info(f&#x27;  armed_topic                     = {self.armed_topic}&#x27;)
+        self.get_logger().info(f&#x27;  publish_rate                    = {self.publish_rate:.1f} Hz&#x27;)
+        self.get_logger().info(f&#x27;  manual_heave_override_threshold = {self.manual_heave_override_threshold:.3f}&#x27;)
+        self.get_logger().info(f&#x27;  manual_xy_override_threshold    = {self.manual_xy_override_threshold:.3f}&#x27;)
+        self.get_logger().info(f&#x27;  manual_yaw_override_threshold   = {self.manual_yaw_override_threshold:.3f}&#x27;)
+        self.get_logger().info(f&#x27;  manual_wrench_timeout_sec       = {self.manual_wrench_timeout_sec:.3f}&#x27;)
+        self.get_logger().info(&#x27;  initial armed state             = False&#x27;)
+
+    def manual_wrench_callback(self, msg: Wrench):
+        self.last_manual_wrench = msg
+        self.last_manual_wrench_time = self.get_clock().now()
+        self.manual_received = True
+
+    def depth_heave_callback(self, msg: Float64):
+        self.last_depth_heave = msg.data
+        self.depth_received = True
+
+    def depth_active_callback(self, msg: Bool):
+        self.depth_active = bool(msg.data)
+        self.depth_active_received = True
+
+    def position_force_callback(self, msg: Wrench):
+        self.last_position_force = msg
+        self.position_received = True
+
+    def attitude_torque_callback(self, msg: Wrench):
+        self.last_attitude_torque = msg
+        self.attitude_received = True
+
+    def armed_callback(self, msg: Bool):
+        prev = self.armed
+        self.armed = bool(msg.data)
+        self.armed_received = True
+
+        if prev != self.armed:
+            self.get_logger().info(f&#x27;armed state changed: {self.armed}&#x27;)
+
+    def publish_zero_wrench(self):
+        self.wrench_pub.publish(Wrench())
+
+    def manual_wrench_is_fresh(self) -&gt; bool:
+        if not self.manual_received:
+            return False
+        if self.manual_wrench_timeout_sec &lt;= 0.0:
+            return True
+        if self.last_manual_wrench_time is None:
+            return False
+
+        age = (
+            self.get_clock().now() - self.last_manual_wrench_time
+        ).nanoseconds * 1e-9
+        return age &lt;= self.manual_wrench_timeout_sec
+
+    def publish_merged_wrench(self):
+        # armed 신호를 아직 못 받았으면 안전하게 0 유지
+        if not self.armed_received:
+            self.publish_zero_wrench()
+            self._zero_log_counter += 1
+            if self._zero_log_counter % 100 == 1:
+                self.get_logger().warn(&#x27;armed state not received yet -&gt; publishing zero wrench&#x27;)
+            self.get_logger().debug(&#x27;armed state not received yet -&gt; publishing zero wrench&#x27;)
+            return
+
+        # disarm이면 어떤 자동제어가 살아있어도 최종 출력은 무조건 0
+        if not self.armed:
+            self.publish_zero_wrench()
+            self._zero_log_counter += 1
+            if self._zero_log_counter % 100 == 1:
+                self.get_logger().warn(&#x27;DISARMED -&gt; publishing zero wrench&#x27;)
+            self.get_logger().debug(&#x27;DISARMED -&gt; publishing zero wrench&#x27;)
+            return
+
+        manual_wrench = self.last_manual_wrench if self.manual_wrench_is_fresh() else Wrench()
+        merged = copy.deepcopy(manual_wrench)
+
+        manual_surge = manual_wrench.force.x
+        manual_sway = manual_wrench.force.y
+        manual_heave = manual_wrench.force.z
+
+        if abs(manual_surge) &gt; self.manual_xy_override_threshold:
+            merged.force.x = manual_surge
+        else:
+            merged.force.x = self.last_position_force.force.x
+
+        if abs(manual_sway) &gt; self.manual_xy_override_threshold:
+            merged.force.y = manual_sway
+        else:
+            merged.force.y = self.last_position_force.force.y
+
+        # BlueROV-style depth hold:
+        # when depth control is active, joystick heave is consumed by the
+        # depth controller as a climb/descent-rate request. The final heave
+        # output stays automatic so releasing the stick immediately holds depth.
+        if self.depth_active:
+            merged.force.z = self.last_depth_heave + self.last_position_force.force.z
+            heave_mode = &#x27;AUTO_DEPTH_HOLD&#x27;
+        elif abs(manual_heave) &gt; self.manual_heave_override_threshold:
+            merged.force.z = manual_heave
+            heave_mode = &#x27;MANUAL_HEAVE_OVERRIDE&#x27;
+        else:
+            merged.force.z = self.last_depth_heave + self.last_position_force.force.z
+            heave_mode = &#x27;AUTO_DEPTH_PLUS_POSITION_COMP&#x27;
+
+        # Attitude auto control overrides roll/pitch torques
+        merged.torque.x = self.last_attitude_torque.torque.x
+        merged.torque.y = self.last_attitude_torque.torque.y
+
+        # Keep manual yaw command responsive. If user yaw stick is active, manual wins.
+        manual_yaw = manual_wrench.torque.z
+        if abs(manual_yaw) &gt; self.manual_yaw_override_threshold:
+            merged.torque.z = manual_yaw
+        else:
+            merged.torque.z = self.last_attitude_torque.torque.z
+
+        self.wrench_pub.publish(merged)
+        self._merge_log_counter += 1
+        if self._merge_log_counter % 100 == 1:
+            self.get_logger().info(
+                f&#x27;merged wrench: heave_mode={heave_mode}, &#x27;
+                f&#x27;manual_heave={manual_heave:.4f}, &#x27;
+                f&#x27;depth_heave={self.last_depth_heave:.4f}, &#x27;
+                f&#x27;out_force_z={merged.force.z:.4f}&#x27;
+            )
+
+        # self.get_logger().debug(
+        #     f&#x27;armed={self.armed}, &#x27;
+        #     f&#x27;heave_mode={heave_mode}, &#x27;
+        #     f&#x27;manual_received={self.manual_received}, &#x27;
+        #     f&#x27;depth_received={self.depth_received}, &#x27;
+        #     f&#x27;attitude_received={self.attitude_received}, &#x27;
+        #     f&#x27;manual_heave={manual_heave:.3f}, auto_heave={self.last_depth_heave:.3f}, &#x27;
+        #     f&#x27;fx={merged.force.x:.3f}, fy={merged.force.y:.3f}, fz={merged.force.z:.3f}, &#x27;
+        #     f&#x27;tx={merged.torque.x:.3f}, ty={merged.torque.y:.3f}, tz={merged.torque.z:.3f}&#x27;
+        # )
+
+    def on_parameter_update(self, params):
+        try:
+            recreate_timer = False
+
+            for p in params:
+                if p.name == &#x27;publish_rate&#x27;:
+                    self.publish_rate = float(p.value)
+                    recreate_timer = True
+                elif p.name == &#x27;manual_heave_override_threshold&#x27;:
+                    self.manual_heave_override_threshold = float(p.value)
+                elif p.name == &#x27;manual_xy_override_threshold&#x27;:
+                    self.manual_xy_override_threshold = float(p.value)
+                elif p.name == &#x27;manual_yaw_override_threshold&#x27;:
+                    self.manual_yaw_override_threshold = float(p.value)
+                elif p.name == &#x27;manual_wrench_timeout_sec&#x27;:
+                    self.manual_wrench_timeout_sec = float(p.value)
+
+            if recreate_timer:
+                self.timer.cancel()
+                period = 1.0 / self.publish_rate if self.publish_rate &gt; 0.0 else 0.05
+                self.timer = self.create_timer(period, self.publish_merged_wrench)
+
+            self.get_logger().info(&#x27;WrenchMerger parameters updated at runtime&#x27;)
+            return SetParametersResult(successful=True)
+        except Exception as e:
+            return SetParametersResult(successful=False, reason=str(e))
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = WrenchMerger()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == &#x27;__main__&#x27;:
+    main()</code></pre>
+        </details>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

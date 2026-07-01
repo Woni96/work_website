@@ -1,0 +1,1211 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Position Controller Review</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body class="detail-body">
+  <div class="detail-shell">
+    <aside class="detail-sidebar">
+      <a class="back-link" href="index.html">← 리뷰 홈으로</a>
+      <p class="eyebrow">Controller Code Review</p>
+      <h1>Position Controller Review</h1>
+      <p class="meta"><code>code_review/code/position_controller.py</code></p>
+      <nav class="toc">
+        <a href="#role">역할</a>
+        <a href="#map">함수 맵</a>
+        <a href="#quaternion">Quaternion 유틸리티</a>
+<a href="#init">`__init__()`</a>
+<a href="#section">상태/보조 함수</a>
+<a href="#manual-wrench-callback">`manual_wrench_callback()`</a>
+<a href="#dvl">DVL 입력 처리</a>
+<a href="#publish-position-estimate">`publish_position_estimate()`</a>
+<a href="#publish-control-output">`publish_control_output()`</a>
+<a href="#on-parameter-update">`on_parameter_update()`</a>
+        <a href="#full-source">전체 코드</a>
+      </nav>
+    </aside>
+
+    <main class="detail-content">
+      <section id="role" class="hero">
+        <div>
+          <p class="eyebrow">Module Overview</p>
+          <h2>Position Controller Review</h2>
+          <p>이 코드는 DVL와 IMU, manual input을 이용해 planar hold용 <code>Fx</code>, <code>Fy</code>, 그리고 경우에 따라 <code>Fz</code> 보정까지 만드는 위치 제어기입니다.</p>
+          <p>핵심 구조는 <code>world frame에서 위치 오차 계산 → body frame 힘으로 회전</code>입니다. 즉 기체가 yaw되어 있어도 지구 기준 위치를 유지하려는 설계입니다.</p>
+          <p>리뷰 포인트는 <code>DVL position과 velocity fallback이 어떻게 연결되는지</code>, <code>manual XY override가 hold target과 어떻게 상호작용하는지</code>, <code>yaw motion-aware damping이 어떤 안정화 효과를 만드는지</code>, <code>body-frame 변환 후 force.z를 왜 출력하는지</code>입니다.</p>
+        </div>
+      </section>
+
+      <section id="map" class="panel">
+        <div class="panel-heading">
+          <div>
+            <p class="section-kicker">Function Map</p>
+            <h2>이 파일에 있는 함수들</h2>
+          </div>
+        </div>
+        <div class="review-card">
+          <ul class="function-map">
+            <li><code>clamp()</code></li>
+<li><code>quat_normalize()</code></li>
+<li><code>quat_multiply()</code></li>
+<li><code>quat_conjugate()</code></li>
+<li><code>quat_from_rpy()</code></li>
+<li><code>quat_rotate_vector()</code></li>
+<li><code>__init__()</code></li>
+<li><code>_publish_zero_force()</code></li>
+<li><code>_has_valid_position_reference()</code></li>
+<li><code>_set_control_enabled()</code></li>
+<li><code>_capture_current_position_as_target()</code></li>
+<li><code>_apply_deadband()</code></li>
+<li><code>_dvl_position_is_finite()</code></li>
+<li><code>imu_callback()</code></li>
+<li><code>manual_wrench_callback()</code></li>
+<li><code>armed_callback()</code></li>
+<li><code>dvl_position_callback()</code></li>
+<li><code>dvl_callback()</code></li>
+<li><code>publish_position_estimate()</code></li>
+<li><code>publish_control_output()</code></li>
+<li><code>on_parameter_update()</code></li>
+<li><code>main()</code></li>
+          </ul>
+        </div>
+      </section>
+
+      <section id="quaternion" class="review-section">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">Function Review</p>
+            <h2>Quaternion 유틸리티</h2>
+          </div>
+        </div>
+        <div class="review-grid">
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>이 함수들은 DVL 속도와 위치제어 출력을 body/world frame 사이에서 변환하기 위한 기본 수학 도구입니다.</p>
+            <h3>영향</h3>
+            <p>이 계층이 있어야 yaw가 바뀌어도 같은 world 위치를 유지할 수 있습니다. 즉 이 controller의 존재 이유 자체가 여기서 시작됩니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>수학 유틸리티는 단순하지만 매우 중요합니다. 좌표계가 꼬이면 controller tuning 문제가 아니라 frame mismatch 문제가 됩니다.</p>
+          </article>
+          <article class="review-card code-card">
+            <h3>실제 코드</h3>
+            <pre><code>def clamp(value: float, lo: float, hi: float) -&gt; float:
+    return max(lo, min(hi, value))
+
+def quat_normalize(x: float, y: float, z: float, w: float):
+    norm = math.sqrt(x * x + y * y + z * z + w * w)
+    if norm &lt; 1e-12:
+        return (0.0, 0.0, 0.0, 1.0)
+    return (x / norm, y / norm, z / norm, w / norm)
+
+def quat_multiply(a, b):
+    ax, ay, az, aw = a
+    bx, by, bz, bw = b
+    return (
+        aw * bx + ax * bw + ay * bz - az * by,
+        aw * by - ax * bz + ay * bw + az * bx,
+        aw * bz + ax * by - ay * bx + az * bw,
+        aw * bw - ax * bx - ay * by - az * bz,
+    )
+
+def quat_conjugate(q):
+    x, y, z, w = q
+    return (-x, -y, -z, w)
+
+def quat_from_rpy(roll: float, pitch: float, yaw: float):
+    cr = math.cos(roll * 0.5)
+    sr = math.sin(roll * 0.5)
+    cp = math.cos(pitch * 0.5)
+    sp = math.sin(pitch * 0.5)
+    cy = math.cos(yaw * 0.5)
+    sy = math.sin(yaw * 0.5)
+    return quat_normalize(
+        sr * cp * cy - cr * sp * sy,
+        cr * sp * cy + sr * cp * sy,
+        cr * cp * sy - sr * sp * cy,
+        cr * cp * cy + sr * sp * sy,
+    )
+
+def quat_rotate_vector(q, v):
+    qv = (v[0], v[1], v[2], 0.0)
+    rotated = quat_multiply(quat_multiply(q, qv), quat_conjugate(q))
+    return (rotated[0], rotated[1], rotated[2])</code></pre>
+          </article>
+        </div>
+      </section> <section id="init" class="review-section">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">Function Review</p>
+            <h2>`__init__()`</h2>
+          </div>
+        </div>
+        <div class="review-grid">
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>DVL 입력 방식, gain, yaw damping, manual override, frame 정책, velocity integration fallback까지 초기화합니다.</p>
+            <h3>영향</h3>
+            <p>position hold가 absolute position 기반인지 velocity integration 기반인지, manual release 시 target을 다시 잡을지, 어떤 frame으로 publish할지가 모두 여기서 결정됩니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>실전 운용형 controller답게 파라미터 구성이 좋습니다. 다만 manual freshness timeout이 없어서 수동 입력이 stale일 때 hold 복귀가 늦어질 수 있습니다.</p>
+          </article>
+          <article class="review-card code-card">
+            <h3>실제 코드</h3>
+            <pre><code>def __init__(self):
+    super().__init__(&#x27;position_controller&#x27;)
+
+    self.declare_parameter(&#x27;dvl_topic&#x27;, &#x27;/dvl/data&#x27;)
+    self.declare_parameter(&#x27;dvl_position_topic&#x27;, &#x27;/dvl/position&#x27;)
+    self.declare_parameter(&#x27;imu_topic&#x27;, &#x27;/imu&#x27;)
+    self.declare_parameter(&#x27;manual_wrench_topic&#x27;, &#x27;/rov/wrench_manual&#x27;)
+    self.declare_parameter(&#x27;position_force_topic&#x27;, &#x27;/ctrl/position_force&#x27;)
+    self.declare_parameter(&#x27;position_estimate_topic&#x27;, &#x27;/rov/position_estimate&#x27;)
+    self.declare_parameter(&#x27;armed_topic&#x27;, &#x27;/rov/armed&#x27;)
+    self.declare_parameter(&#x27;control_enabled&#x27;, True)
+
+    self.declare_parameter(&#x27;kp_x&#x27;, 0.8)
+    self.declare_parameter(&#x27;kd_x&#x27;, 0.6)
+    self.declare_parameter(&#x27;kp_y&#x27;, 0.8)
+    self.declare_parameter(&#x27;kd_y&#x27;, 0.6)
+    self.declare_parameter(&#x27;max_force_x&#x27;, 1.0)
+    self.declare_parameter(&#x27;max_force_y&#x27;, 1.0)
+    self.declare_parameter(&#x27;max_force_z&#x27;, 1.0)
+    self.declare_parameter(&#x27;force_deadband&#x27;, 1e-4)
+    self.declare_parameter(&#x27;yaw_rate_damping_gain&#x27;, 1.2)
+    self.declare_parameter(&#x27;manual_yaw_damping_boost&#x27;, 0.6)
+    self.declare_parameter(&#x27;manual_yaw_override_threshold&#x27;, 0.05)
+
+    self.declare_parameter(&#x27;manual_xy_override_threshold&#x27;, 0.05)
+    self.declare_parameter(&#x27;capture_initial_position_target&#x27;, True)
+    self.declare_parameter(&#x27;capture_target_on_manual_release&#x27;, True)
+    self.declare_parameter(&#x27;valid_timeout_sec&#x27;, 0.5)
+    self.declare_parameter(&#x27;hold_frame_id&#x27;, &#x27;dvl_odom&#x27;)
+    self.declare_parameter(&#x27;use_dvl_position&#x27;, True)
+    self.declare_parameter(&#x27;integrate_dvl_velocity_when_position_unavailable&#x27;, True)
+    self.declare_parameter(&#x27;dvl_mount_roll_deg&#x27;, 0.0)
+    self.declare_parameter(&#x27;dvl_mount_pitch_deg&#x27;, 0.0)
+    self.declare_parameter(&#x27;dvl_mount_yaw_deg&#x27;, 0.0)
+
+    self.dvl_topic = str(self.get_parameter(&#x27;dvl_topic&#x27;).value)
+    self.dvl_position_topic = str(self.get_parameter(&#x27;dvl_position_topic&#x27;).value)
+    self.imu_topic = str(self.get_parameter(&#x27;imu_topic&#x27;).value)
+    self.manual_wrench_topic = str(self.get_parameter(&#x27;manual_wrench_topic&#x27;).value)
+    self.position_force_topic = str(self.get_parameter(&#x27;position_force_topic&#x27;).value)
+    self.position_estimate_topic = str(self.get_parameter(&#x27;position_estimate_topic&#x27;).value)
+    self.armed_topic = str(self.get_parameter(&#x27;armed_topic&#x27;).value)
+    self.control_enabled = bool(self.get_parameter(&#x27;control_enabled&#x27;).value)
+    self.hold_frame_id = str(self.get_parameter(&#x27;hold_frame_id&#x27;).value)
+    self.active_position_frame_id = self.hold_frame_id
+    self.use_dvl_position = bool(self.get_parameter(&#x27;use_dvl_position&#x27;).value)
+    self.integrate_dvl_velocity_when_position_unavailable = bool(
+        self.get_parameter(&#x27;integrate_dvl_velocity_when_position_unavailable&#x27;).value
+    )
+    self.dvl_mount_roll_deg = float(self.get_parameter(&#x27;dvl_mount_roll_deg&#x27;).value)
+    self.dvl_mount_pitch_deg = float(self.get_parameter(&#x27;dvl_mount_pitch_deg&#x27;).value)
+    self.dvl_mount_yaw_deg = float(self.get_parameter(&#x27;dvl_mount_yaw_deg&#x27;).value)
+
+    self.kp_x = float(self.get_parameter(&#x27;kp_x&#x27;).value)
+    self.kd_x = float(self.get_parameter(&#x27;kd_x&#x27;).value)
+    self.kp_y = float(self.get_parameter(&#x27;kp_y&#x27;).value)
+    self.kd_y = float(self.get_parameter(&#x27;kd_y&#x27;).value)
+    self.max_force_x = float(self.get_parameter(&#x27;max_force_x&#x27;).value)
+    self.max_force_y = float(self.get_parameter(&#x27;max_force_y&#x27;).value)
+    self.max_force_z = float(self.get_parameter(&#x27;max_force_z&#x27;).value)
+    self.force_deadband = float(self.get_parameter(&#x27;force_deadband&#x27;).value)
+    self.yaw_rate_damping_gain = float(self.get_parameter(&#x27;yaw_rate_damping_gain&#x27;).value)
+    self.manual_yaw_damping_boost = float(self.get_parameter(&#x27;manual_yaw_damping_boost&#x27;).value)
+    self.manual_yaw_override_threshold = float(
+        self.get_parameter(&#x27;manual_yaw_override_threshold&#x27;).value
+    )
+
+    self.manual_xy_override_threshold = float(
+        self.get_parameter(&#x27;manual_xy_override_threshold&#x27;).value
+    )
+    self.capture_initial_position_target = bool(
+        self.get_parameter(&#x27;capture_initial_position_target&#x27;).value
+    )
+    self.capture_target_on_manual_release = bool(
+        self.get_parameter(&#x27;capture_target_on_manual_release&#x27;).value
+    )
+    self.valid_timeout_sec = float(self.get_parameter(&#x27;valid_timeout_sec&#x27;).value)
+
+    self.have_imu = False
+    self.target_initialized = False
+    self.armed = False
+    self.prev_armed = False
+    self.armed_received = False
+
+    self.q_world_body = (0.0, 0.0, 0.0, 1.0)
+    self.position_x = 0.0
+    self.position_y = 0.0
+    self.velocity_world_x = 0.0
+    self.velocity_world_y = 0.0
+    self.current_yaw_rate = 0.0
+    self.target_x = 0.0
+    self.target_y = 0.0
+    self.q_body_dvl = quat_from_rpy(
+        math.radians(self.dvl_mount_roll_deg),
+        math.radians(self.dvl_mount_pitch_deg),
+        math.radians(self.dvl_mount_yaw_deg),
+    )
+
+    self.last_dvl_time = None
+    self.last_valid_dvl_time = None
+    self.last_dvl_position_time = None
+    self.manual_wrench = Wrench()
+    self.manual_xy_active = False
+    self.prev_manual_xy_active = False
+
+    self.sub_imu = self.create_subscription(Imu, self.imu_topic, self.imu_callback, 10)
+    self.sub_dvl = self.create_subscription(DVLData, self.dvl_topic, self.dvl_callback, 10)
+    self.sub_dvl_position = self.create_subscription(
+        PointStamped,
+        self.dvl_position_topic,
+        self.dvl_position_callback,
+        10
+    )
+    self.sub_manual = self.create_subscription(
+        Wrench,
+        self.manual_wrench_topic,
+        self.manual_wrench_callback,
+        10
+    )
+    self.sub_armed = self.create_subscription(
+        Bool,
+        self.armed_topic,
+        self.armed_callback,
+        10
+    )
+
+    self.pub_force = self.create_publisher(Wrench, self.position_force_topic, 10)
+    self.pub_position = self.create_publisher(PointStamped, self.position_estimate_topic, 10)
+
+    self.add_on_set_parameters_callback(self.on_parameter_update)
+
+    self.get_logger().info(&#x27;PositionController initialized (ArduSub-style poshold)&#x27;)
+    self.get_logger().info(f&#x27;  dvl_topic                       = {self.dvl_topic}&#x27;)
+    self.get_logger().info(f&#x27;  dvl_position_topic              = {self.dvl_position_topic}&#x27;)
+    self.get_logger().info(f&#x27;  imu_topic                       = {self.imu_topic}&#x27;)
+    self.get_logger().info(f&#x27;  manual_wrench_topic             = {self.manual_wrench_topic}&#x27;)
+    self.get_logger().info(f&#x27;  position_force_topic            = {self.position_force_topic}&#x27;)
+    self.get_logger().info(f&#x27;  position_estimate_topic         = {self.position_estimate_topic}&#x27;)
+    self.get_logger().info(f&#x27;  armed_topic                     = {self.armed_topic}&#x27;)
+    self.get_logger().info(f&#x27;  hold_frame_id                   = {self.hold_frame_id}&#x27;)
+    self.get_logger().info(f&#x27;  use_dvl_position                = {self.use_dvl_position}&#x27;)
+    self.get_logger().info(
+        f&#x27;  integrate_dvl_velocity_fallback = &#x27;
+        f&#x27;{self.integrate_dvl_velocity_when_position_unavailable}&#x27;
+    )
+    self.get_logger().info(
+        f&#x27;  dvl_mount_rpy_deg               = &#x27;
+        f&#x27;({self.dvl_mount_roll_deg:.1f}, {self.dvl_mount_pitch_deg:.1f}, {self.dvl_mount_yaw_deg:.1f})&#x27;
+    )
+    self.get_logger().info(f&#x27;  control_enabled                 = {self.control_enabled}&#x27;)</code></pre>
+          </article>
+        </div>
+      </section> <section id="section" class="review-section">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">Function Review</p>
+            <h2>상태/보조 함수</h2>
+          </div>
+        </div>
+        <div class="review-grid">
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>이 함수들은 제어 출력을 언제 0으로 만들지, target을 언제 갱신할지, DVL 데이터가 유효한지 판정하는 기반 계층입니다.</p>
+            <h3>영향</h3>
+            <p>센서가 유효하지 않으면 output을 0으로 내리고, enable edge에서 hold target을 다시 캡처할 수 있습니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>이 보조 계층 덕분에 publish 조건이 깔끔합니다. 실제 control law보다 앞단의 상태 판정이 잘 분리된 점이 장점입니다.</p>
+          </article>
+          <article class="review-card code-card">
+            <h3>실제 코드</h3>
+            <pre><code>def _publish_zero_force(self):
+    self.pub_force.publish(Wrench())
+
+def _has_valid_position_reference(self, now) -&gt; bool:
+    if not self.have_imu:
+        return False
+    if self.last_valid_dvl_time is None:
+        return False
+    age = (now - self.last_valid_dvl_time).nanoseconds * 1e-9
+    return age &lt;= self.valid_timeout_sec
+
+def _set_control_enabled(self, enabled: bool):
+    prev = self.control_enabled
+    self.control_enabled = bool(enabled)
+    now = self.get_clock().now()
+
+    if self.control_enabled and not prev and self._has_valid_position_reference(now):
+        self._capture_current_position_as_target()
+        self.get_logger().info(&#x27;Position control enabled; captured current hold position&#x27;)
+    elif (not self.control_enabled) and prev:
+        self._publish_zero_force()
+        self.get_logger().info(&#x27;Position control disabled; publishing zero planar force&#x27;)
+
+def _capture_current_position_as_target(self):
+    self.target_x = self.position_x
+    self.target_y = self.position_y
+    self.target_initialized = True
+
+def _apply_deadband(self, value: float) -&gt; float:
+    return 0.0 if abs(value) &lt; self.force_deadband else value
+
+def _dvl_position_is_finite(self, msg: PointStamped) -&gt; bool:
+    return math.isfinite(float(msg.point.x)) and math.isfinite(float(msg.point.y))</code></pre>
+          </article>
+        </div>
+      </section> <section id="manual-wrench-callback" class="review-section">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">Function Review</p>
+            <h2>`manual_wrench_callback()`</h2>
+          </div>
+        </div>
+        <div class="review-grid">
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>manual XY 입력이 active인지 판정하고, release edge에서 현재 위치를 새 hold target으로 캡처합니다.</p>
+            <h3>영향</h3>
+            <p>조종자가 이동을 끝내고 stick을 놓았을 때 그 자리에서 poshold가 다시 잠기게 만드는 함수입니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>운용감은 좋지만 freshness timeout이 없어서 마지막 manual XY가 남으면 poshold 복귀가 안 될 수 있습니다. 현재 코드의 대표적인 개선 후보입니다.</p>
+          </article>
+          <article class="review-card code-card">
+            <h3>실제 코드</h3>
+            <pre><code>def manual_wrench_callback(self, msg: Wrench):
+    self.manual_wrench = msg
+    self.prev_manual_xy_active = self.manual_xy_active
+    self.manual_xy_active = (
+        abs(msg.force.x) &gt; self.manual_xy_override_threshold or
+        abs(msg.force.y) &gt; self.manual_xy_override_threshold
+    )
+
+    if (
+        self.capture_target_on_manual_release and
+        self.prev_manual_xy_active and
+        (not self.manual_xy_active) and
+        self._has_valid_position_reference(self.get_clock().now())
+    ):
+        self._capture_current_position_as_target()
+        self.get_logger().info(
+            f&#x27;Manual XY released -&gt; captured current hold position: &#x27;
+            f&#x27;x={self.target_x:.3f}, y={self.target_y:.3f}&#x27;
+        )</code></pre>
+          </article>
+        </div>
+      </section> <section id="dvl" class="review-section">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">Function Review</p>
+            <h2>DVL 입력 처리</h2>
+          </div>
+        </div>
+        <div class="review-grid">
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>DVL position을 직접 쓰거나, 없으면 velocity를 body→world로 회전해 적분 위치를 만들고 속도 피드백을 갱신합니다.</p>
+            <h3>영향</h3>
+            <p>센서 구성에 따라 absolute hold와 dead-reckoning hold를 모두 지원하게 해줍니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>유연성이 높고 실제 운용에 유리합니다. 특히 <code>use_dvl_position=False</code> fallback 설계는 테스트 단계에서 큰 장점이 됩니다.</p>
+          </article>
+          <article class="review-card code-card">
+            <h3>실제 코드</h3>
+            <pre><code>def dvl_position_callback(self, msg: PointStamped):
+    now = self.get_clock().now()
+    stamp = now
+
+    if msg.header.stamp.sec != 0 or msg.header.stamp.nanosec != 0:
+        stamp = Time.from_msg(msg.header.stamp)
+
+    self.last_dvl_position_time = stamp
+
+    if self.use_dvl_position and self._dvl_position_is_finite(msg):
+        self.position_x = float(msg.point.x)
+        self.position_y = float(msg.point.y)
+        self.active_position_frame_id = msg.header.frame_id or self.hold_frame_id
+        self.last_valid_dvl_time = now
+
+        if self.capture_initial_position_target and not self.target_initialized:
+            self._capture_current_position_as_target()
+            self.get_logger().info(
+                f&#x27;Initial hold position captured from DVL position: &#x27;
+                f&#x27;x={self.target_x:.3f}, y={self.target_y:.3f}&#x27;
+            )
+
+    self.publish_position_estimate(now)
+    self.publish_control_output(now)
+
+def dvl_callback(self, msg: DVLData):
+    now = self.get_clock().now()
+    stamp = now
+
+    if msg.header.stamp.sec != 0 or msg.header.stamp.nanosec != 0:
+        stamp = Time.from_msg(msg.header.stamp)
+
+    dt = 0.0
+    if self.last_dvl_time is not None:
+        dt = (stamp - self.last_dvl_time).nanoseconds * 1e-9
+    self.last_dvl_time = stamp
+
+    if msg.velocity_valid and self.have_imu:
+        v_dvl = (float(msg.vx), float(msg.vy), float(msg.vz))
+        v_body = quat_rotate_vector(self.q_body_dvl, v_dvl)
+        v_world = quat_rotate_vector(self.q_world_body, v_body)
+
+        self.velocity_world_x = v_world[0]
+        self.velocity_world_y = v_world[1]
+
+        if (
+            (not self.use_dvl_position) and
+            self.integrate_dvl_velocity_when_position_unavailable and
+            dt &gt; 1e-6
+        ):
+            self.position_x += self.velocity_world_x * dt
+            self.position_y += self.velocity_world_y * dt
+            self.active_position_frame_id = self.hold_frame_id
+
+        if not self.use_dvl_position:
+            self.last_valid_dvl_time = now
+
+        if (
+            (not self.use_dvl_position) and
+            self.capture_initial_position_target and
+            (not self.target_initialized)
+        ):
+            self._capture_current_position_as_target()
+            self.get_logger().info(
+                f&#x27;Initial hold position captured: &#x27;
+                f&#x27;x={self.target_x:.3f}, y={self.target_y:.3f}&#x27;
+            )
+    else:
+        self.velocity_world_x = 0.0
+        self.velocity_world_y = 0.0
+
+    self.publish_position_estimate(now)
+    self.publish_control_output(now)</code></pre>
+          </article>
+        </div>
+      </section> <section id="publish-position-estimate" class="review-section">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">Function Review</p>
+            <h2>`publish_position_estimate()`</h2>
+          </div>
+        </div>
+        <div class="review-grid">
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>현재 controller가 보고 있는 position estimate를 외부에 publish합니다.</p>
+            <h3>영향</h3>
+            <p>상위 시각화, 디버깅, 로깅에서 controller 내부 상태를 그대로 볼 수 있게 해줍니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>작은 함수지만 디버깅 가치가 큽니다. 이런 상태 출력이 없으면 position hold 문제를 센서 문제와 구분하기 어렵습니다.</p>
+          </article>
+          <article class="review-card code-card">
+            <h3>실제 코드</h3>
+            <pre><code>def publish_position_estimate(self, stamp):
+    msg = PointStamped()
+    msg.header.stamp = stamp.to_msg()
+    msg.header.frame_id = self.active_position_frame_id
+    msg.point.x = self.position_x
+    msg.point.y = self.position_y
+    msg.point.z = 0.0
+    self.pub_position.publish(msg)</code></pre>
+          </article>
+        </div>
+      </section> <section id="publish-control-output" class="review-section">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">Function Review</p>
+            <h2>`publish_control_output()`</h2>
+          </div>
+        </div>
+        <div class="review-grid">
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>validity check, target error 계산, yaw-rate aware damping, world→body 회전, manual override 적용, force clamp를 수행하는 본체입니다.</p>
+            <h3>영향</h3>
+            <p>이 함수가 실제 position hold의 감각을 결정합니다. 특히 yaw 회전 중 damping boost와 body-frame force 변환이 핵심입니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>구조는 명확하고 PD hold로서 좋습니다. 다만 <code>force_body_z</code>를 최종 출력에 포함시키는 부분은 설계 의도를 명시하지 않으면 depth와의 coupling을 읽는 사람이 헷갈릴 수 있습니다.</p>
+          </article>
+          <article class="review-card code-card">
+            <h3>실제 코드</h3>
+            <pre><code>def publish_control_output(self, now):
+    out = Wrench()
+
+    if not self.target_initialized or not self._has_valid_position_reference(now):
+        self.pub_force.publish(out)
+        return
+
+    if self.armed_received and not self.armed:
+        self.pub_force.publish(out)
+        return
+
+    if not self.control_enabled:
+        self.pub_force.publish(out)
+        return
+
+    error_x = self.target_x - self.position_x
+    error_y = self.target_y - self.position_y
+
+    extra_damping = self.yaw_rate_damping_gain * abs(self.current_yaw_rate)
+    if abs(self.manual_wrench.torque.z) &gt; self.manual_yaw_override_threshold:
+        extra_damping += self.manual_yaw_damping_boost
+
+    effective_kd_x = self.kd_x + extra_damping
+    effective_kd_y = self.kd_y + extra_damping
+
+    force_world_x = self.kp_x * error_x - effective_kd_x * self.velocity_world_x
+    force_world_y = self.kp_y * error_y - effective_kd_y * self.velocity_world_y
+    force_world = (force_world_x, force_world_y, 0.0)
+    force_body = quat_rotate_vector(quat_conjugate(self.q_world_body), force_world)
+    force_body_x = force_body[0]
+    force_body_y = force_body[1]
+    force_body_z = force_body[2]
+
+    if self.manual_xy_active:
+        force_body_x = 0.0
+        force_body_y = 0.0
+        force_body_z = 0.0
+
+    out.force.x = self._apply_deadband(clamp(force_body_x, -self.max_force_x, self.max_force_x))
+    out.force.y = self._apply_deadband(clamp(force_body_y, -self.max_force_y, self.max_force_y))
+    out.force.z = self._apply_deadband(clamp(force_body_z, -self.max_force_z, self.max_force_z))
+    out.torque.x = 0.0
+    out.torque.y = 0.0
+    out.torque.z = 0.0
+
+    self.pub_force.publish(out)</code></pre>
+          </article>
+        </div>
+      </section> <section id="on-parameter-update" class="review-section">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">Function Review</p>
+            <h2>`on_parameter_update()`</h2>
+          </div>
+        </div>
+        <div class="review-grid">
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>gain, threshold, frame, DVL fallback 정책을 실시간으로 수정합니다.</p>
+            <h3>영향</h3>
+            <p>테스트 중 poshold의 stiffness와 damping을 바로 바꿀 수 있습니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>runtime tuning은 강점이지만, 어떤 파라미터가 어떤 함수를 통해 결과에 연결되는지 문서가 꼭 필요합니다. 이번 리뷰 문서가 그 연결을 설명하는 역할을 합니다.</p>
+          </article>
+          <article class="review-card code-card">
+            <h3>실제 코드</h3>
+            <pre><code>def on_parameter_update(self, params):
+    try:
+        for p in params:
+            if p.name == &#x27;kp_x&#x27;:
+                self.kp_x = float(p.value)
+            elif p.name == &#x27;kd_x&#x27;:
+                self.kd_x = float(p.value)
+            elif p.name == &#x27;kp_y&#x27;:
+                self.kp_y = float(p.value)
+            elif p.name == &#x27;kd_y&#x27;:
+                self.kd_y = float(p.value)
+            elif p.name == &#x27;max_force_x&#x27;:
+                self.max_force_x = float(p.value)
+            elif p.name == &#x27;max_force_y&#x27;:
+                self.max_force_y = float(p.value)
+            elif p.name == &#x27;max_force_z&#x27;:
+                self.max_force_z = float(p.value)
+            elif p.name == &#x27;force_deadband&#x27;:
+                self.force_deadband = float(p.value)
+            elif p.name == &#x27;yaw_rate_damping_gain&#x27;:
+                self.yaw_rate_damping_gain = float(p.value)
+            elif p.name == &#x27;manual_yaw_damping_boost&#x27;:
+                self.manual_yaw_damping_boost = float(p.value)
+            elif p.name == &#x27;manual_yaw_override_threshold&#x27;:
+                self.manual_yaw_override_threshold = float(p.value)
+            elif p.name == &#x27;manual_xy_override_threshold&#x27;:
+                self.manual_xy_override_threshold = float(p.value)
+            elif p.name == &#x27;capture_initial_position_target&#x27;:
+                self.capture_initial_position_target = bool(p.value)
+            elif p.name == &#x27;capture_target_on_manual_release&#x27;:
+                self.capture_target_on_manual_release = bool(p.value)
+            elif p.name == &#x27;valid_timeout_sec&#x27;:
+                self.valid_timeout_sec = float(p.value)
+            elif p.name == &#x27;hold_frame_id&#x27;:
+                self.hold_frame_id = str(p.value)
+                if not self.use_dvl_position:
+                    self.active_position_frame_id = self.hold_frame_id
+            elif p.name == &#x27;use_dvl_position&#x27;:
+                self.use_dvl_position = bool(p.value)
+                if not self.use_dvl_position:
+                    self.active_position_frame_id = self.hold_frame_id
+            elif p.name == &#x27;integrate_dvl_velocity_when_position_unavailable&#x27;:
+                self.integrate_dvl_velocity_when_position_unavailable = bool(p.value)
+            elif p.name == &#x27;dvl_mount_roll_deg&#x27;:
+                self.dvl_mount_roll_deg = float(p.value)
+                self.q_body_dvl = quat_from_rpy(
+                    math.radians(self.dvl_mount_roll_deg),
+                    math.radians(self.dvl_mount_pitch_deg),
+                    math.radians(self.dvl_mount_yaw_deg),
+                )
+            elif p.name == &#x27;dvl_mount_pitch_deg&#x27;:
+                self.dvl_mount_pitch_deg = float(p.value)
+                self.q_body_dvl = quat_from_rpy(
+                    math.radians(self.dvl_mount_roll_deg),
+                    math.radians(self.dvl_mount_pitch_deg),
+                    math.radians(self.dvl_mount_yaw_deg),
+                )
+            elif p.name == &#x27;dvl_mount_yaw_deg&#x27;:
+                self.dvl_mount_yaw_deg = float(p.value)
+                self.q_body_dvl = quat_from_rpy(
+                    math.radians(self.dvl_mount_roll_deg),
+                    math.radians(self.dvl_mount_pitch_deg),
+                    math.radians(self.dvl_mount_yaw_deg),
+                )
+            elif p.name == &#x27;control_enabled&#x27;:
+                self._set_control_enabled(bool(p.value))
+
+        self.get_logger().info(&#x27;Position controller parameters updated at runtime&#x27;)
+        return SetParametersResult(successful=True)
+    except Exception as exc:
+        return SetParametersResult(successful=False, reason=str(exc))</code></pre>
+          </article>
+        </div>
+      </section>
+
+      <section id="full-source" class="panel">
+        <div class="panel-heading">
+          <div>
+            <p class="section-kicker">Full Source</p>
+            <h2>전체 코드</h2>
+          </div>
+        </div>
+        <details class="source-details" open>
+          <summary>전체 파일 펼치기 / 접기</summary>
+          <pre><code>#!/usr/bin/env python3
+import math
+
+import rclpy
+from rcl_interfaces.msg import SetParametersResult
+from rclpy.node import Node
+from rclpy.time import Time
+
+from geometry_msgs.msg import PointStamped, Wrench
+from sensor_msgs.msg import Imu
+from std_msgs.msg import Bool
+
+from rov_interfaces.msg import DVLData
+
+
+def clamp(value: float, lo: float, hi: float) -&gt; float:
+    return max(lo, min(hi, value))
+
+
+def quat_normalize(x: float, y: float, z: float, w: float):
+    norm = math.sqrt(x * x + y * y + z * z + w * w)
+    if norm &lt; 1e-12:
+        return (0.0, 0.0, 0.0, 1.0)
+    return (x / norm, y / norm, z / norm, w / norm)
+
+
+def quat_multiply(a, b):
+    ax, ay, az, aw = a
+    bx, by, bz, bw = b
+    return (
+        aw * bx + ax * bw + ay * bz - az * by,
+        aw * by - ax * bz + ay * bw + az * bx,
+        aw * bz + ax * by - ay * bx + az * bw,
+        aw * bw - ax * bx - ay * by - az * bz,
+    )
+
+
+def quat_conjugate(q):
+    x, y, z, w = q
+    return (-x, -y, -z, w)
+
+
+def quat_from_rpy(roll: float, pitch: float, yaw: float):
+    cr = math.cos(roll * 0.5)
+    sr = math.sin(roll * 0.5)
+    cp = math.cos(pitch * 0.5)
+    sp = math.sin(pitch * 0.5)
+    cy = math.cos(yaw * 0.5)
+    sy = math.sin(yaw * 0.5)
+    return quat_normalize(
+        sr * cp * cy - cr * sp * sy,
+        cr * sp * cy + sr * cp * sy,
+        cr * cp * sy - sr * sp * cy,
+        cr * cp * cy + sr * sp * sy,
+    )
+
+
+def quat_rotate_vector(q, v):
+    qv = (v[0], v[1], v[2], 0.0)
+    rotated = quat_multiply(quat_multiply(q, qv), quat_conjugate(q))
+    return (rotated[0], rotated[1], rotated[2])
+
+
+class PositionController(Node):
+
+    def __init__(self):
+        super().__init__(&#x27;position_controller&#x27;)
+
+        self.declare_parameter(&#x27;dvl_topic&#x27;, &#x27;/dvl/data&#x27;)
+        self.declare_parameter(&#x27;dvl_position_topic&#x27;, &#x27;/dvl/position&#x27;)
+        self.declare_parameter(&#x27;imu_topic&#x27;, &#x27;/imu&#x27;)
+        self.declare_parameter(&#x27;manual_wrench_topic&#x27;, &#x27;/rov/wrench_manual&#x27;)
+        self.declare_parameter(&#x27;position_force_topic&#x27;, &#x27;/ctrl/position_force&#x27;)
+        self.declare_parameter(&#x27;position_estimate_topic&#x27;, &#x27;/rov/position_estimate&#x27;)
+        self.declare_parameter(&#x27;armed_topic&#x27;, &#x27;/rov/armed&#x27;)
+        self.declare_parameter(&#x27;control_enabled&#x27;, True)
+
+        self.declare_parameter(&#x27;kp_x&#x27;, 0.8)
+        self.declare_parameter(&#x27;kd_x&#x27;, 0.6)
+        self.declare_parameter(&#x27;kp_y&#x27;, 0.8)
+        self.declare_parameter(&#x27;kd_y&#x27;, 0.6)
+        self.declare_parameter(&#x27;max_force_x&#x27;, 1.0)
+        self.declare_parameter(&#x27;max_force_y&#x27;, 1.0)
+        self.declare_parameter(&#x27;max_force_z&#x27;, 1.0)
+        self.declare_parameter(&#x27;force_deadband&#x27;, 1e-4)
+        self.declare_parameter(&#x27;yaw_rate_damping_gain&#x27;, 1.2)
+        self.declare_parameter(&#x27;manual_yaw_damping_boost&#x27;, 0.6)
+        self.declare_parameter(&#x27;manual_yaw_override_threshold&#x27;, 0.05)
+
+        self.declare_parameter(&#x27;manual_xy_override_threshold&#x27;, 0.05)
+        self.declare_parameter(&#x27;capture_initial_position_target&#x27;, True)
+        self.declare_parameter(&#x27;capture_target_on_manual_release&#x27;, True)
+        self.declare_parameter(&#x27;valid_timeout_sec&#x27;, 0.5)
+        self.declare_parameter(&#x27;hold_frame_id&#x27;, &#x27;dvl_odom&#x27;)
+        self.declare_parameter(&#x27;use_dvl_position&#x27;, True)
+        self.declare_parameter(&#x27;integrate_dvl_velocity_when_position_unavailable&#x27;, True)
+        self.declare_parameter(&#x27;dvl_mount_roll_deg&#x27;, 0.0)
+        self.declare_parameter(&#x27;dvl_mount_pitch_deg&#x27;, 0.0)
+        self.declare_parameter(&#x27;dvl_mount_yaw_deg&#x27;, 0.0)
+
+        self.dvl_topic = str(self.get_parameter(&#x27;dvl_topic&#x27;).value)
+        self.dvl_position_topic = str(self.get_parameter(&#x27;dvl_position_topic&#x27;).value)
+        self.imu_topic = str(self.get_parameter(&#x27;imu_topic&#x27;).value)
+        self.manual_wrench_topic = str(self.get_parameter(&#x27;manual_wrench_topic&#x27;).value)
+        self.position_force_topic = str(self.get_parameter(&#x27;position_force_topic&#x27;).value)
+        self.position_estimate_topic = str(self.get_parameter(&#x27;position_estimate_topic&#x27;).value)
+        self.armed_topic = str(self.get_parameter(&#x27;armed_topic&#x27;).value)
+        self.control_enabled = bool(self.get_parameter(&#x27;control_enabled&#x27;).value)
+        self.hold_frame_id = str(self.get_parameter(&#x27;hold_frame_id&#x27;).value)
+        self.active_position_frame_id = self.hold_frame_id
+        self.use_dvl_position = bool(self.get_parameter(&#x27;use_dvl_position&#x27;).value)
+        self.integrate_dvl_velocity_when_position_unavailable = bool(
+            self.get_parameter(&#x27;integrate_dvl_velocity_when_position_unavailable&#x27;).value
+        )
+        self.dvl_mount_roll_deg = float(self.get_parameter(&#x27;dvl_mount_roll_deg&#x27;).value)
+        self.dvl_mount_pitch_deg = float(self.get_parameter(&#x27;dvl_mount_pitch_deg&#x27;).value)
+        self.dvl_mount_yaw_deg = float(self.get_parameter(&#x27;dvl_mount_yaw_deg&#x27;).value)
+
+        self.kp_x = float(self.get_parameter(&#x27;kp_x&#x27;).value)
+        self.kd_x = float(self.get_parameter(&#x27;kd_x&#x27;).value)
+        self.kp_y = float(self.get_parameter(&#x27;kp_y&#x27;).value)
+        self.kd_y = float(self.get_parameter(&#x27;kd_y&#x27;).value)
+        self.max_force_x = float(self.get_parameter(&#x27;max_force_x&#x27;).value)
+        self.max_force_y = float(self.get_parameter(&#x27;max_force_y&#x27;).value)
+        self.max_force_z = float(self.get_parameter(&#x27;max_force_z&#x27;).value)
+        self.force_deadband = float(self.get_parameter(&#x27;force_deadband&#x27;).value)
+        self.yaw_rate_damping_gain = float(self.get_parameter(&#x27;yaw_rate_damping_gain&#x27;).value)
+        self.manual_yaw_damping_boost = float(self.get_parameter(&#x27;manual_yaw_damping_boost&#x27;).value)
+        self.manual_yaw_override_threshold = float(
+            self.get_parameter(&#x27;manual_yaw_override_threshold&#x27;).value
+        )
+
+        self.manual_xy_override_threshold = float(
+            self.get_parameter(&#x27;manual_xy_override_threshold&#x27;).value
+        )
+        self.capture_initial_position_target = bool(
+            self.get_parameter(&#x27;capture_initial_position_target&#x27;).value
+        )
+        self.capture_target_on_manual_release = bool(
+            self.get_parameter(&#x27;capture_target_on_manual_release&#x27;).value
+        )
+        self.valid_timeout_sec = float(self.get_parameter(&#x27;valid_timeout_sec&#x27;).value)
+
+        self.have_imu = False
+        self.target_initialized = False
+        self.armed = False
+        self.prev_armed = False
+        self.armed_received = False
+
+        self.q_world_body = (0.0, 0.0, 0.0, 1.0)
+        self.position_x = 0.0
+        self.position_y = 0.0
+        self.velocity_world_x = 0.0
+        self.velocity_world_y = 0.0
+        self.current_yaw_rate = 0.0
+        self.target_x = 0.0
+        self.target_y = 0.0
+        self.q_body_dvl = quat_from_rpy(
+            math.radians(self.dvl_mount_roll_deg),
+            math.radians(self.dvl_mount_pitch_deg),
+            math.radians(self.dvl_mount_yaw_deg),
+        )
+
+        self.last_dvl_time = None
+        self.last_valid_dvl_time = None
+        self.last_dvl_position_time = None
+        self.manual_wrench = Wrench()
+        self.manual_xy_active = False
+        self.prev_manual_xy_active = False
+
+        self.sub_imu = self.create_subscription(Imu, self.imu_topic, self.imu_callback, 10)
+        self.sub_dvl = self.create_subscription(DVLData, self.dvl_topic, self.dvl_callback, 10)
+        self.sub_dvl_position = self.create_subscription(
+            PointStamped,
+            self.dvl_position_topic,
+            self.dvl_position_callback,
+            10
+        )
+        self.sub_manual = self.create_subscription(
+            Wrench,
+            self.manual_wrench_topic,
+            self.manual_wrench_callback,
+            10
+        )
+        self.sub_armed = self.create_subscription(
+            Bool,
+            self.armed_topic,
+            self.armed_callback,
+            10
+        )
+
+        self.pub_force = self.create_publisher(Wrench, self.position_force_topic, 10)
+        self.pub_position = self.create_publisher(PointStamped, self.position_estimate_topic, 10)
+
+        self.add_on_set_parameters_callback(self.on_parameter_update)
+
+        self.get_logger().info(&#x27;PositionController initialized (ArduSub-style poshold)&#x27;)
+        self.get_logger().info(f&#x27;  dvl_topic                       = {self.dvl_topic}&#x27;)
+        self.get_logger().info(f&#x27;  dvl_position_topic              = {self.dvl_position_topic}&#x27;)
+        self.get_logger().info(f&#x27;  imu_topic                       = {self.imu_topic}&#x27;)
+        self.get_logger().info(f&#x27;  manual_wrench_topic             = {self.manual_wrench_topic}&#x27;)
+        self.get_logger().info(f&#x27;  position_force_topic            = {self.position_force_topic}&#x27;)
+        self.get_logger().info(f&#x27;  position_estimate_topic         = {self.position_estimate_topic}&#x27;)
+        self.get_logger().info(f&#x27;  armed_topic                     = {self.armed_topic}&#x27;)
+        self.get_logger().info(f&#x27;  hold_frame_id                   = {self.hold_frame_id}&#x27;)
+        self.get_logger().info(f&#x27;  use_dvl_position                = {self.use_dvl_position}&#x27;)
+        self.get_logger().info(
+            f&#x27;  integrate_dvl_velocity_fallback = &#x27;
+            f&#x27;{self.integrate_dvl_velocity_when_position_unavailable}&#x27;
+        )
+        self.get_logger().info(
+            f&#x27;  dvl_mount_rpy_deg               = &#x27;
+            f&#x27;({self.dvl_mount_roll_deg:.1f}, {self.dvl_mount_pitch_deg:.1f}, {self.dvl_mount_yaw_deg:.1f})&#x27;
+        )
+        self.get_logger().info(f&#x27;  control_enabled                 = {self.control_enabled}&#x27;)
+
+    def _publish_zero_force(self):
+        self.pub_force.publish(Wrench())
+
+    def _has_valid_position_reference(self, now) -&gt; bool:
+        if not self.have_imu:
+            return False
+        if self.last_valid_dvl_time is None:
+            return False
+        age = (now - self.last_valid_dvl_time).nanoseconds * 1e-9
+        return age &lt;= self.valid_timeout_sec
+
+    def _set_control_enabled(self, enabled: bool):
+        prev = self.control_enabled
+        self.control_enabled = bool(enabled)
+        now = self.get_clock().now()
+
+        if self.control_enabled and not prev and self._has_valid_position_reference(now):
+            self._capture_current_position_as_target()
+            self.get_logger().info(&#x27;Position control enabled; captured current hold position&#x27;)
+        elif (not self.control_enabled) and prev:
+            self._publish_zero_force()
+            self.get_logger().info(&#x27;Position control disabled; publishing zero planar force&#x27;)
+
+    def _capture_current_position_as_target(self):
+        self.target_x = self.position_x
+        self.target_y = self.position_y
+        self.target_initialized = True
+
+    def _apply_deadband(self, value: float) -&gt; float:
+        return 0.0 if abs(value) &lt; self.force_deadband else value
+
+    def _dvl_position_is_finite(self, msg: PointStamped) -&gt; bool:
+        return math.isfinite(float(msg.point.x)) and math.isfinite(float(msg.point.y))
+
+    def imu_callback(self, msg: Imu):
+        self.q_world_body = quat_normalize(
+            msg.orientation.x,
+            msg.orientation.y,
+            msg.orientation.z,
+            msg.orientation.w,
+        )
+        self.current_yaw_rate = float(msg.angular_velocity.z)
+        self.have_imu = True
+
+    def manual_wrench_callback(self, msg: Wrench):
+        self.manual_wrench = msg
+        self.prev_manual_xy_active = self.manual_xy_active
+        self.manual_xy_active = (
+            abs(msg.force.x) &gt; self.manual_xy_override_threshold or
+            abs(msg.force.y) &gt; self.manual_xy_override_threshold
+        )
+
+        if (
+            self.capture_target_on_manual_release and
+            self.prev_manual_xy_active and
+            (not self.manual_xy_active) and
+            self._has_valid_position_reference(self.get_clock().now())
+        ):
+            self._capture_current_position_as_target()
+            self.get_logger().info(
+                f&#x27;Manual XY released -&gt; captured current hold position: &#x27;
+                f&#x27;x={self.target_x:.3f}, y={self.target_y:.3f}&#x27;
+            )
+
+    def armed_callback(self, msg: Bool):
+        self.prev_armed = self.armed
+        self.armed = bool(msg.data)
+        self.armed_received = True
+
+        if (
+            (not self.prev_armed) and
+            self.armed and
+            self._has_valid_position_reference(self.get_clock().now())
+        ):
+            self._capture_current_position_as_target()
+            self.get_logger().info(
+                f&#x27;ARM rising edge -&gt; captured current hold position: &#x27;
+                f&#x27;x={self.target_x:.3f}, y={self.target_y:.3f}&#x27;
+            )
+
+        if self.prev_armed and (not self.armed):
+            self._publish_zero_force()
+            self.get_logger().info(&#x27;DISARM -&gt; position controller output reset to zero&#x27;)
+
+    def dvl_position_callback(self, msg: PointStamped):
+        now = self.get_clock().now()
+        stamp = now
+
+        if msg.header.stamp.sec != 0 or msg.header.stamp.nanosec != 0:
+            stamp = Time.from_msg(msg.header.stamp)
+
+        self.last_dvl_position_time = stamp
+
+        if self.use_dvl_position and self._dvl_position_is_finite(msg):
+            self.position_x = float(msg.point.x)
+            self.position_y = float(msg.point.y)
+            self.active_position_frame_id = msg.header.frame_id or self.hold_frame_id
+            self.last_valid_dvl_time = now
+
+            if self.capture_initial_position_target and not self.target_initialized:
+                self._capture_current_position_as_target()
+                self.get_logger().info(
+                    f&#x27;Initial hold position captured from DVL position: &#x27;
+                    f&#x27;x={self.target_x:.3f}, y={self.target_y:.3f}&#x27;
+                )
+
+        self.publish_position_estimate(now)
+        self.publish_control_output(now)
+
+    def dvl_callback(self, msg: DVLData):
+        now = self.get_clock().now()
+        stamp = now
+
+        if msg.header.stamp.sec != 0 or msg.header.stamp.nanosec != 0:
+            stamp = Time.from_msg(msg.header.stamp)
+
+        dt = 0.0
+        if self.last_dvl_time is not None:
+            dt = (stamp - self.last_dvl_time).nanoseconds * 1e-9
+        self.last_dvl_time = stamp
+
+        if msg.velocity_valid and self.have_imu:
+            v_dvl = (float(msg.vx), float(msg.vy), float(msg.vz))
+            v_body = quat_rotate_vector(self.q_body_dvl, v_dvl)
+            v_world = quat_rotate_vector(self.q_world_body, v_body)
+
+            self.velocity_world_x = v_world[0]
+            self.velocity_world_y = v_world[1]
+
+            if (
+                (not self.use_dvl_position) and
+                self.integrate_dvl_velocity_when_position_unavailable and
+                dt &gt; 1e-6
+            ):
+                self.position_x += self.velocity_world_x * dt
+                self.position_y += self.velocity_world_y * dt
+                self.active_position_frame_id = self.hold_frame_id
+
+            if not self.use_dvl_position:
+                self.last_valid_dvl_time = now
+
+            if (
+                (not self.use_dvl_position) and
+                self.capture_initial_position_target and
+                (not self.target_initialized)
+            ):
+                self._capture_current_position_as_target()
+                self.get_logger().info(
+                    f&#x27;Initial hold position captured: &#x27;
+                    f&#x27;x={self.target_x:.3f}, y={self.target_y:.3f}&#x27;
+                )
+        else:
+            self.velocity_world_x = 0.0
+            self.velocity_world_y = 0.0
+
+        self.publish_position_estimate(now)
+        self.publish_control_output(now)
+
+    def publish_position_estimate(self, stamp):
+        msg = PointStamped()
+        msg.header.stamp = stamp.to_msg()
+        msg.header.frame_id = self.active_position_frame_id
+        msg.point.x = self.position_x
+        msg.point.y = self.position_y
+        msg.point.z = 0.0
+        self.pub_position.publish(msg)
+
+    def publish_control_output(self, now):
+        out = Wrench()
+
+        if not self.target_initialized or not self._has_valid_position_reference(now):
+            self.pub_force.publish(out)
+            return
+
+        if self.armed_received and not self.armed:
+            self.pub_force.publish(out)
+            return
+
+        if not self.control_enabled:
+            self.pub_force.publish(out)
+            return
+
+        error_x = self.target_x - self.position_x
+        error_y = self.target_y - self.position_y
+
+        extra_damping = self.yaw_rate_damping_gain * abs(self.current_yaw_rate)
+        if abs(self.manual_wrench.torque.z) &gt; self.manual_yaw_override_threshold:
+            extra_damping += self.manual_yaw_damping_boost
+
+        effective_kd_x = self.kd_x + extra_damping
+        effective_kd_y = self.kd_y + extra_damping
+
+        force_world_x = self.kp_x * error_x - effective_kd_x * self.velocity_world_x
+        force_world_y = self.kp_y * error_y - effective_kd_y * self.velocity_world_y
+        force_world = (force_world_x, force_world_y, 0.0)
+        force_body = quat_rotate_vector(quat_conjugate(self.q_world_body), force_world)
+        force_body_x = force_body[0]
+        force_body_y = force_body[1]
+        force_body_z = force_body[2]
+
+        if self.manual_xy_active:
+            force_body_x = 0.0
+            force_body_y = 0.0
+            force_body_z = 0.0
+
+        out.force.x = self._apply_deadband(clamp(force_body_x, -self.max_force_x, self.max_force_x))
+        out.force.y = self._apply_deadband(clamp(force_body_y, -self.max_force_y, self.max_force_y))
+        out.force.z = self._apply_deadband(clamp(force_body_z, -self.max_force_z, self.max_force_z))
+        out.torque.x = 0.0
+        out.torque.y = 0.0
+        out.torque.z = 0.0
+
+        self.pub_force.publish(out)
+
+    def on_parameter_update(self, params):
+        try:
+            for p in params:
+                if p.name == &#x27;kp_x&#x27;:
+                    self.kp_x = float(p.value)
+                elif p.name == &#x27;kd_x&#x27;:
+                    self.kd_x = float(p.value)
+                elif p.name == &#x27;kp_y&#x27;:
+                    self.kp_y = float(p.value)
+                elif p.name == &#x27;kd_y&#x27;:
+                    self.kd_y = float(p.value)
+                elif p.name == &#x27;max_force_x&#x27;:
+                    self.max_force_x = float(p.value)
+                elif p.name == &#x27;max_force_y&#x27;:
+                    self.max_force_y = float(p.value)
+                elif p.name == &#x27;max_force_z&#x27;:
+                    self.max_force_z = float(p.value)
+                elif p.name == &#x27;force_deadband&#x27;:
+                    self.force_deadband = float(p.value)
+                elif p.name == &#x27;yaw_rate_damping_gain&#x27;:
+                    self.yaw_rate_damping_gain = float(p.value)
+                elif p.name == &#x27;manual_yaw_damping_boost&#x27;:
+                    self.manual_yaw_damping_boost = float(p.value)
+                elif p.name == &#x27;manual_yaw_override_threshold&#x27;:
+                    self.manual_yaw_override_threshold = float(p.value)
+                elif p.name == &#x27;manual_xy_override_threshold&#x27;:
+                    self.manual_xy_override_threshold = float(p.value)
+                elif p.name == &#x27;capture_initial_position_target&#x27;:
+                    self.capture_initial_position_target = bool(p.value)
+                elif p.name == &#x27;capture_target_on_manual_release&#x27;:
+                    self.capture_target_on_manual_release = bool(p.value)
+                elif p.name == &#x27;valid_timeout_sec&#x27;:
+                    self.valid_timeout_sec = float(p.value)
+                elif p.name == &#x27;hold_frame_id&#x27;:
+                    self.hold_frame_id = str(p.value)
+                    if not self.use_dvl_position:
+                        self.active_position_frame_id = self.hold_frame_id
+                elif p.name == &#x27;use_dvl_position&#x27;:
+                    self.use_dvl_position = bool(p.value)
+                    if not self.use_dvl_position:
+                        self.active_position_frame_id = self.hold_frame_id
+                elif p.name == &#x27;integrate_dvl_velocity_when_position_unavailable&#x27;:
+                    self.integrate_dvl_velocity_when_position_unavailable = bool(p.value)
+                elif p.name == &#x27;dvl_mount_roll_deg&#x27;:
+                    self.dvl_mount_roll_deg = float(p.value)
+                    self.q_body_dvl = quat_from_rpy(
+                        math.radians(self.dvl_mount_roll_deg),
+                        math.radians(self.dvl_mount_pitch_deg),
+                        math.radians(self.dvl_mount_yaw_deg),
+                    )
+                elif p.name == &#x27;dvl_mount_pitch_deg&#x27;:
+                    self.dvl_mount_pitch_deg = float(p.value)
+                    self.q_body_dvl = quat_from_rpy(
+                        math.radians(self.dvl_mount_roll_deg),
+                        math.radians(self.dvl_mount_pitch_deg),
+                        math.radians(self.dvl_mount_yaw_deg),
+                    )
+                elif p.name == &#x27;dvl_mount_yaw_deg&#x27;:
+                    self.dvl_mount_yaw_deg = float(p.value)
+                    self.q_body_dvl = quat_from_rpy(
+                        math.radians(self.dvl_mount_roll_deg),
+                        math.radians(self.dvl_mount_pitch_deg),
+                        math.radians(self.dvl_mount_yaw_deg),
+                    )
+                elif p.name == &#x27;control_enabled&#x27;:
+                    self._set_control_enabled(bool(p.value))
+
+            self.get_logger().info(&#x27;Position controller parameters updated at runtime&#x27;)
+            return SetParametersResult(successful=True)
+        except Exception as exc:
+            return SetParametersResult(successful=False, reason=str(exc))
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = PositionController()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == &#x27;__main__&#x27;:
+    main()</code></pre>
+        </details>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

@@ -3,570 +3,94 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Controller Review Dashboard</title>
+  <title>Controller Review</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
   <div class="page-shell">
     <aside class="sidebar">
       <div class="brand">
-        <p class="eyebrow">Code Review Dashboard</p>
-        <h1>Controller Review</h1>
-        <p class="meta">문서 소스: `code_review/controller_review/*.md`</p>
+        <p class="eyebrow">Controller Review</p>
+        <h1>Function-Based Code Review</h1>
+        <p class="meta">실제 코드 기준으로 함수 의미, 영향, 리뷰 포인트를 정리한 리뷰 허브입니다.</p>
       </div>
-
       <nav class="toc">
         <a href="#overview">개요</a>
-        <a href="#summary">핵심 요약</a>
-        <a href="#findings">주요 이슈</a>
-        <a href="#control-structure">전체 구조</a>
-        <a href="#modules">모듈별 리뷰</a>
-        <a href="#priority">우선순위</a>
+        <a href="#modules">코드별 리뷰</a>
       </nav>
-
-      <div class="sidebar-card">
-        <p class="sidebar-label">빠른 판단</p>
-        <ul>
-          <li>구조는 명확하지만 freshness 관리가 불균일함</li>
-          <li>가장 큰 리스크는 stale input latch</li>
-          <li>Allocator는 실용적이지만 heuristic 성격이 강함</li>
-          <li>단기 개선 포인트가 비교적 선명함</li>
-        </ul>
-      </div>
     </aside>
 
     <main class="content">
       <section id="overview" class="hero">
         <div>
-          <p class="eyebrow">ROS 2 ROV Control Review</p>
-          <h2>제어 리뷰 문서를 HTML / CSS / JS 기반 대시보드로 재구성했습니다</h2>
-          <p class="hero-text">
-            `control_code_review.md`와 각 컨트롤러별 리뷰 문서를 한 페이지에서 읽을 수 있게 정리했습니다.
-            핵심 리스크, 설계 철학, 우선순위, 모듈별 해설을 빠르게 탐색할 수 있습니다.
-          </p>
-        </div>
-        <div class="hero-actions">
-          <button class="chip-button is-active" data-filter="all">전체 보기</button>
-          <button class="chip-button" data-filter="risk">리스크 중심</button>
-          <button class="chip-button" data-filter="architecture">구조 중심</button>
-          <button class="chip-button" data-filter="module">모듈 중심</button>
+          <p class="eyebrow">Review Hub</p>
+          <h2>코드를 누르면 실제 코드와 함께 함수 중심 리뷰 페이지로 이동합니다</h2>
+          <p>이 디렉토리의 리뷰는 이제 <strong>실제 코드 기준의 함수 중심 리뷰</strong>로 재구성됩니다.</p>
+<ul class="summary-list">
+  <li>각 모듈 페이지는 실제 코드 스니펫과 함께 <code>이 함수가 무슨 의미인지</code>, <code>시스템에 어떤 영향을 주는지</code>, <code>리뷰 관점에서 왜 중요한지</code>를 설명합니다.</li>
+  <li>메인 페이지에서는 모듈별 코드 리뷰 페이지로 이동할 수 있습니다.</li>
+  <li>각 상세 페이지 하단에는 <strong>전체 코드</strong>도 같이 넣어, 문맥과 리뷰를 동시에 볼 수 있게 합니다.</li>
+</ul>
         </div>
       </section>
 
-      <section class="card-grid" data-category="risk architecture">
-        <article class="info-card accent-red">
-          <h3>Top Risk</h3>
-          <p>수동/자동 입력 freshness 처리의 불일치로 인해 입력 dropout 시 제어 상태가 latch될 수 있습니다.</p>
+      <section id="modules" class="panel">
+        <div class="panel-heading">
+          <div>
+            <p class="section-kicker">Modules</p>
+            <h2>코드별 상세 리뷰 페이지</h2>
+          </div>
+        </div>
+        <div class="module-grid">
+          <article class="module-card">
+          <p class="eyebrow">Code Review</p>
+          <h3>Attitude Controller Review</h3>
+          <p>이 코드는 IMU와 수동 wrench를 받아 ROV의 `roll`, `pitch`, `yaw` 토크를 만드는 자세 제어기입니다.</p>
+          <p class="module-note">리뷰 포인트는 `목표 자세를 어떻게 잡는지`, `IMU를 어떻게 제어 상태로 필터링하는지`, `yaw manual override와 hold가 어떻게 전환되는지`, `translation/heave 중 보호 로직이 어떤 출력을 만드는지`입니다.</p>
+          <div class="module-actions">
+            <a class="primary-link" href="attitude_controller_review.html">상세 HTML 보기</a>
+            <a class="secondary-link" href="controller_review_attitude.md">MD 보기</a>
+          </div>
+        </article> <article class="module-card">
+          <p class="eyebrow">Code Review</p>
+          <h3>Depth Controller Review</h3>
+          <p>이 코드는 depth sensor와 IMU, manual heave 입력을 받아 최종 `Fz` 명령을 만드는 수심 유지 제어기입니다.</p>
+          <p class="module-note">리뷰 포인트는 `target depth를 언제 어떻게 캡처하는지`, `manual heave freshness를 어떻게 지우는지`, `depth sensor offset을 IMU로 어떻게 보정하는지`, `최종 heave shaping이 actuator-friendly한지`입니다.</p>
+          <div class="module-actions">
+            <a class="primary-link" href="depth_controller_review.html">상세 HTML 보기</a>
+            <a class="secondary-link" href="controller_review_depth.md">MD 보기</a>
+          </div>
+        </article> <article class="module-card">
+          <p class="eyebrow">Code Review</p>
+          <h3>Position Controller Review</h3>
+          <p>이 코드는 DVL와 IMU, manual input을 이용해 planar hold용 `Fx`, `Fy`, 그리고 경우에 따라 `Fz` 보정까지 만드는 위치 제어기입니다.</p>
+          <p class="module-note">리뷰 포인트는 `DVL position과 velocity fallback이 어떻게 연결되는지`, `manual XY override가 hold target과 어떻게 상호작용하는지`, `yaw motion-aware damping이 어떤 안정화 효과를 만드는지`, `body-frame 변환 후 force.z를 왜 출력하는지`입니다.</p>
+          <div class="module-actions">
+            <a class="primary-link" href="position_controller_review.html">상세 HTML 보기</a>
+            <a class="secondary-link" href="controller_review_position.md">MD 보기</a>
+          </div>
+        </article> <article class="module-card">
+          <p class="eyebrow">Code Review</p>
+          <h3>Wrench Merger Review</h3>
+          <p>이 코드는 manual input, depth, position, attitude 출력을 축별 규칙으로 합쳐 최종 `Wrench`를 만드는 supervisory mixer입니다.</p>
+          <p class="module-note">리뷰 포인트는 `manual freshness가 어떻게 적용되는지`, `depth active일 때 heave를 어떻게 해석하는지`, `roll/pitch와 yaw의 arbitration 철학이 어떻게 다른지`입니다.</p>
+          <div class="module-actions">
+            <a class="primary-link" href="wrench_merger_review.html">상세 HTML 보기</a>
+            <a class="secondary-link" href="controller_review_wrench_merger.md">MD 보기</a>
+          </div>
+        </article> <article class="module-card">
+          <p class="eyebrow">Code Review</p>
+          <h3>Allocator Review</h3>
+          <p>이 코드는 최종 `Wrench(Fx, Fy, Fz, Tx, Ty, Tz)`를 8개 thruster 명령으로 바꾸는 control allocation 노드입니다.</p>
+          <p class="module-note">리뷰 포인트는 `행렬이 실제 기체 배치를 어떻게 표현하는지`, `수평/수직 allocator가 어떤 철학으로 분리되는지`, `compensation 항이 왜 필요한지`, `최종 shaping과 slew-rate가 actuator에 어떤 영향을 주는지`입니다.</p>
+          <div class="module-actions">
+            <a class="primary-link" href="allocator_node_review.html">상세 HTML 보기</a>
+            <a class="secondary-link" href="controller_review_allocator.md">MD 보기</a>
+          </div>
         </article>
-        <article class="info-card accent-blue">
-          <h3>Architecture</h3>
-          <p>상위 제어기 → `wrench_merger` → `allocator_node`로 이어지는 분산형 구조는 추적성과 실험성이 좋습니다.</p>
-        </article>
-        <article class="info-card accent-green">
-          <h3>Actionability</h3>
-          <p>timeout 추가, sign 파라미터화, allocator 성격 문서화처럼 바로 실행 가능한 개선안이 명확합니다.</p>
-        </article>
-      </section>
-
-      <section id="summary" class="panel" data-category="risk architecture">
-        <div class="panel-heading">
-          <div>
-            <p class="section-kicker">1. Summary</p>
-            <h2>전체 리뷰 핵심</h2>
-          </div>
-          <span class="badge">Overview</span>
-        </div>
-
-        <div class="two-column">
-          <article class="subpanel">
-            <h3>좋은 점</h3>
-            <ul class="check-list">
-              <li>자세 / 수심 / 위치 / 병합 / allocation 단계 분리가 잘 되어 있음</li>
-              <li>`Wrench` 기반 인터페이스가 깔끔해서 확장성이 좋음</li>
-              <li>수평/수직 스러스터 그룹 분리가 실제 ROV 구성과 잘 맞음</li>
-              <li>yaw release capture 같은 운용감 개선 로직이 존재함</li>
-            </ul>
-          </article>
-
-          <article class="subpanel">
-            <h3>주의할 점</h3>
-            <ul class="warning-list">
-              <li>입력 끊김 시 마지막 명령이 남는 stale-state 리스크</li>
-              <li>제어기별 override / freshness 철학이 완전히 일치하지 않음</li>
-              <li>allocator가 최적화 기반이 아니라 heuristic saturation 성격이 강함</li>
-              <li>좌표계 부호나 z-coupling 의도가 코드만 봐서는 충분히 드러나지 않음</li>
-            </ul>
-          </article>
-        </div>
-      </section>
-
-      <section id="findings" class="panel" data-category="risk">
-        <div class="panel-heading">
-          <div>
-            <p class="section-kicker">2. Findings</p>
-            <h2>우선 확인해야 할 주요 이슈</h2>
-          </div>
-          <span class="badge">Risks</span>
-        </div>
-
-        <div class="stacked-cards">
-          <article class="subpanel severity-high">
-            <div class="label-row">
-              <span class="tag">High</span>
-              <h3>`attitude_controller` manual freshness 누락</h3>
-            </div>
-            <p>마지막 수동 wrench가 남아 `yaw_manual_active`, `heave_protect`, `xy_motion_protect` 상태가 지속될 수 있습니다.</p>
-            <pre class="evidence-code"><code>manual_wrench = self.manual_wrench
-yaw_manual_active = abs(manual_wrench.torque.z) &gt; self.manual_yaw_override_threshold
-heave_protect = abs(manual_wrench.force.z) &gt; self.heave_override_threshold
-xy_motion_protect = (
-    abs(manual_wrench.force.x) &gt; self.xy_motion_protect_threshold or
-    abs(manual_wrench.force.y) &gt; self.xy_motion_protect_threshold
-)</code></pre>
-            <p class="note">권장: `manual_wrench_timeout_sec`를 도입하고 stale 시 `Wrench()`로 간주.</p>
-          </article>
-
-          <article class="subpanel severity-high">
-            <div class="label-row">
-              <span class="tag">High</span>
-              <h3>`position_controller` manual XY latch 가능성</h3>
-            </div>
-            <p>마지막 XY 입력이 남으면 `manual_xy_active=True`가 유지되어 position hold 복귀가 지연될 수 있습니다.</p>
-            <pre class="evidence-code"><code>self.prev_manual_xy_active = self.manual_xy_active
-self.manual_xy_active = (
-    abs(self.manual_wrench.force.x) &gt; self.manual_xy_override_threshold or
-    abs(self.manual_wrench.force.y) &gt; self.manual_xy_override_threshold
-)
-
-if self.manual_xy_active:
-    force_world_x = 0.0
-    force_world_y = 0.0</code></pre>
-            <p class="note">권장: `last_manual_wrench_time`와 timeout 기반 자동 복구 추가.</p>
-          </article>
-
-          <article class="subpanel severity-high">
-            <div class="label-row">
-              <span class="tag">High</span>
-              <h3>`wrench_merger` auto input freshness 미확인</h3>
-            </div>
-            <p>상위 제어기 publish가 멈춰도 마지막 `position/depth/attitude` 출력이 계속 사용될 수 있습니다.</p>
-            <pre class="evidence-code"><code>if abs(manual_surge) &gt; self.manual_xy_override_threshold:
-    merged.force.x = manual_surge
-else:
-    merged.force.x = self.last_position_force.force.x
-
-merged.force.z = self.last_depth_heave + self.last_position_force.force.z
-merged.torque.x = self.last_attitude_torque.torque.x
-merged.torque.y = self.last_attitude_torque.torque.y</code></pre>
-            <p class="note">권장: 입력별 timestamp와 timeout을 두고 stale 축만 안전하게 0 처리.</p>
-          </article>
-
-          <article class="subpanel severity-medium">
-            <div class="label-row">
-              <span class="tag">Medium</span>
-              <h3>`allocator_node`의 `Fx` 부호 반전 하드코딩</h3>
-            </div>
-            <p>`force.x`가 내부에서 무조건 반전되어 좌표계 해석이 코드 추적으로만 드러납니다.</p>
-            <pre class="evidence-code"><code>fx = float(msg.force.x) * -1
-fy = float(msg.force.y)
-fz = float(msg.force.z)
-tx = float(msg.torque.x)
-ty = float(msg.torque.y)
-tz = float(msg.torque.z)</code></pre>
-            <p class="note">권장: `surge_sign` 같은 파라미터로 외부화하고 문서화.</p>
-          </article>
-
-          <article class="subpanel severity-medium">
-            <div class="label-row">
-              <span class="tag">Medium</span>
-              <h3>Allocator saturation 거동의 비직관성</h3>
-            </div>
-            <p>분리 계산 + normalize 방식이라 saturation 시 원하는 wrench 비율이 보존되지 않을 수 있습니다.</p>
-            <pre class="evidence-code"><code>u_h = (
-    (self.H_pinv @ horiz_force_cmd) * self.horizontal_output_gain +
-    (self.H_pinv @ horiz_yaw_cmd) * self.yaw_output_gain
-)
-
-if self.torque_first_allocation:
-    components = [u_v_torque, u_v_heave]
-else:
-    components = [u_v_heave, u_v_torque]</code></pre>
-            <p class="note">권장: 현재는 heuristic allocator로 명시하고, 장기적으로 weighted least-squares / QP 검토.</p>
-          </article>
-
-          <article class="subpanel severity-medium">
-            <div class="label-row">
-              <span class="tag">Medium</span>
-              <h3>`position_controller`의 planar→body 변환 후 `force.z` 사용</h3>
-            </div>
-            <p>기체가 기울어졌을 때 XY hold가 heave 요구로 섞여 depth/position coupling이 생길 수 있습니다.</p>
-            <pre class="evidence-code"><code>force_world = (force_world_x, force_world_y, 0.0)
-force_body = quat_rotate_vector(quat_conjugate(self.q_world_body), force_world)
-force_body_x = force_body[0]
-force_body_y = force_body[1]
-force_body_z = force_body[2]</code></pre>
-            <p class="note">권장: 의도된 보상이면 명시, 아니면 `force_body_z = 0` 검토.</p>
-          </article>
-
-          <article class="subpanel severity-low">
-            <div class="label-row">
-              <span class="tag">Low</span>
-              <h3>`depth_controller` release target offset</h3>
-            </div>
-            <p>manual heave 해제 후 항상 고정 오프셋을 더해 목표 수심을 잡아 운용자 기대와 어긋날 수 있습니다.</p>
-            <pre class="evidence-code"><code>def capture_manual_release_target(self, reason: str):
-    self.target_depth = self.current_depth + self.manual_heave_release_target_offset
-    self.clamp_target_depth()
-    self.target_initialized = True
-    self.depth_integral = 0.0</code></pre>
-            <p class="note">권장: 기본값 0 또는 offset 적용 의도 문서화.</p>
-          </article>
-        </div>
-      </section>
-
-      <section id="control-structure" class="panel" data-category="architecture">
-        <div class="panel-heading">
-          <div>
-            <p class="section-kicker">3. Control Structure</p>
-            <h2>현재 제어 흐름</h2>
-          </div>
-          <span class="badge">Pipeline</span>
-        </div>
-
-        <div class="pipeline">
-          <div class="pipeline-node">
-            <h3>Manual Teleop</h3>
-            <p>조종 입력 생성</p>
-          </div>
-          <div class="pipeline-node">
-            <h3>Depth Controller</h3>
-            <p>`Fz` 생성</p>
-          </div>
-          <div class="pipeline-node">
-            <h3>Position Controller</h3>
-            <p>`Fx`, `Fy` 중심 생성</p>
-          </div>
-          <div class="pipeline-node">
-            <h3>Attitude Controller</h3>
-            <p>`Tx`, `Ty`, `Tz` 생성</p>
-          </div>
-          <div class="pipeline-node">
-            <h3>Wrench Merger</h3>
-            <p>축별 arbitration</p>
-          </div>
-          <div class="pipeline-node">
-            <h3>Allocator</h3>
-            <p>8개 thruster 명령 분배</p>
-          </div>
-        </div>
-
-        <div class="three-up">
-          <article class="subpanel">
-            <h3>분산형 장점</h3>
-            <p>축별 enable/disable, 디버깅, 빠른 실험, 단계별 튜닝이 쉽습니다.</p>
-          </article>
-          <article class="subpanel">
-            <h3>분산형 약점</h3>
-            <p>freshness, safety gate, mode abstraction을 각 노드가 따로 관리하면 일관성이 깨지기 쉽습니다.</p>
-          </article>
-          <article class="subpanel">
-            <h3>핵심 교훈</h3>
-            <p>제어기 품질만큼 입력 유효성 관리와 supervisory 정책 통일이 중요합니다.</p>
-          </article>
-        </div>
-      </section>
-
-      <section id="modules" class="panel" data-category="module architecture">
-        <div class="panel-heading">
-          <div>
-            <p class="section-kicker">4. Module Reviews</p>
-            <h2>모듈별 리뷰 해설</h2>
-          </div>
-          <span class="badge">Deep Dive</span>
-        </div>
-
-        <div class="tabs" role="tablist" aria-label="모듈별 리뷰 탭">
-          <button class="tab is-active" role="tab" data-tab-target="tab-overall">Overall</button>
-          <button class="tab" role="tab" data-tab-target="tab-attitude">Attitude</button>
-          <button class="tab" role="tab" data-tab-target="tab-depth">Depth</button>
-          <button class="tab" role="tab" data-tab-target="tab-position">Position</button>
-          <button class="tab" role="tab" data-tab-target="tab-merger">Merger</button>
-          <button class="tab" role="tab" data-tab-target="tab-allocator">Allocator</button>
-        </div>
-
-        <div id="tab-overall" class="tab-panel is-active">
-          <div class="two-column">
-            <article class="subpanel">
-              <h3>전체 리뷰 문서</h3>
-              <p>`control_code_review.md`는 구조적 장단점과 cross-module 리스크를 가장 잘 요약합니다.</p>
-              <ul>
-                <li>입력 freshness 불일치</li>
-                <li>allocation heuristic 특성</li>
-                <li>좌표계/부호 명시성 부족</li>
-                <li>운용감은 좋지만 안전 정책은 더 강화 필요</li>
-              </ul>
-            </article>
-            <article class="subpanel">
-              <h3>읽는 순서 추천</h3>
-              <ol class="ordered-list">
-                <li>Overall summary로 위험도 파악</li>
-                <li>`wrench_merger`로 arbitration 정책 확인</li>
-                <li>`attitude` / `position` / `depth` 제어기별 override 해석</li>
-                <li>`allocator`에서 실제 출력 shaping 확인</li>
-              </ol>
-            </article>
-          </div>
-
-          <article class="subpanel code-surface">
-            <h3>문서 속 핵심 표현</h3>
-            <pre><code>Wrench(Fx, Fy, Fz, Tx, Ty, Tz)
-  → wrench_merger
-  → allocator_node
-  → thruster_cmd</code></pre>
-            <p class="note">요약 문서의 핵심은 “제어기 품질”보다 “입력 freshness와 supervisory 정책의 일관성”입니다.</p>
-          </article>
-        </div>
-
-        <div id="tab-attitude" class="tab-panel">
-          <div class="two-column">
-            <article class="subpanel">
-              <h3>역할과 제어법칙</h3>
-              <p>IMU quaternion 기반으로 `roll / pitch / yaw`를 계산하고, roll/pitch stabilizer + yaw heading hold에 가까운 구조로 동작합니다.</p>
-              <ul>
-                <li>roll/pitch: PID + rate damping</li>
-                <li>yaw: heading error + yaw rate damping</li>
-                <li>trim, large tilt disable, yaw hold 정책 포함</li>
-              </ul>
-            </article>
-            <article class="subpanel">
-              <h3>리뷰 포인트</h3>
-              <p>수동 wrench freshness 미관리로 보호 로직이 의도보다 오래 남을 수 있습니다.</p>
-              <p class="note">핵심 수정 포인트: manual timeout, stale state reset, yaw override 복귀 일관화.</p>
-            </article>
-          </div>
-
-          <div class="snippet-grid">
-            <article class="subpanel code-surface">
-              <h3>IMU 입력 갱신</h3>
-              <pre><code>def imu_callback(self, msg: Imu):
-    self.q_current = quat_normalize((
-        msg.orientation.x,
-        msg.orientation.y,
-        msg.orientation.z,
-        msg.orientation.w,
-    ))
-    self.roll, self.pitch, self.yaw = quat_to_rpy(*self.q_current)</code></pre>
-            </article>
-            <article class="subpanel code-surface">
-              <h3>제어 루프 핵심</h3>
-              <pre><code>def control_loop(self):
-    if not self.have_imu or not self.target_initialized:
-        return
-    if not self.control_enabled:
-        self.pub_torque.publish(out)
-        return</code></pre>
-            </article>
-          </div>
-        </div>
-
-        <div id="tab-depth" class="tab-panel">
-          <div class="two-column">
-            <article class="subpanel">
-              <h3>역할과 제어법칙</h3>
-              <p>수심 센서와 IMU를 이용해 `Fz`를 만드는 depth PID controller입니다.</p>
-              <ul>
-                <li>`target_depth - current_depth` 오차 기반 PID</li>
-                <li>pilot depth-rate 해석 가능</li>
-                <li>sensor offset compensation 포함</li>
-                <li>slew-rate 제한과 upward limit 포함</li>
-              </ul>
-            </article>
-            <article class="subpanel">
-              <h3>리뷰 포인트</h3>
-              <p>manual heave release 시 목표를 `current_depth + offset`으로 잡는 정책이 직관과 어긋날 수 있습니다.</p>
-              <p class="note">핵심 수정 포인트: release offset 기본값 재검토, 의도 문서화.</p>
-            </article>
-          </div>
-
-          <div class="snippet-grid">
-            <article class="subpanel code-surface">
-              <h3>목표 수심 캡처</h3>
-              <pre><code>def armed_callback(self, msg: Bool):
-    if (not self.prev_armed) and self.armed:
-        if self.current_depth is not None:
-            self.target_depth = self.current_depth
-            self.target_initialized = True</code></pre>
-            </article>
-            <article class="subpanel code-surface">
-              <h3>핵심 제어식</h3>
-              <pre><code>error = self.target_depth - depth
-raw_cmd = (
-    self.kp_depth * error +
-    self.ki_depth * self.depth_integral -
-    self.kd_depth * depth_rate
-)</code></pre>
-            </article>
-          </div>
-        </div>
-
-        <div id="tab-position" class="tab-panel">
-          <div class="two-column">
-            <article class="subpanel">
-              <h3>역할과 제어법칙</h3>
-              <p>world frame에서 위치 오차를 계산한 뒤 body frame 힘으로 바꾸는 planar PD position hold 구조입니다.</p>
-              <ul>
-                <li>DVL position 또는 velocity integration 지원</li>
-                <li>yaw motion-aware damping 추가</li>
-                <li>manual release target capture 정책 포함</li>
-              </ul>
-            </article>
-            <article class="subpanel">
-              <h3>리뷰 포인트</h3>
-              <p>manual XY stale latch 가능성과 transformed `force.z` 사용이 가장 눈에 띕니다.</p>
-              <p class="note">핵심 수정 포인트: manual timeout, hold 복귀 로직, z-coupling 설계 의도 명확화.</p>
-            </article>
-          </div>
-
-          <div class="snippet-grid">
-            <article class="subpanel code-surface">
-              <h3>World → Body 변환</h3>
-              <pre><code>force_world = (force_world_x, force_world_y, 0.0)
-force_body = quat_rotate_vector(
-    quat_conjugate(self.q_world_body),
-    force_world
-)
-force_body_x = force_body[0]
-force_body_y = force_body[1]</code></pre>
-            </article>
-            <article class="subpanel code-surface">
-              <h3>Damping 강화</h3>
-              <pre><code>extra_damping = self.yaw_rate_damping_gain * abs(self.current_yaw_rate)
-if abs(self.manual_wrench.torque.z) > self.manual_yaw_override_threshold:
-    extra_damping += self.manual_yaw_damping_boost</code></pre>
-            </article>
-          </div>
-        </div>
-
-        <div id="tab-merger" class="tab-panel">
-          <div class="two-column">
-            <article class="subpanel">
-              <h3>역할과 병합 정책</h3>
-              <p>수동 입력과 각 자동 제어기 출력을 축별 규칙으로 합치는 supervisory mixer입니다.</p>
-              <ul>
-                <li>`Fx/Fy`: manual override 아니면 position 사용</li>
-                <li>`Fz`: depth state와 manual heave를 함께 고려</li>
-                <li>`Tx/Ty`: attitude 유지 우선</li>
-                <li>`Tz`: manual yaw override 아니면 yaw hold</li>
-              </ul>
-            </article>
-            <article class="subpanel">
-              <h3>리뷰 포인트</h3>
-              <p>manual 입력 timeout은 있지만 auto input freshness가 없어 장애 전파가 조용히 남을 수 있습니다.</p>
-              <p class="note">핵심 수정 포인트: 입력별 timestamp/timeout, stale source별 안전 처리.</p>
-            </article>
-          </div>
-
-          <div class="snippet-grid">
-            <article class="subpanel code-surface">
-              <h3>수평 축 병합</h3>
-              <pre><code>if abs(manual_surge) &gt; self.manual_xy_override_threshold:
-    merged.force.x = manual_surge
-else:
-    merged.force.x = self.last_position_force.force.x</code></pre>
-            </article>
-            <article class="subpanel code-surface">
-              <h3>Depth 상태 기반 병합</h3>
-              <pre><code>if self.depth_active:
-    merged.force.z = self.last_depth_heave + self.last_position_force.force.z
-elif abs(manual_heave) &gt; self.manual_heave_override_threshold:
-    merged.force.z = manual_heave</code></pre>
-            </article>
-          </div>
-        </div>
-
-        <div id="tab-allocator" class="tab-panel">
-          <div class="two-column">
-            <article class="subpanel">
-              <h3>역할과 구조</h3>
-              <p>`Wrench(Fx, Fy, Fz, Tx, Ty, Tz)`를 8개 스러스터 명령으로 바꾸는 `control allocation + actuator shaping` 노드입니다.</p>
-              <ul>
-                <li>1~4번 수평 그룹: `Fx`, `Fy`, `Tz`</li>
-                <li>5~8번 수직 그룹: `Fz`, `Tx`, `Ty`</li>
-                <li>pseudo-inverse 기반 분리 계산</li>
-                <li>priority / gain / normalization 포함</li>
-              </ul>
-            </article>
-            <article class="subpanel">
-              <h3>리뷰 포인트</h3>
-              <p>하드코딩된 x축 부호와 heuristic saturation이 핵심 해석 포인트입니다.</p>
-              <p class="note">핵심 수정 포인트: sign 파라미터화, allocator 철학 문서화, 장기적 고도화 방향 제시.</p>
-            </article>
-          </div>
-
-          <div class="snippet-grid">
-            <article class="subpanel code-surface">
-              <h3>Thruster 방향 부호</h3>
-              <pre><code>self.signs = np.array(
-    [1, 1, 1, 1, 1, 1, 1, 1],
-    dtype=float
-)
-u = u * self.signs</code></pre>
-            </article>
-            <article class="subpanel code-surface">
-              <h3>수평 Allocation</h3>
-              <pre><code>u_h = (
-    (self.H_pinv @ horiz_force_cmd) * self.horizontal_output_gain +
-    (self.H_pinv @ horiz_yaw_cmd) * self.yaw_output_gain
-)</code></pre>
-            </article>
-            <article class="subpanel code-surface">
-              <h3>수직 Priority</h3>
-              <pre><code>if self.torque_first_allocation:
-    components = [u_v_torque, u_v_heave]
-else:
-    components = [u_v_heave, u_v_torque]</code></pre>
-            </article>
-            <article class="subpanel code-surface">
-              <h3>보상 항 예시</h3>
-              <pre><code>def level_horizontal_heave_compensation(self, fx: float, fy: float) -&gt; float:
-    if not self.level_horizontal_compensation_enabled or not self.have_imu:
-        return 0.0</code></pre>
-            </article>
-          </div>
-        </div>
-      </section>
-
-      <section id="priority" class="panel" data-category="risk module">
-        <div class="panel-heading">
-          <div>
-            <p class="section-kicker">5. Recommended Priority</p>
-            <h2>개선 우선순위</h2>
-          </div>
-          <span class="badge">Action Plan</span>
-        </div>
-
-        <div class="two-column">
-          <article class="subpanel accent-border-red">
-            <h3>Immediate</h3>
-            <ul class="warning-list">
-              <li>`attitude_controller`에 manual input timeout 추가</li>
-              <li>`position_controller`에 manual XY timeout 추가</li>
-              <li>`wrench_merger`에 auto input timeout 추가</li>
-            </ul>
-          </article>
-          <article class="subpanel accent-border-blue">
-            <h3>Short-term</h3>
-            <ul class="check-list">
-              <li>`allocator_node`의 x축 부호 반전 파라미터화</li>
-              <li>position `force.z` 사용 의도 문서화 또는 재설계</li>
-              <li>depth release offset 기본 정책 재정리</li>
-            </ul>
-          </article>
         </div>
       </section>
     </main>
   </div>
-
-  <script src="script.js"></script>
 </body>
 </html>

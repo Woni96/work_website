@@ -1,0 +1,1327 @@
+from __future__ import annotations
+
+import html
+import re
+import textwrap
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Iterable
+
+
+BASE_DIR = Path(__file__).resolve().parent
+CODE_DIR = BASE_DIR.parent / "code"
+
+
+@dataclass(frozen=True)
+class ReviewItem:
+    heading: str
+    source_names: tuple[str, ...]
+    meaning: str
+    impact: str
+    review: str
+
+
+@dataclass(frozen=True)
+class ModuleConfig:
+    key: str
+    title: str
+    source_filename: str
+    markdown_filename: str
+    html_filename: str
+    role_summary: str
+    design_summary: str
+    review_focus: str
+    items: tuple[ReviewItem, ...]
+
+
+MODULES: tuple[ModuleConfig, ...] = (
+    ModuleConfig(
+        key="attitude",
+        title="Attitude Controller Review",
+        source_filename="attitude_controller.py",
+        markdown_filename="controller_review_attitude.md",
+        html_filename="attitude_controller_review.html",
+        role_summary=(
+            "이 코드는 IMU와 수동 wrench를 받아 ROV의 `roll`, `pitch`, `yaw` 토크를 만드는 자세 제어기입니다."
+        ),
+        design_summary=(
+            "설계상 핵심은 `roll/pitch stabilizer + yaw heading hold`입니다. "
+            "즉 단순히 자세 오차만 줄이는 것이 아니라, 조종자의 yaw 조작과 translational motion 중에도 "
+            "trim attitude와 heading hold를 유지하려는 운용 감각이 강하게 들어가 있습니다."
+        ),
+        review_focus=(
+            "리뷰 포인트는 `목표 자세를 어떻게 잡는지`, `IMU를 어떻게 제어 상태로 필터링하는지`, "
+            "`yaw manual override와 hold가 어떻게 전환되는지`, `translation/heave 중 보호 로직이 어떤 출력을 만드는지`입니다."
+        ),
+        items=(
+            ReviewItem(
+                heading="Quaternion / Angle 유틸리티",
+                source_names=("clamp", "vec_norm", "quat_normalize", "quat_conj", "quat_mul", "quat_to_rpy", "rpy_to_quat", "wrap_to_pi"),
+                meaning=(
+                    "이 함수들은 제어기 본체보다 먼저, 자세 표현을 다루기 위한 공통 도구입니다. "
+                    "Quaternion을 정규화하고 곱하고 Euler angle로 바꾸는 역할을 맡습니다."
+                ),
+                impact=(
+                    "이 유틸리티가 안정적이어야 목표 자세 계산과 yaw wrapping이 깨지지 않습니다. "
+                    "특히 `wrap_to_pi()`는 yaw 오차가 `+π/-π` 경계에서 튀는 문제를 막아줍니다."
+                ),
+                review=(
+                    "이 계층은 제어식의 기반이라서 작아 보여도 중요합니다. "
+                    "자세 제어가 갑자기 반대로 튀거나 yaw 오차가 크게 보이는 문제는 여기서 시작되는 경우가 많습니다."
+                ),
+            ),
+            ReviewItem(
+                heading="`__init__()`",
+                source_names=("__init__",),
+                meaning=(
+                    "노드의 토픽, 게인, 제한값, 보호 로직, yaw hold 정책을 전부 선언하고 상태 변수를 초기화합니다."
+                ),
+                impact=(
+                    "이 함수가 곧 제어기의 운용 정책 선언부입니다. "
+                    "어떤 입력을 받고 어떤 보호 로직이 켜지는지, yaw stick을 놓았을 때 어떤 감각으로 복귀하는지가 여기서 결정됩니다."
+                ),
+                review=(
+                    "파라미터가 많지만 모두 의미가 분명합니다. 다만 수동 입력 freshness를 위한 timestamp/state가 없는 점은 "
+                    "후반 제어 루프에서 stale manual state로 이어질 수 있습니다."
+                ),
+            ),
+            ReviewItem(
+                heading="목표 자세 캡처 계열",
+                source_names=("_update_target_quaternion", "_force_level_roll_pitch_target", "_capture_current_attitude_as_target", "_capture_current_yaw_as_target"),
+                meaning=(
+                    "이 함수들은 '지금 무엇을 목표 자세로 볼 것인가'를 정하는 계층입니다. "
+                    "초기 캡처, level target 유지, yaw release 후 heading hold 재설정이 모두 여기서 일어납니다."
+                ),
+                impact=(
+                    "사용자가 조작을 놓았을 때 기체가 어느 자세로 돌아갈지 결정합니다. "
+                    "운용감이 좋은지, trim이 유지되는지, yaw hold가 자연스러운지가 이 계층에 달려 있습니다."
+                ),
+                review=(
+                    "이 코드의 운용 감각은 꽤 좋습니다. 특히 yaw target을 현재 yaw로 다시 잡는 설계는 실제 조종 감각을 부드럽게 만듭니다."
+                ),
+            ),
+            ReviewItem(
+                heading="`imu_callback()`",
+                source_names=("imu_callback",),
+                meaning=(
+                    "IMU quaternion과 body rate를 읽어 현재 자세와 각속도를 최신 상태로 갱신합니다."
+                ),
+                impact=(
+                    "제어기의 모든 피드백이 여기서 들어옵니다. "
+                    "처음 IMU를 받으면 초기 target을 캡처하기 때문에, 이 함수는 센서 수신과 target initialization을 동시에 담당합니다."
+                ),
+                review=(
+                    "초기 target capture와 IMU 상태 갱신이 한 곳에 모여 있어 흐름은 명확합니다. "
+                    "다만 manual freshness와는 독립이라 이후 control loop가 오래된 manual 입력을 그대로 읽을 수 있습니다."
+                ),
+            ),
+            ReviewItem(
+                heading="`_update_control_attitude_filter()`",
+                source_names=("_reset_control_attitude_filter", "_update_control_attitude_filter"),
+                meaning=(
+                    "IMU 자세를 그대로 쓰지 않고, body rate 적분 예측값과 measurement를 섞어서 `control_roll`, `control_pitch`를 만듭니다."
+                ),
+                impact=(
+                    "센서 노이즈와 순간 흔들림을 줄이고 제어 대상 자세를 더 부드럽게 만듭니다. "
+                    "즉 이 함수는 제어 입력의 품질을 개선하는 내부 observer 역할을 합니다."
+                ),
+                review=(
+                    "이 필터는 attitude hold를 덜 거칠게 만들어 주는 좋은 계층입니다. "
+                    "또한 `dt`가 비정상이면 reset하도록 만들어 센서 타이밍 문제에 비교적 안전합니다."
+                ),
+            ),
+            ReviewItem(
+                heading="`_translation_tilt_feedforward()`",
+                source_names=("_translation_tilt_feedforward",),
+                meaning=(
+                    "수동 surge/sway가 있을 때 미리 roll/pitch 토크를 보정해 translation 중 trim 자세 붕괴를 줄이려는 feedforward 함수입니다."
+                ),
+                impact=(
+                    "이 함수가 켜지면 단순 PID 복원보다 더 적극적으로 자세를 유지하려고 합니다. "
+                    "특히 기체가 이동하면서 생기는 pitch-up / roll-off 경향을 선제적으로 누를 수 있습니다."
+                ),
+                review=(
+                    "기능 자체는 고급스럽지만, 튜닝 의존성이 큽니다. "
+                    "gain이 과하면 조종감이 뻣뻣해질 수 있어 실제 운용 로그와 함께 봐야 합니다."
+                ),
+            ),
+            ReviewItem(
+                heading="`control_loop()`",
+                source_names=("control_loop",),
+                meaning=(
+                    "실제 제어법칙이 수행되는 중심 함수입니다. "
+                    "자세 오차 계산, 적분, rate damping, yaw manual override, translation/heave 보호, slew limit, 최종 토크 publish가 모두 여기에 있습니다."
+                ),
+                impact=(
+                    "이 함수의 동작이 곧 조종감입니다. "
+                    "조종자가 translation 중인지, heave를 주는지, yaw stick을 놓았는지에 따라 토크 출력 정책이 바뀝니다."
+                ),
+                review=(
+                    "구조는 매우 좋고 운용 의도도 분명합니다. "
+                    "다만 manual wrench freshness가 없어서 `yaw_manual_active`, `heave_protect`, `xy_soft_trim`이 오래 남을 수 있는 리스크가 있습니다."
+                ),
+            ),
+            ReviewItem(
+                heading="`on_parameter_update()`",
+                source_names=("on_parameter_update",),
+                meaning=(
+                    "런타임 파라미터 갱신을 받아 제어기 상태와 게인을 즉시 바꾸는 함수입니다."
+                ),
+                impact=(
+                    "GUI나 runtime tuning에서 실시간으로 gain과 정책을 바꿀 수 있게 해줍니다. "
+                    "실험 속도를 크게 올리는 대신, 파라미터 변경 시 즉시 제어 감각이 달라집니다."
+                ),
+                review=(
+                    "runtime tuning을 적극적으로 지원하는 점은 강점입니다. "
+                    "동시에 리뷰 관점에서는 파라미터 변화가 control loop에 어떤 영향을 주는지 문서가 꼭 필요하다는 뜻이기도 합니다."
+                ),
+            ),
+        ),
+    ),
+    ModuleConfig(
+        key="depth",
+        title="Depth Controller Review",
+        source_filename="depth_controller.py",
+        markdown_filename="controller_review_depth.md",
+        html_filename="depth_controller_review.html",
+        role_summary=(
+            "이 코드는 depth sensor와 IMU, manual heave 입력을 받아 최종 `Fz` 명령을 만드는 수심 유지 제어기입니다."
+        ),
+        design_summary=(
+            "설계의 핵심은 `depth hold + pilot depth-rate`입니다. "
+            "즉 stick을 위아래로 움직이면 즉시 추진기 출력만 주는 것이 아니라, 목표 수심을 움직이는 방식으로 조종감을 만듭니다."
+        ),
+        review_focus=(
+            "리뷰 포인트는 `target depth를 언제 어떻게 캡처하는지`, "
+            "`manual heave freshness를 어떻게 지우는지`, `depth sensor offset을 IMU로 어떻게 보정하는지`, "
+            "`최종 heave shaping이 actuator-friendly한지`입니다."
+        ),
+        items=(
+            ReviewItem(
+                heading="`quat_to_rotation_z_row()`",
+                source_names=("quat_to_rotation_z_row",),
+                meaning=(
+                    "IMU quaternion에서 body z축이 world에서 어디를 보는지 계산하는 보조 함수입니다."
+                ),
+                impact=(
+                    "depth sensor가 기체 중심에서 떨어져 있을 때, pitch/roll에 의해 측정 depth가 흔들리는 문제를 보정할 수 있게 해줍니다."
+                ),
+                review=(
+                    "작은 함수지만 depth sensor offset compensation의 핵심 기반입니다. "
+                    "이 함수가 없으면 IMU를 depth controller가 활용할 방법이 사라집니다."
+                ),
+            ),
+            ReviewItem(
+                heading="`__init__()`",
+                source_names=("__init__",),
+                meaning=(
+                    "depth PID, manual override, pilot depth-rate, sensor offset compensation, output shaping 파라미터를 한 번에 선언합니다."
+                ),
+                impact=(
+                    "이 함수가 depth hold의 운용 정책 전체를 결정합니다. "
+                    "즉 단순 PID가 아니라 실제 조종기, arming, offset compensation, target clamp까지 모두 여기서 준비됩니다."
+                ),
+                review=(
+                    "구성이 잘 되어 있고 실제 운용형 controller에 가깝습니다. "
+                    "특히 `manual_wrench_timeout_sec`가 있는 점은 attitude/position보다 안전 측면에서 낫습니다."
+                ),
+            ),
+            ReviewItem(
+                heading="Arming / Active 상태 함수",
+                source_names=("armed_callback", "publish_depth_active", "depth_control_is_active", "clamp_target_depth"),
+                meaning=(
+                    "이 함수들은 controller가 언제 활성인지, target depth를 허용 범위 안에 둘지, arm/disarm에서 어떤 초기화를 할지 정의합니다."
+                ),
+                impact=(
+                    "ROV가 arm 될 때 current depth를 target으로 잡고, disarm 시 integrator와 출력 상태를 초기화합니다. "
+                    "즉 이 계층은 안전성과 target 일관성을 담당합니다."
+                ),
+                review=(
+                    "상태 전이가 비교적 명확합니다. "
+                    "실무에서는 `depth_control_is_active()` 같은 함수가 있어야 상위 시스템에서 상태를 해석하기 쉬워집니다."
+                ),
+            ),
+            ReviewItem(
+                heading="`capture_manual_release_target()`",
+                source_names=("capture_manual_release_target",),
+                meaning=(
+                    "manual heave를 놓았을 때 현재 depth에 release offset을 더해 새 target depth를 잡는 함수입니다."
+                ),
+                impact=(
+                    "이 함수가 조종자가 stick을 놓은 뒤 depth hold가 어디에서 다시 잠길지를 결정합니다."
+                ),
+                review=(
+                    "운용 철학은 분명하지만 `current_depth + offset`은 직관과 다를 수 있습니다. "
+                    "오프셋이 항상 들어가면 '놓은 자리 유지'보다 '조금 이동한 자리 유지'가 되어 사용자 혼란을 줄 수 있습니다."
+                ),
+            ),
+            ReviewItem(
+                heading="`compensate_depth_sensor_offset()`",
+                source_names=("imu_callback", "compensate_depth_sensor_offset"),
+                meaning=(
+                    "IMU로 센서의 world z 위치 변화를 계산해, pitch/roll 때문에 생기는 depth sensor 오차를 보정합니다."
+                ),
+                impact=(
+                    "기체가 기울어져도 가짜 depth 변화에 과민 반응하지 않게 해 줍니다. "
+                    "즉 depth hold가 실제 수심 변화를 더 정확히 보게 됩니다."
+                ),
+                review=(
+                    "이 함수는 실전적인 품질을 크게 올리는 부분입니다. "
+                    "센서 장착 위치가 중심에서 벗어난 수중체에서는 특히 의미가 큽니다."
+                ),
+            ),
+            ReviewItem(
+                heading="Manual 입력 freshness 계열",
+                source_names=("manual_wrench_callback", "manual_wrench_is_fresh", "clear_stale_manual_heave"),
+                meaning=(
+                    "manual heave 입력이 최근 입력인지 판정하고, stale이면 안전하게 0으로 되돌리며 필요하면 새 target depth를 다시 잡습니다."
+                ),
+                impact=(
+                    "조종기 신호가 끊겼을 때 controller가 마지막 nonzero heave를 계속 믿는 문제를 막습니다."
+                ),
+                review=(
+                    "이 계층은 현재 코드베이스에서 가장 좋은 패턴 중 하나입니다. "
+                    "attitude/position도 이 freshness 전략을 가져오면 전체 일관성이 더 좋아집니다."
+                ),
+            ),
+            ReviewItem(
+                heading="`depth_callback()`",
+                source_names=("depth_callback",),
+                meaning=(
+                    "depth sample이 들어올 때마다 target capture, depth rate 추정, PID 계산, pilot depth-rate, saturation, slew-rate, status publish를 수행합니다."
+                ),
+                impact=(
+                    "이 함수가 곧 depth controller의 본체입니다. "
+                    "PID와 운용 상태 머신이 모두 여기에서 만납니다."
+                ),
+                review=(
+                    "구조가 좋고 actuator-friendly합니다. "
+                    "특히 `depth_rate_alpha`, `max_heave_delta_per_cycle`, `max_upward_heave`가 실제 시스템을 거칠지 않게 만들어 줍니다."
+                ),
+            ),
+            ReviewItem(
+                heading="`on_parameter_update()`",
+                source_names=("on_parameter_update",),
+                meaning=(
+                    "depth controller의 gain, limit, manual policy, compensation 설정을 런타임에 바꿉니다."
+                ),
+                impact=(
+                    "실험 중 depth 감각과 안전 정책을 바로 수정할 수 있게 해줍니다."
+                ),
+                review=(
+                    "runtime tuning 친화적이지만, 파라미터가 많을수록 문서가 중요합니다. "
+                    "이번 리뷰 사이트에서 이 함수가 중요한 이유도 바로 그 때문입니다."
+                ),
+            ),
+        ),
+    ),
+    ModuleConfig(
+        key="position",
+        title="Position Controller Review",
+        source_filename="position_controller.py",
+        markdown_filename="controller_review_position.md",
+        html_filename="position_controller_review.html",
+        role_summary=(
+            "이 코드는 DVL와 IMU, manual input을 이용해 planar hold용 `Fx`, `Fy`, 그리고 경우에 따라 `Fz` 보정까지 만드는 위치 제어기입니다."
+        ),
+        design_summary=(
+            "핵심 구조는 `world frame에서 위치 오차 계산 → body frame 힘으로 회전`입니다. "
+            "즉 기체가 yaw되어 있어도 지구 기준 위치를 유지하려는 설계입니다."
+        ),
+        review_focus=(
+            "리뷰 포인트는 `DVL position과 velocity fallback이 어떻게 연결되는지`, "
+            "`manual XY override가 hold target과 어떻게 상호작용하는지`, "
+            "`yaw motion-aware damping이 어떤 안정화 효과를 만드는지`, "
+            "`body-frame 변환 후 force.z를 왜 출력하는지`입니다."
+        ),
+        items=(
+            ReviewItem(
+                heading="Quaternion 유틸리티",
+                source_names=("clamp", "quat_normalize", "quat_multiply", "quat_conjugate", "quat_from_rpy", "quat_rotate_vector"),
+                meaning=(
+                    "이 함수들은 DVL 속도와 위치제어 출력을 body/world frame 사이에서 변환하기 위한 기본 수학 도구입니다."
+                ),
+                impact=(
+                    "이 계층이 있어야 yaw가 바뀌어도 같은 world 위치를 유지할 수 있습니다. "
+                    "즉 이 controller의 존재 이유 자체가 여기서 시작됩니다."
+                ),
+                review=(
+                    "수학 유틸리티는 단순하지만 매우 중요합니다. "
+                    "좌표계가 꼬이면 controller tuning 문제가 아니라 frame mismatch 문제가 됩니다."
+                ),
+            ),
+            ReviewItem(
+                heading="`__init__()`",
+                source_names=("__init__",),
+                meaning=(
+                    "DVL 입력 방식, gain, yaw damping, manual override, frame 정책, velocity integration fallback까지 초기화합니다."
+                ),
+                impact=(
+                    "position hold가 absolute position 기반인지 velocity integration 기반인지, "
+                    "manual release 시 target을 다시 잡을지, 어떤 frame으로 publish할지가 모두 여기서 결정됩니다."
+                ),
+                review=(
+                    "실전 운용형 controller답게 파라미터 구성이 좋습니다. "
+                    "다만 manual freshness timeout이 없어서 수동 입력이 stale일 때 hold 복귀가 늦어질 수 있습니다."
+                ),
+            ),
+            ReviewItem(
+                heading="상태/보조 함수",
+                source_names=("_publish_zero_force", "_has_valid_position_reference", "_set_control_enabled", "_capture_current_position_as_target", "_apply_deadband", "_dvl_position_is_finite"),
+                meaning=(
+                    "이 함수들은 제어 출력을 언제 0으로 만들지, target을 언제 갱신할지, DVL 데이터가 유효한지 판정하는 기반 계층입니다."
+                ),
+                impact=(
+                    "센서가 유효하지 않으면 output을 0으로 내리고, enable edge에서 hold target을 다시 캡처할 수 있습니다."
+                ),
+                review=(
+                    "이 보조 계층 덕분에 publish 조건이 깔끔합니다. "
+                    "실제 control law보다 앞단의 상태 판정이 잘 분리된 점이 장점입니다."
+                ),
+            ),
+            ReviewItem(
+                heading="`manual_wrench_callback()`",
+                source_names=("manual_wrench_callback",),
+                meaning=(
+                    "manual XY 입력이 active인지 판정하고, release edge에서 현재 위치를 새 hold target으로 캡처합니다."
+                ),
+                impact=(
+                    "조종자가 이동을 끝내고 stick을 놓았을 때 그 자리에서 poshold가 다시 잠기게 만드는 함수입니다."
+                ),
+                review=(
+                    "운용감은 좋지만 freshness timeout이 없어서 마지막 manual XY가 남으면 poshold 복귀가 안 될 수 있습니다. "
+                    "현재 코드의 대표적인 개선 후보입니다."
+                ),
+            ),
+            ReviewItem(
+                heading="DVL 입력 처리",
+                source_names=("dvl_position_callback", "dvl_callback"),
+                meaning=(
+                    "DVL position을 직접 쓰거나, 없으면 velocity를 body→world로 회전해 적분 위치를 만들고 속도 피드백을 갱신합니다."
+                ),
+                impact=(
+                    "센서 구성에 따라 absolute hold와 dead-reckoning hold를 모두 지원하게 해줍니다."
+                ),
+                review=(
+                    "유연성이 높고 실제 운용에 유리합니다. "
+                    "특히 `use_dvl_position=False` fallback 설계는 테스트 단계에서 큰 장점이 됩니다."
+                ),
+            ),
+            ReviewItem(
+                heading="`publish_position_estimate()`",
+                source_names=("publish_position_estimate",),
+                meaning=(
+                    "현재 controller가 보고 있는 position estimate를 외부에 publish합니다."
+                ),
+                impact=(
+                    "상위 시각화, 디버깅, 로깅에서 controller 내부 상태를 그대로 볼 수 있게 해줍니다."
+                ),
+                review=(
+                    "작은 함수지만 디버깅 가치가 큽니다. "
+                    "이런 상태 출력이 없으면 position hold 문제를 센서 문제와 구분하기 어렵습니다."
+                ),
+            ),
+            ReviewItem(
+                heading="`publish_control_output()`",
+                source_names=("publish_control_output",),
+                meaning=(
+                    "validity check, target error 계산, yaw-rate aware damping, world→body 회전, manual override 적용, force clamp를 수행하는 본체입니다."
+                ),
+                impact=(
+                    "이 함수가 실제 position hold의 감각을 결정합니다. "
+                    "특히 yaw 회전 중 damping boost와 body-frame force 변환이 핵심입니다."
+                ),
+                review=(
+                    "구조는 명확하고 PD hold로서 좋습니다. "
+                    "다만 `force_body_z`를 최종 출력에 포함시키는 부분은 설계 의도를 명시하지 않으면 depth와의 coupling을 읽는 사람이 헷갈릴 수 있습니다."
+                ),
+            ),
+            ReviewItem(
+                heading="`on_parameter_update()`",
+                source_names=("on_parameter_update",),
+                meaning=(
+                    "gain, threshold, frame, DVL fallback 정책을 실시간으로 수정합니다."
+                ),
+                impact=(
+                    "테스트 중 poshold의 stiffness와 damping을 바로 바꿀 수 있습니다."
+                ),
+                review=(
+                    "runtime tuning은 강점이지만, 어떤 파라미터가 어떤 함수를 통해 결과에 연결되는지 문서가 꼭 필요합니다. "
+                    "이번 리뷰 문서가 그 연결을 설명하는 역할을 합니다."
+                ),
+            ),
+        ),
+    ),
+    ModuleConfig(
+        key="merger",
+        title="Wrench Merger Review",
+        source_filename="wrench_merger.py",
+        markdown_filename="controller_review_wrench_merger.md",
+        html_filename="wrench_merger_review.html",
+        role_summary=(
+            "이 코드는 manual input, depth, position, attitude 출력을 축별 규칙으로 합쳐 최종 `Wrench`를 만드는 supervisory mixer입니다."
+        ),
+        design_summary=(
+            "핵심 설계는 `manual override + auto hold arbitration`입니다. "
+            "각 축별로 manual과 auto의 우선순위를 다르게 해석해 최종 명령을 만듭니다."
+        ),
+        review_focus=(
+            "리뷰 포인트는 `manual freshness가 어떻게 적용되는지`, "
+            "`depth active일 때 heave를 어떻게 해석하는지`, "
+            "`roll/pitch와 yaw의 arbitration 철학이 어떻게 다른지`입니다."
+        ),
+        items=(
+            ReviewItem(
+                heading="`__init__()`",
+                source_names=("__init__",),
+                meaning=(
+                    "입력 토픽, armed gating, manual override threshold, publish timer와 마지막 입력 상태들을 준비합니다."
+                ),
+                impact=(
+                    "이 함수가 곧 이 노드의 arbitration 정책 초기 상태를 만듭니다. "
+                    "특히 timer 기반 publish는 입력 주기가 달라도 최종 wrench 주기를 일정하게 유지합니다."
+                ),
+                review=(
+                    "구조가 단순하고 목적이 분명합니다. "
+                    "이런 중간 supervisory layer가 있으면 상위 제어기와 allocator를 느슨하게 연결할 수 있습니다."
+                ),
+            ),
+            ReviewItem(
+                heading="입력 저장 함수",
+                source_names=("manual_wrench_callback", "depth_heave_callback", "depth_active_callback", "position_force_callback", "attitude_torque_callback", "armed_callback"),
+                meaning=(
+                    "각 제어기 출력을 최신값으로 저장하고 armed 상태를 갱신하는 함수들입니다."
+                ),
+                impact=(
+                    "이 함수들이 직접 최종 출력은 만들지 않지만, timer 루프가 읽을 최신 상태를 보관합니다."
+                ),
+                review=(
+                    "timer 기반 merge 구조와 잘 맞습니다. "
+                    "다만 manual 이외 auto 입력에 freshness timestamp가 없어 마지막 자동 출력이 오래 남을 수 있습니다."
+                ),
+            ),
+            ReviewItem(
+                heading="`manual_wrench_is_fresh()`",
+                source_names=("publish_zero_wrench", "manual_wrench_is_fresh"),
+                meaning=(
+                    "manual input이 최근에 들어왔는지 판정하고 stale이면 사실상 zero wrench로 취급하게 만드는 안전 함수입니다."
+                ),
+                impact=(
+                    "조종기 신호 유실 시 마지막 manual 명령이 latch되는 문제를 막아줍니다."
+                ),
+                review=(
+                    "현재 코드베이스에서 freshness 처리가 가장 깔끔하게 들어간 부분입니다. "
+                    "같은 아이디어가 auto inputs에도 확장되면 훨씬 견고해집니다."
+                ),
+            ),
+            ReviewItem(
+                heading="`publish_merged_wrench()`",
+                source_names=("publish_merged_wrench",),
+                meaning=(
+                    "armed gating, manual freshness 확인, 축별 override 규칙, depth active 정책, yaw arbitration을 적용해 최종 wrench를 publish합니다."
+                ),
+                impact=(
+                    "이 함수가 전체 제어 시스템의 최종 의사결정자입니다. "
+                    "같은 upper controller 출력이라도 여기서 어떤 축은 manual이 이기고 어떤 축은 auto가 이깁니다."
+                ),
+                review=(
+                    "정책은 명료하고 읽기 쉽습니다. "
+                    "다만 `last_position_force`, `last_depth_heave`, `last_attitude_torque`에도 freshness를 넣지 않으면 상위 노드 장애 시 마지막 값이 계속 살아남습니다."
+                ),
+            ),
+            ReviewItem(
+                heading="`on_parameter_update()`",
+                source_names=("on_parameter_update",),
+                meaning=(
+                    "publish rate와 override threshold를 런타임에 갱신하고 timer도 재생성합니다."
+                ),
+                impact=(
+                    "운용자가 merge 주기와 manual override 감도를 실시간 조정할 수 있습니다."
+                ),
+                review=(
+                    "supervisory node답게 runtime tuning이 단순하고 이해하기 쉽습니다."
+                ),
+            ),
+        ),
+    ),
+    ModuleConfig(
+        key="allocator",
+        title="Allocator Review",
+        source_filename="allocator_node.py",
+        markdown_filename="controller_review_allocator.md",
+        html_filename="allocator_node_review.html",
+        role_summary=(
+            "이 코드는 최종 `Wrench(Fx, Fy, Fz, Tx, Ty, Tz)`를 8개 thruster 명령으로 바꾸는 control allocation 노드입니다."
+        ),
+        design_summary=(
+            "설계의 핵심은 `수평 4개(Fx, Fy, Tz)`와 `수직 4개(Fz, Tx, Ty)`를 분리해서 pseudo-inverse와 priority logic으로 다루는 것입니다."
+        ),
+        review_focus=(
+            "리뷰 포인트는 `행렬이 실제 기체 배치를 어떻게 표현하는지`, "
+            "`수평/수직 allocator가 어떤 철학으로 분리되는지`, "
+            "`compensation 항이 왜 필요한지`, "
+            "`최종 shaping과 slew-rate가 actuator에 어떤 영향을 주는지`입니다."
+        ),
+        items=(
+            ReviewItem(
+                heading="기본 유틸리티",
+                source_names=("normalize", "normalize_group_unit", "quat_to_rotation_z_row", "quat_to_rpy"),
+                meaning=(
+                    "행렬 생성과 IMU 보상 계산에 필요한 벡터/자세 유틸리티입니다."
+                ),
+                impact=(
+                    "allocation 행렬과 IMU 기반 보상 항의 수학적 기반을 제공합니다."
+                ),
+                review=(
+                    "작은 함수지만 allocator가 단순 mixer가 아니라 IMU-aware allocation이라는 점을 보여줍니다."
+                ),
+            ),
+            ReviewItem(
+                heading="`__init__()`",
+                source_names=("__init__",),
+                meaning=(
+                    "thruster sign, gain, compensation, priority, output shaping, runtime tuning 관련 모든 파라미터를 선언합니다."
+                ),
+                impact=(
+                    "allocator가 단순 `TAM * u = τ` 계산기가 아니라 실제 운용형 shaping node라는 점이 여기서 드러납니다."
+                ),
+                review=(
+                    "파라미터가 많지만 역할이 분명합니다. "
+                    "다만 `fx = -msg.force.x`처럼 본체 쪽 부호 해석이 하드코딩되어 있어서 문서화가 꼭 필요합니다."
+                ),
+            ),
+            ReviewItem(
+                heading="IMU / Attitude 입력 함수",
+                source_names=("imu_callback", "cmd_attitude_callback", "cmd_attitude_trim_callback", "output_scale_callback", "joy_speed_scale_callback"),
+                meaning=(
+                    "allocator가 현재 자세, 목표 trim, 출력 scale 상태를 받아 compensation과 output shaping에 반영하는 입력 계층입니다."
+                ),
+                impact=(
+                    "이 함수들이 있어 allocator는 단순 분배가 아니라 현재 자세와 운용 상태를 고려하는 smart mixer가 됩니다."
+                ),
+                review=(
+                    "상위 controller와 allocator가 느슨하지만 의미 있게 연결되어 있습니다."
+                ),
+            ),
+            ReviewItem(
+                heading="Compensation 함수들",
+                source_names=("level_horizontal_heave_compensation", "attitude_priority_horizontal_scale", "surge_pitch_moment_compensation", "imu_pitch_hold_compensation"),
+                meaning=(
+                    "수평 이동으로 인한 heave 누수, attitude demand가 클 때 horizontal 약화, surge에 따른 pitch moment, IMU 기반 pitch hold 보상 등 실제 기체 거동을 보정합니다."
+                ),
+                impact=(
+                    "이 함수들이 켜지면 allocator는 단순 분배기에서 벗어나, 기체 자세와 운동 모드에 따라 더 실용적인 출력을 냅니다."
+                ),
+                review=(
+                    "이 부분이 가장 실험적이면서도 고급스럽습니다. "
+                    "동시에 gain 의존성이 큰 영역이므로 기능별 로그와 문서가 꼭 있어야 합니다."
+                ),
+            ),
+            ReviewItem(
+                heading="`init_matrices()`",
+                source_names=("init_matrices",),
+                meaning=(
+                    "thruster 위치/방향으로 TAM, 수평 H 행렬, 수직 V 행렬, pseudo-inverse를 구성합니다."
+                ),
+                impact=(
+                    "기체 배치가 이 함수에 담깁니다. "
+                    "행렬이 틀리면 heave만 줘도 pitch가 생기고, yaw만 줘도 sway가 생깁니다."
+                ),
+                review=(
+                    "allocator 해석의 핵심입니다. "
+                    "실제 모델과 이 함수의 thruster geometry가 맞는지 항상 함께 검증해야 합니다."
+                ),
+            ),
+            ReviewItem(
+                heading="Allocation / Shaping 보조 함수",
+                source_names=("apply_deadband", "add_component_with_headroom", "allocate_priority_components", "apply_slew_rate"),
+                meaning=(
+                    "출력 deadband 제거, 남은 헤드룸 안에서 성분 추가, priority allocation, slew-rate 제한을 담당합니다."
+                ),
+                impact=(
+                    "수치적으로는 같은 wrench라도 actuator 친화성은 크게 달라집니다. "
+                    "이 함수들이 saturation 시 거동과 응답 속도를 정합니다."
+                ),
+                review=(
+                    "현재 allocator가 heuristic allocator라는 점이 가장 잘 드러나는 구간입니다. "
+                    "이 계층 덕분에 practical하지만, 최적화 기반 allocator와는 성격이 다릅니다."
+                ),
+            ),
+            ReviewItem(
+                heading="`callback()`",
+                source_names=("callback",),
+                meaning=(
+                    "최종 wrench를 받아 부호 해석, scaling, horizontal/vertical allocation, compensation, shaping, saturation, publish까지 한 번에 수행합니다."
+                ),
+                impact=(
+                    "이 함수가 곧 thruster command의 최종 형태를 결정합니다. "
+                    "어떤 축 요구가 우선되는지, saturation에서 무엇을 희생하는지가 여기서 결정됩니다."
+                ),
+                review=(
+                    "코드의 의도는 분명합니다. "
+                    "다만 `Fx` 하드코딩 반전과 heuristic saturation은 읽는 사람에게 반드시 설명이 필요합니다."
+                ),
+            ),
+            ReviewItem(
+                heading="`on_parameter_update()`",
+                source_names=("on_parameter_update",),
+                meaning=(
+                    "allocation gain, compensation, slew, output scale을 런타임에 갱신합니다."
+                ),
+                impact=(
+                    "allocator tuning을 빠르게 반복할 수 있게 해줍니다."
+                ),
+                review=(
+                    "실험 속도를 크게 올리는 좋은 구조입니다. "
+                    "이번 리뷰 문서에서 함수-파라미터 연결을 설명하는 이유도 이 함수 때문입니다."
+                ),
+            ),
+        ),
+    ),
+)
+
+
+SUMMARY_TEXT = """
+이 디렉토리의 리뷰는 이제 **실제 코드 기준의 함수 중심 리뷰**로 재구성됩니다.
+
+- 각 모듈 페이지는 실제 코드 스니펫과 함께 `이 함수가 무슨 의미인지`, `시스템에 어떤 영향을 주는지`, `리뷰 관점에서 왜 중요한지`를 설명합니다.
+- 메인 페이지에서는 모듈별 코드 리뷰 페이지로 이동할 수 있습니다.
+- 각 상세 페이지 하단에는 **전체 코드**도 같이 넣어, 문맥과 리뷰를 동시에 볼 수 있게 합니다.
+""".strip()
+
+SUMMARY_HTML = """
+<p>이 디렉토리의 리뷰는 이제 <strong>실제 코드 기준의 함수 중심 리뷰</strong>로 재구성됩니다.</p>
+<ul class="summary-list">
+  <li>각 모듈 페이지는 실제 코드 스니펫과 함께 <code>이 함수가 무슨 의미인지</code>, <code>시스템에 어떤 영향을 주는지</code>, <code>리뷰 관점에서 왜 중요한지</code>를 설명합니다.</li>
+  <li>메인 페이지에서는 모듈별 코드 리뷰 페이지로 이동할 수 있습니다.</li>
+  <li>각 상세 페이지 하단에는 <strong>전체 코드</strong>도 같이 넣어, 문맥과 리뷰를 동시에 볼 수 있게 합니다.</li>
+</ul>
+""".strip()
+
+
+DEF_RE = re.compile(r"^(\s*)def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+CLASS_RE = re.compile(r"^(\s*)class\s+([A-Za-z_][A-Za-z0-9_]*)\s*[:(]")
+
+
+def slugify(text: str) -> str:
+    slug = re.sub(r"[^a-zA-Z0-9]+", "-", text.lower()).strip("-")
+    return slug or "section"
+
+
+def code_path(config: ModuleConfig) -> Path:
+    return CODE_DIR / config.source_filename
+
+
+def extract_def_ranges(lines: list[str]) -> list[dict[str, int | str]]:
+    defs: list[dict[str, int | str]] = []
+    boundaries: list[tuple[int, int]] = []
+    for index, line in enumerate(lines):
+        match = DEF_RE.match(line)
+        if match:
+            defs.append(
+                {
+                    "name": match.group(2),
+                    "indent": len(match.group(1)),
+                    "start": index,
+                }
+            )
+            boundaries.append((index, len(match.group(1))))
+            continue
+
+        class_match = CLASS_RE.match(line)
+        if class_match:
+            boundaries.append((index, len(class_match.group(1))))
+
+    for index, item in enumerate(defs):
+        indent = int(item["indent"])
+        end = len(lines)
+        current_start = int(item["start"])
+        for next_start, next_indent in boundaries:
+            if next_start <= current_start:
+                continue
+            if next_indent <= indent:
+                end = next_start
+                break
+        item["end"] = end
+    return defs
+
+
+def extract_snippet(source: str, names: Iterable[str]) -> str:
+    lines = source.splitlines()
+    defs = extract_def_ranges(lines)
+    snippets: list[str] = []
+    for name in names:
+        matched = next((item for item in defs if item["name"] == name), None)
+        if matched is None:
+            continue
+        start = int(matched["start"])
+        end = int(matched["end"])
+        snippet = textwrap.dedent("\n".join(lines[start:end]).rstrip())
+        if snippet:
+            snippets.append(snippet)
+    return "\n\n".join(snippets).strip()
+
+
+def inline_code(text: str) -> str:
+    parts = re.split(r"(`[^`]+`)", text)
+    rendered: list[str] = []
+    for part in parts:
+        if part.startswith("`") and part.endswith("`"):
+            rendered.append(f"<code>{html.escape(part[1:-1])}</code>")
+        else:
+            rendered.append(html.escape(part))
+    return "".join(rendered)
+
+
+def render_paragraphs(text: str) -> str:
+    paragraphs = [segment.strip() for segment in text.split("\n\n") if segment.strip()]
+    return "\n".join(f"<p>{inline_code(paragraph)}</p>" for paragraph in paragraphs)
+
+
+def build_function_map(source: str) -> list[str]:
+    names: list[str] = []
+    for line in source.splitlines():
+        match = DEF_RE.match(line)
+        if match:
+            names.append(match.group(2))
+    return names
+
+
+def render_markdown_module(config: ModuleConfig, source: str) -> str:
+    function_map = build_function_map(source)
+    lines: list[str] = [
+        f"# {config.title}",
+        "",
+        f"대상 파일: `code_review/code/{config.source_filename}`",
+        "",
+        "## 역할",
+        config.role_summary,
+        "",
+        "## 설계 해석",
+        config.design_summary,
+        "",
+        "## 리뷰 초점",
+        config.review_focus,
+        "",
+        "## 함수 맵",
+    ]
+    lines.extend(f"- `{name}()`" for name in function_map)
+
+    lines.append("")
+    lines.append("## 함수 리뷰")
+    for item in config.items:
+        snippet = extract_snippet(source, item.source_names)
+        lines.extend(
+            [
+                "",
+                f"### {item.heading}",
+                "",
+                "**의미**",
+                "",
+                item.meaning,
+                "",
+                "**영향**",
+                "",
+                item.impact,
+                "",
+                "**리뷰 메모**",
+                "",
+                item.review,
+                "",
+                "```python",
+                snippet,
+                "```",
+            ]
+        )
+
+    lines.extend(
+        [
+            "",
+            "## 전체 코드",
+            "",
+            "```python",
+            source.rstrip(),
+            "```",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def render_html_module(config: ModuleConfig, source: str) -> str:
+    function_map = build_function_map(source)
+    nav_links = "\n".join(
+        f'<a href="#{slugify(item.heading)}">{html.escape(item.heading)}</a>' for item in config.items
+    )
+    function_list = "\n".join(f"<li><code>{html.escape(name)}()</code></li>" for name in function_map)
+    review_sections: list[str] = []
+    for item in config.items:
+        snippet = extract_snippet(source, item.source_names)
+        review_sections.append(
+            f"""
+      <section id="{slugify(item.heading)}" class="review-section">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">Function Review</p>
+            <h2>{html.escape(item.heading)}</h2>
+          </div>
+        </div>
+        <div class="review-grid">
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            {render_paragraphs(item.meaning)}
+            <h3>영향</h3>
+            {render_paragraphs(item.impact)}
+            <h3>리뷰 메모</h3>
+            {render_paragraphs(item.review)}
+          </article>
+          <article class="review-card code-card">
+            <h3>실제 코드</h3>
+            <pre><code>{html.escape(snippet)}</code></pre>
+          </article>
+        </div>
+      </section>
+            """.strip()
+        )
+
+    return f"""<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{html.escape(config.title)}</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body class="detail-body">
+  <div class="detail-shell">
+    <aside class="detail-sidebar">
+      <a class="back-link" href="index.html">← 리뷰 홈으로</a>
+      <p class="eyebrow">Controller Code Review</p>
+      <h1>{html.escape(config.title)}</h1>
+      <p class="meta"><code>code_review/code/{html.escape(config.source_filename)}</code></p>
+      <nav class="toc">
+        <a href="#role">역할</a>
+        <a href="#map">함수 맵</a>
+        {nav_links}
+        <a href="#full-source">전체 코드</a>
+      </nav>
+    </aside>
+
+    <main class="detail-content">
+      <section id="role" class="hero">
+        <div>
+          <p class="eyebrow">Module Overview</p>
+          <h2>{html.escape(config.title)}</h2>
+          {render_paragraphs(config.role_summary)}
+          {render_paragraphs(config.design_summary)}
+          {render_paragraphs(config.review_focus)}
+        </div>
+      </section>
+
+      <section id="map" class="panel">
+        <div class="panel-heading">
+          <div>
+            <p class="section-kicker">Function Map</p>
+            <h2>이 파일에 있는 함수들</h2>
+          </div>
+        </div>
+        <div class="review-card">
+          <ul class="function-map">
+            {function_list}
+          </ul>
+        </div>
+      </section>
+
+      {' '.join(review_sections)}
+
+      <section id="full-source" class="panel">
+        <div class="panel-heading">
+          <div>
+            <p class="section-kicker">Full Source</p>
+            <h2>전체 코드</h2>
+          </div>
+        </div>
+        <details class="source-details" open>
+          <summary>전체 파일 펼치기 / 접기</summary>
+          <pre><code>{html.escape(source.rstrip())}</code></pre>
+        </details>
+      </section>
+    </main>
+  </div>
+</body>
+</html>
+"""
+
+
+def render_summary_markdown() -> str:
+    lines = [
+        "# Control Code Review",
+        "",
+        SUMMARY_TEXT,
+        "",
+        "## 코드 리뷰 페이지",
+    ]
+    for module in MODULES:
+        lines.extend(
+            [
+                f"- `{module.title}`",
+                f"  - Markdown: `code_review/controller_review/{module.markdown_filename}`",
+                f"  - HTML: `code_review/controller_review/{module.html_filename}`",
+            ]
+        )
+    lines.append("")
+    return "\n".join(lines)
+
+
+def render_index_html() -> str:
+    cards = []
+    for module in MODULES:
+        cards.append(
+            f"""
+        <article class="module-card">
+          <p class="eyebrow">Code Review</p>
+          <h3>{html.escape(module.title)}</h3>
+          <p>{html.escape(module.role_summary)}</p>
+          <p class="module-note">{html.escape(module.review_focus)}</p>
+          <div class="module-actions">
+            <a class="primary-link" href="{html.escape(module.html_filename)}">상세 HTML 보기</a>
+            <a class="secondary-link" href="{html.escape(module.markdown_filename)}">MD 보기</a>
+          </div>
+        </article>
+            """.strip()
+        )
+
+    return f"""<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Controller Review</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="page-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <p class="eyebrow">Controller Review</p>
+        <h1>Function-Based Code Review</h1>
+        <p class="meta">실제 코드 기준으로 함수 의미, 영향, 리뷰 포인트를 정리한 리뷰 허브입니다.</p>
+      </div>
+      <nav class="toc">
+        <a href="#overview">개요</a>
+        <a href="#modules">코드별 리뷰</a>
+      </nav>
+    </aside>
+
+    <main class="content">
+      <section id="overview" class="hero">
+        <div>
+          <p class="eyebrow">Review Hub</p>
+          <h2>코드를 누르면 실제 코드와 함께 함수 중심 리뷰 페이지로 이동합니다</h2>
+          {SUMMARY_HTML}
+        </div>
+      </section>
+
+      <section id="modules" class="panel">
+        <div class="panel-heading">
+          <div>
+            <p class="section-kicker">Modules</p>
+            <h2>코드별 상세 리뷰 페이지</h2>
+          </div>
+        </div>
+        <div class="module-grid">
+          {' '.join(cards)}
+        </div>
+      </section>
+    </main>
+  </div>
+</body>
+</html>
+"""
+
+
+def render_styles() -> str:
+    return """\
+:root {
+  --bg: #08111f;
+  --panel: rgba(16, 24, 40, 0.84);
+  --panel-strong: #13233e;
+  --line: rgba(156, 178, 216, 0.16);
+  --text: #eef5ff;
+  --muted: #abc0df;
+  --blue: #67b8ff;
+  --purple: #aa8cff;
+  --shadow: 0 24px 60px rgba(0, 0, 0, 0.28);
+  --radius: 22px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  font-family: "Inter", "Pretendard", "Noto Sans KR", sans-serif;
+  background:
+    radial-gradient(circle at top left, rgba(103, 184, 255, 0.18), transparent 28%),
+    radial-gradient(circle at top right, rgba(170, 140, 255, 0.12), transparent 24%),
+    linear-gradient(180deg, #07101d 0%, #091423 100%);
+  color: var(--text);
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+code {
+  padding: 0.12rem 0.35rem;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  font-family: "JetBrains Mono", "Fira Code", monospace;
+  font-size: 0.92em;
+}
+
+pre code {
+  padding: 0;
+  background: transparent;
+  border-radius: 0;
+}
+
+.page-shell,
+.detail-shell {
+  display: grid;
+  grid-template-columns: 290px 1fr;
+  min-height: 100vh;
+}
+
+.sidebar,
+.detail-sidebar {
+  position: sticky;
+  top: 0;
+  align-self: start;
+  height: 100vh;
+  padding: 32px 24px;
+  border-right: 1px solid var(--line);
+  background: rgba(4, 10, 20, 0.76);
+  backdrop-filter: blur(16px);
+}
+
+.content,
+.detail-content {
+  padding: 28px;
+}
+
+.eyebrow,
+.section-kicker {
+  margin: 0 0 10px;
+  color: var(--blue);
+  font-size: 0.78rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.meta,
+.hero p,
+.module-card p,
+.review-card p,
+.source-details summary {
+  color: var(--muted);
+  line-height: 1.7;
+}
+
+.hero,
+.panel,
+.module-card,
+.review-card,
+.review-section,
+.source-details {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+.hero,
+.panel,
+.review-section {
+  padding: 28px;
+  margin-top: 24px;
+}
+
+.hero {
+  margin-top: 0;
+}
+
+.toc {
+  display: grid;
+  gap: 10px;
+  margin-top: 28px;
+}
+
+.toc a,
+.back-link,
+.primary-link,
+.secondary-link {
+  padding: 10px 12px;
+  border-radius: 12px;
+  transition: 0.2s ease;
+}
+
+.toc a:hover,
+.back-link:hover,
+.primary-link:hover,
+.secondary-link:hover {
+  background: rgba(103, 184, 255, 0.12);
+}
+
+.back-link {
+  display: inline-block;
+  margin-bottom: 20px;
+  color: var(--muted);
+}
+
+.panel-heading,
+.section-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: start;
+  margin-bottom: 20px;
+}
+
+.module-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.summary-list {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--muted);
+  line-height: 1.8;
+}
+
+.module-card,
+.review-card {
+  padding: 22px;
+}
+
+.module-note {
+  min-height: 72px;
+}
+
+.module-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+}
+
+.primary-link,
+.secondary-link {
+  border: 1px solid var(--line);
+}
+
+.primary-link {
+  background: linear-gradient(135deg, rgba(103, 184, 255, 0.24), rgba(170, 140, 255, 0.18));
+}
+
+.review-grid {
+  display: grid;
+  grid-template-columns: minmax(320px, 0.95fr) minmax(420px, 1.05fr);
+  gap: 18px;
+}
+
+.prose-card h3,
+.code-card h3 {
+  margin-top: 0;
+}
+
+.code-card pre,
+.source-details pre {
+  margin: 0;
+  padding: 18px;
+  overflow-x: auto;
+  border-radius: 16px;
+  border: 1px solid rgba(103, 184, 255, 0.14);
+  background: rgba(4, 10, 20, 0.88);
+  color: #dbe8ff;
+  line-height: 1.6;
+}
+
+.function-map {
+  margin: 0;
+  padding-left: 18px;
+  columns: 2;
+  color: var(--muted);
+  line-height: 1.9;
+}
+
+.source-details {
+  padding: 18px;
+}
+
+.source-details summary {
+  cursor: pointer;
+  margin-bottom: 14px;
+}
+
+@media (max-width: 1200px) {
+  .page-shell,
+  .detail-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .sidebar,
+  .detail-sidebar {
+    position: relative;
+    height: auto;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+}
+
+@media (max-width: 900px) {
+  .content,
+  .detail-content,
+  .hero,
+  .panel,
+  .review-section {
+    padding: 20px;
+  }
+
+  .module-grid,
+  .review-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .function-map {
+    columns: 1;
+  }
+}
+"""
+
+
+def write_text(path: Path, content: str) -> None:
+    path.write_text(content.strip() + "\n", encoding="utf-8")
+
+
+def main() -> None:
+    for module in MODULES:
+        source = code_path(module).read_text(encoding="utf-8")
+        write_text(BASE_DIR / module.markdown_filename, render_markdown_module(module, source))
+        write_text(BASE_DIR / module.html_filename, render_html_module(module, source))
+
+    write_text(BASE_DIR / "control_code_review.md", render_summary_markdown())
+    write_text(BASE_DIR / "index.html", render_index_html())
+    write_text(BASE_DIR / "styles.css", render_styles())
+
+
+if __name__ == "__main__":
+    main()

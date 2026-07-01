@@ -1,0 +1,1422 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Depth Controller Review</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body class="detail-body">
+  <div class="detail-shell">
+    <aside class="detail-sidebar">
+      <a class="back-link" href="index.html">← 리뷰 홈으로</a>
+      <p class="eyebrow">Controller Code Review</p>
+      <h1>Depth Controller Review</h1>
+      <p class="meta"><code>code_review/code/depth_controller.py</code></p>
+      <nav class="toc">
+        <a href="#role">역할</a>
+        <a href="#map">함수 맵</a>
+        <a href="#quat-to-rotation-z-row">`quat_to_rotation_z_row()`</a>
+<a href="#init">`__init__()`</a>
+<a href="#arming-active">Arming / Active 상태 함수</a>
+<a href="#capture-manual-release-target">`capture_manual_release_target()`</a>
+<a href="#compensate-depth-sensor-offset">`compensate_depth_sensor_offset()`</a>
+<a href="#manual-freshness">Manual 입력 freshness 계열</a>
+<a href="#depth-callback">`depth_callback()`</a>
+<a href="#on-parameter-update">`on_parameter_update()`</a>
+        <a href="#full-source">전체 코드</a>
+      </nav>
+    </aside>
+
+    <main class="detail-content">
+      <section id="role" class="hero">
+        <div>
+          <p class="eyebrow">Module Overview</p>
+          <h2>Depth Controller Review</h2>
+          <p>이 코드는 depth sensor와 IMU, manual heave 입력을 받아 최종 <code>Fz</code> 명령을 만드는 수심 유지 제어기입니다.</p>
+          <p>설계의 핵심은 <code>depth hold + pilot depth-rate</code>입니다. 즉 stick을 위아래로 움직이면 즉시 추진기 출력만 주는 것이 아니라, 목표 수심을 움직이는 방식으로 조종감을 만듭니다.</p>
+          <p>리뷰 포인트는 <code>target depth를 언제 어떻게 캡처하는지</code>, <code>manual heave freshness를 어떻게 지우는지</code>, <code>depth sensor offset을 IMU로 어떻게 보정하는지</code>, <code>최종 heave shaping이 actuator-friendly한지</code>입니다.</p>
+        </div>
+      </section>
+
+      <section id="map" class="panel">
+        <div class="panel-heading">
+          <div>
+            <p class="section-kicker">Function Map</p>
+            <h2>이 파일에 있는 함수들</h2>
+          </div>
+        </div>
+        <div class="review-card">
+          <ul class="function-map">
+            <li><code>quat_to_rotation_z_row()</code></li>
+<li><code>__init__()</code></li>
+<li><code>armed_callback()</code></li>
+<li><code>publish_depth_active()</code></li>
+<li><code>depth_control_is_active()</code></li>
+<li><code>clamp_target_depth()</code></li>
+<li><code>capture_manual_release_target()</code></li>
+<li><code>_set_control_enabled()</code></li>
+<li><code>cmd_depth_callback()</code></li>
+<li><code>imu_callback()</code></li>
+<li><code>compensate_depth_sensor_offset()</code></li>
+<li><code>manual_wrench_callback()</code></li>
+<li><code>manual_wrench_is_fresh()</code></li>
+<li><code>clear_stale_manual_heave()</code></li>
+<li><code>depth_callback()</code></li>
+<li><code>on_parameter_update()</code></li>
+<li><code>main()</code></li>
+          </ul>
+        </div>
+      </section>
+
+      <section id="quat-to-rotation-z-row" class="review-section">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">Function Review</p>
+            <h2>`quat_to_rotation_z_row()`</h2>
+          </div>
+        </div>
+        <div class="review-grid">
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>IMU quaternion에서 body z축이 world에서 어디를 보는지 계산하는 보조 함수입니다.</p>
+            <h3>영향</h3>
+            <p>depth sensor가 기체 중심에서 떨어져 있을 때, pitch/roll에 의해 측정 depth가 흔들리는 문제를 보정할 수 있게 해줍니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>작은 함수지만 depth sensor offset compensation의 핵심 기반입니다. 이 함수가 없으면 IMU를 depth controller가 활용할 방법이 사라집니다.</p>
+          </article>
+          <article class="review-card code-card">
+            <h3>실제 코드</h3>
+            <pre><code>def quat_to_rotation_z_row(x: float, y: float, z: float, w: float):
+    n = math.sqrt(x * x + y * y + z * z + w * w)
+    if n &lt; 1e-12:
+        return (0.0, 0.0, 1.0)
+    x /= n
+    y /= n
+    z /= n
+    w /= n
+
+    return (
+        2.0 * (x * z - w * y),
+        2.0 * (y * z + w * x),
+        1.0 - 2.0 * (x * x + y * y),
+    )</code></pre>
+          </article>
+        </div>
+      </section> <section id="init" class="review-section">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">Function Review</p>
+            <h2>`__init__()`</h2>
+          </div>
+        </div>
+        <div class="review-grid">
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>depth PID, manual override, pilot depth-rate, sensor offset compensation, output shaping 파라미터를 한 번에 선언합니다.</p>
+            <h3>영향</h3>
+            <p>이 함수가 depth hold의 운용 정책 전체를 결정합니다. 즉 단순 PID가 아니라 실제 조종기, arming, offset compensation, target clamp까지 모두 여기서 준비됩니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>구성이 잘 되어 있고 실제 운용형 controller에 가깝습니다. 특히 <code>manual_wrench_timeout_sec</code>가 있는 점은 attitude/position보다 안전 측면에서 낫습니다.</p>
+          </article>
+          <article class="review-card code-card">
+            <h3>실제 코드</h3>
+            <pre><code>def __init__(self):
+    super().__init__(&#x27;depth_controller&#x27;)
+
+    # Parameters
+    self.declare_parameter(&#x27;depth_topic&#x27;, &#x27;/depth_m&#x27;)
+    self.declare_parameter(&#x27;imu_topic&#x27;, &#x27;/imu&#x27;)
+    self.declare_parameter(&#x27;cmd_depth_topic&#x27;, &#x27;/cmd_depth&#x27;)
+    self.declare_parameter(&#x27;manual_wrench_topic&#x27;, &#x27;/rov/wrench_manual&#x27;)
+    self.declare_parameter(&#x27;heave_cmd_topic&#x27;, &#x27;/ctrl/depth_heave&#x27;)
+    self.declare_parameter(&#x27;depth_active_topic&#x27;, &#x27;/ctrl/depth_active&#x27;)
+    self.declare_parameter(&#x27;target_depth_status_topic&#x27;, &#x27;/ctrl/depth_target&#x27;)
+    self.declare_parameter(&#x27;depth_error_topic&#x27;, &#x27;/ctrl/depth_error&#x27;)
+    self.declare_parameter(&#x27;depth_rate_topic&#x27;, &#x27;/ctrl/depth_rate&#x27;)
+    self.declare_parameter(&#x27;armed_topic&#x27;, &#x27;/rov/armed&#x27;)
+    self.declare_parameter(&#x27;control_enabled&#x27;, True)
+
+    self.declare_parameter(&#x27;kp_depth&#x27;, 2.0)
+    self.declare_parameter(&#x27;ki_depth&#x27;, 0.25)
+    self.declare_parameter(&#x27;kd_depth&#x27;, 0.8)
+    self.declare_parameter(&#x27;max_heave&#x27;, 2.0)
+    self.declare_parameter(&#x27;max_upward_heave&#x27;, 0.8)
+    self.declare_parameter(&#x27;upward_heave_cmd_sign&#x27;, -1.0)
+    self.declare_parameter(&#x27;depth_integral_limit&#x27;, 2.0)
+
+    self.declare_parameter(&#x27;manual_heave_override_threshold&#x27;, 0.05)
+    self.declare_parameter(&#x27;manual_wrench_timeout_sec&#x27;, 0.5)
+    self.declare_parameter(&#x27;manual_heave_release_target_offset&#x27;, 0.10)
+    self.declare_parameter(&#x27;capture_initial_depth_target&#x27;, True)
+    self.declare_parameter(&#x27;pilot_depth_rate_enabled&#x27;, True)
+    self.declare_parameter(&#x27;max_pilot_depth_rate&#x27;, 0.35)
+    self.declare_parameter(&#x27;pilot_depth_rate_sign&#x27;, -1.0)
+    self.declare_parameter(&#x27;min_target_depth&#x27;, 0.0)
+    self.declare_parameter(&#x27;max_target_depth&#x27;, 100.0)
+
+    self.declare_parameter(&#x27;heave_cmd_sign&#x27;, -1.0)
+    self.declare_parameter(&#x27;depth_rate_alpha&#x27;, 0.10)
+    self.declare_parameter(&#x27;max_heave_delta_per_cycle&#x27;, 0.8)
+    # depth 센서가 IMU보다 앞에 0.20 m 있으면
+    # depth_sensor_offset_x = 0.20
+
+    # depth 센서가 IMU보다 오른쪽에 0.10 m 있으면
+    # depth_sensor_offset_y = -0.10
+
+    # depth 센서가 IMU보다 아래에 0.05 m 있으면
+    # depth_sensor_offset_z = -0.05
+
+    self.declare_parameter(&#x27;depth_sensor_offset_x&#x27;, -0.3)
+    self.declare_parameter(&#x27;depth_sensor_offset_y&#x27;, 0.0)
+    self.declare_parameter(&#x27;depth_sensor_offset_z&#x27;, 0.0)
+    self.declare_parameter(&#x27;depth_sensor_offset_compensation_enabled&#x27;, True)
+
+    self.depth_topic = self.get_parameter(&#x27;depth_topic&#x27;).get_parameter_value().string_value
+    self.imu_topic = self.get_parameter(&#x27;imu_topic&#x27;).get_parameter_value().string_value
+    self.cmd_depth_topic = self.get_parameter(&#x27;cmd_depth_topic&#x27;).get_parameter_value().string_value
+    self.manual_wrench_topic = self.get_parameter(&#x27;manual_wrench_topic&#x27;).get_parameter_value().string_value
+    self.heave_cmd_topic = self.get_parameter(&#x27;heave_cmd_topic&#x27;).get_parameter_value().string_value
+    self.depth_active_topic = self.get_parameter(
+        &#x27;depth_active_topic&#x27;).get_parameter_value().string_value
+    self.target_depth_status_topic = self.get_parameter(
+        &#x27;target_depth_status_topic&#x27;).get_parameter_value().string_value
+    self.depth_error_topic = self.get_parameter(
+        &#x27;depth_error_topic&#x27;).get_parameter_value().string_value
+    self.depth_rate_topic = self.get_parameter(
+        &#x27;depth_rate_topic&#x27;).get_parameter_value().string_value
+    self.armed_topic = self.get_parameter(&#x27;armed_topic&#x27;).get_parameter_value().string_value
+    self.control_enabled = self.get_parameter(&#x27;control_enabled&#x27;).get_parameter_value().bool_value
+
+    self.kp_depth = self.get_parameter(&#x27;kp_depth&#x27;).get_parameter_value().double_value
+    self.ki_depth = self.get_parameter(&#x27;ki_depth&#x27;).get_parameter_value().double_value
+    self.kd_depth = self.get_parameter(&#x27;kd_depth&#x27;).get_parameter_value().double_value
+    self.max_heave = self.get_parameter(&#x27;max_heave&#x27;).get_parameter_value().double_value
+    self.max_upward_heave = self.get_parameter(
+        &#x27;max_upward_heave&#x27;).get_parameter_value().double_value
+    self.upward_heave_cmd_sign = self.get_parameter(
+        &#x27;upward_heave_cmd_sign&#x27;).get_parameter_value().double_value
+    self.depth_integral_limit = self.get_parameter(
+        &#x27;depth_integral_limit&#x27;).get_parameter_value().double_value
+
+    self.manual_heave_override_threshold = self.get_parameter(
+        &#x27;manual_heave_override_threshold&#x27;).get_parameter_value().double_value
+    self.manual_wrench_timeout_sec = self.get_parameter(
+        &#x27;manual_wrench_timeout_sec&#x27;).get_parameter_value().double_value
+    self.manual_heave_release_target_offset = self.get_parameter(
+        &#x27;manual_heave_release_target_offset&#x27;).get_parameter_value().double_value
+    self.capture_initial_depth_target = self.get_parameter(
+        &#x27;capture_initial_depth_target&#x27;).get_parameter_value().bool_value
+    self.pilot_depth_rate_enabled = self.get_parameter(
+        &#x27;pilot_depth_rate_enabled&#x27;).get_parameter_value().bool_value
+    self.max_pilot_depth_rate = self.get_parameter(
+        &#x27;max_pilot_depth_rate&#x27;).get_parameter_value().double_value
+    self.pilot_depth_rate_sign = self.get_parameter(
+        &#x27;pilot_depth_rate_sign&#x27;).get_parameter_value().double_value
+    self.min_target_depth = self.get_parameter(
+        &#x27;min_target_depth&#x27;).get_parameter_value().double_value
+    self.max_target_depth = self.get_parameter(
+        &#x27;max_target_depth&#x27;).get_parameter_value().double_value
+    self.heave_cmd_sign = self.get_parameter(
+        &#x27;heave_cmd_sign&#x27;).get_parameter_value().double_value
+    self.depth_rate_alpha = self.get_parameter(
+        &#x27;depth_rate_alpha&#x27;).get_parameter_value().double_value
+    self.max_heave_delta_per_cycle = self.get_parameter(
+        &#x27;max_heave_delta_per_cycle&#x27;).get_parameter_value().double_value
+    self.depth_sensor_offset_x = self.get_parameter(
+        &#x27;depth_sensor_offset_x&#x27;).get_parameter_value().double_value
+    self.depth_sensor_offset_y = self.get_parameter(
+        &#x27;depth_sensor_offset_y&#x27;).get_parameter_value().double_value
+    self.depth_sensor_offset_z = self.get_parameter(
+        &#x27;depth_sensor_offset_z&#x27;).get_parameter_value().double_value
+    self.depth_sensor_offset_compensation_enabled = self.get_parameter(
+        &#x27;depth_sensor_offset_compensation_enabled&#x27;).get_parameter_value().bool_value
+
+    # State
+    self.target_depth = 0.0
+    self.target_initialized = False
+
+    self.current_depth = None
+    self.prev_depth = None
+    self.prev_time = None
+    self.have_imu = False
+    self.imu_z_row = (0.0, 0.0, 1.0)
+
+    self.manual_heave = 0.0
+    self.manual_heave_active = False
+    self.prev_manual_heave_active = False
+    self.last_manual_wrench_time = None
+
+    self.filtered_depth_rate = 0.0
+    self.depth_integral = 0.0
+    self.prev_heave_cmd = 0.0
+
+    self.armed = False
+    self.prev_armed = False
+    self.armed_received = False
+
+    # Pub/Sub
+    self.depth_sub = self.create_subscription(
+        Float64,
+        self.depth_topic,
+        self.depth_callback,
+        10
+    )
+
+    self.imu_sub = self.create_subscription(
+        Imu,
+        self.imu_topic,
+        self.imu_callback,
+        CONTROL_SUB_QOS
+    )
+
+    self.cmd_depth_sub = self.create_subscription(
+        Float64,
+        self.cmd_depth_topic,
+        self.cmd_depth_callback,
+        10
+    )
+
+    self.manual_wrench_sub = self.create_subscription(
+        Wrench,
+        self.manual_wrench_topic,
+        self.manual_wrench_callback,
+        CONTROL_SUB_QOS
+    )
+
+    self.armed_sub = self.create_subscription(
+        Bool,
+        self.armed_topic,
+        self.armed_callback,
+        ARMED_QOS
+    )
+
+    self.heave_pub = self.create_publisher(
+        Float64,
+        self.heave_cmd_topic,
+        10
+    )
+    self.depth_active_pub = self.create_publisher(
+        Bool,
+        self.depth_active_topic,
+        10
+    )
+    self.target_depth_pub = self.create_publisher(
+        Float64,
+        self.target_depth_status_topic,
+        10
+    )
+    self.depth_error_pub = self.create_publisher(
+        Float64,
+        self.depth_error_topic,
+        10
+    )
+    self.depth_rate_pub = self.create_publisher(
+        Float64,
+        self.depth_rate_topic,
+        10
+    )
+
+    self.add_on_set_parameters_callback(self.on_parameter_update)
+
+    self.get_logger().info(&#x27;DepthController initialized&#x27;)
+    self.get_logger().info(f&#x27;  depth_topic                     = {self.depth_topic}&#x27;)
+    self.get_logger().info(f&#x27;  imu_topic                       = {self.imu_topic}&#x27;)
+    self.get_logger().info(f&#x27;  cmd_depth_topic                 = {self.cmd_depth_topic}&#x27;)
+    self.get_logger().info(f&#x27;  manual_wrench_topic             = {self.manual_wrench_topic}&#x27;)
+    self.get_logger().info(f&#x27;  heave_cmd_topic                 = {self.heave_cmd_topic}&#x27;)
+    self.get_logger().info(f&#x27;  depth_active_topic              = {self.depth_active_topic}&#x27;)
+    self.get_logger().info(f&#x27;  target_depth_status_topic       = {self.target_depth_status_topic}&#x27;)
+    self.get_logger().info(f&#x27;  depth_error_topic               = {self.depth_error_topic}&#x27;)
+    self.get_logger().info(f&#x27;  depth_rate_topic                = {self.depth_rate_topic}&#x27;)
+    self.get_logger().info(f&#x27;  armed_topic                     = {self.armed_topic}&#x27;)
+    self.get_logger().info(f&#x27;  control_enabled                 = {self.control_enabled}&#x27;)
+    self.get_logger().info(f&#x27;  kp_depth                        = {self.kp_depth}&#x27;)
+    self.get_logger().info(f&#x27;  ki_depth                        = {self.ki_depth}&#x27;)
+    self.get_logger().info(f&#x27;  kd_depth                        = {self.kd_depth}&#x27;)
+    self.get_logger().info(f&#x27;  max_heave                       = {self.max_heave}&#x27;)
+    self.get_logger().info(f&#x27;  max_upward_heave                = {self.max_upward_heave}&#x27;)
+    self.get_logger().info(f&#x27;  upward_heave_cmd_sign           = {self.upward_heave_cmd_sign}&#x27;)
+    self.get_logger().info(f&#x27;  depth_integral_limit            = {self.depth_integral_limit}&#x27;)
+    self.get_logger().info(f&#x27;  manual_heave_override_threshold = {self.manual_heave_override_threshold}&#x27;)
+    self.get_logger().info(f&#x27;  manual_wrench_timeout_sec       = {self.manual_wrench_timeout_sec}&#x27;)
+    self.get_logger().info(
+        f&#x27;  manual_heave_release_offset     = &#x27;
+        f&#x27;{self.manual_heave_release_target_offset}&#x27;
+    )
+    self.get_logger().info(f&#x27;  capture_initial_depth_target    = {self.capture_initial_depth_target}&#x27;)
+    self.get_logger().info(f&#x27;  pilot_depth_rate_enabled        = {self.pilot_depth_rate_enabled}&#x27;)
+    self.get_logger().info(f&#x27;  max_pilot_depth_rate            = {self.max_pilot_depth_rate}&#x27;)
+    self.get_logger().info(f&#x27;  pilot_depth_rate_sign           = {self.pilot_depth_rate_sign}&#x27;)
+    self.get_logger().info(f&#x27;  min_target_depth                = {self.min_target_depth}&#x27;)
+    self.get_logger().info(f&#x27;  max_target_depth                = {self.max_target_depth}&#x27;)
+    self.get_logger().info(f&#x27;  heave_cmd_sign                  = {self.heave_cmd_sign}&#x27;)
+    self.get_logger().info(f&#x27;  depth_rate_alpha                = {self.depth_rate_alpha}&#x27;)
+    self.get_logger().info(f&#x27;  max_heave_delta_per_cycle       = {self.max_heave_delta_per_cycle}&#x27;)
+    self.get_logger().info(
+        f&#x27;  depth_sensor_offset_xyz         = &#x27;
+        f&#x27;({self.depth_sensor_offset_x:.3f}, &#x27;
+        f&#x27;{self.depth_sensor_offset_y:.3f}, &#x27;
+        f&#x27;{self.depth_sensor_offset_z:.3f}) m&#x27;
+    )
+    self.get_logger().info(
+        f&#x27;  depth_sensor_offset_comp        = &#x27;
+        f&#x27;{self.depth_sensor_offset_compensation_enabled}&#x27;
+    )</code></pre>
+          </article>
+        </div>
+      </section> <section id="arming-active" class="review-section">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">Function Review</p>
+            <h2>Arming / Active 상태 함수</h2>
+          </div>
+        </div>
+        <div class="review-grid">
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>이 함수들은 controller가 언제 활성인지, target depth를 허용 범위 안에 둘지, arm/disarm에서 어떤 초기화를 할지 정의합니다.</p>
+            <h3>영향</h3>
+            <p>ROV가 arm 될 때 current depth를 target으로 잡고, disarm 시 integrator와 출력 상태를 초기화합니다. 즉 이 계층은 안전성과 target 일관성을 담당합니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>상태 전이가 비교적 명확합니다. 실무에서는 <code>depth_control_is_active()</code> 같은 함수가 있어야 상위 시스템에서 상태를 해석하기 쉬워집니다.</p>
+          </article>
+          <article class="review-card code-card">
+            <h3>실제 코드</h3>
+            <pre><code>def armed_callback(self, msg: Bool):
+    self.prev_armed = self.armed
+    self.armed = bool(msg.data)
+    self.armed_received = True
+
+    # rising edge: DISARMED -&gt; ARMED
+    if (not self.prev_armed) and self.armed:
+        if self.current_depth is not None:
+            self.target_depth = self.current_depth
+            self.target_initialized = True
+            self.prev_heave_cmd = 0.0
+            self.depth_integral = 0.0
+            self.get_logger().info(
+                f&#x27;ARM rising edge -&gt; captured current depth as new target: &#x27;
+                f&#x27;{self.target_depth:.3f} m&#x27;
+            )
+
+    # falling edge: ARMED -&gt; DISARMED
+    if self.prev_armed and (not self.armed):
+        self.prev_heave_cmd = 0.0
+        self.depth_integral = 0.0
+        self.get_logger().info(&#x27;DISARM -&gt; depth controller output reset to zero&#x27;)
+        self.publish_depth_active(False)
+
+def publish_depth_active(self, active: bool):
+    msg = Bool()
+    msg.data = bool(active)
+    self.depth_active_pub.publish(msg)
+
+def depth_control_is_active(self) -&gt; bool:
+    return (
+        self.armed_received and
+        self.armed and
+        self.control_enabled and
+        self.target_initialized and
+        self.current_depth is not None
+    )
+
+def clamp_target_depth(self):
+    lo = min(float(self.min_target_depth), float(self.max_target_depth))
+    hi = max(float(self.min_target_depth), float(self.max_target_depth))
+    if self.target_depth &lt; lo:
+        self.target_depth = lo
+    elif self.target_depth &gt; hi:
+        self.target_depth = hi</code></pre>
+          </article>
+        </div>
+      </section> <section id="capture-manual-release-target" class="review-section">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">Function Review</p>
+            <h2>`capture_manual_release_target()`</h2>
+          </div>
+        </div>
+        <div class="review-grid">
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>manual heave를 놓았을 때 현재 depth에 release offset을 더해 새 target depth를 잡는 함수입니다.</p>
+            <h3>영향</h3>
+            <p>이 함수가 조종자가 stick을 놓은 뒤 depth hold가 어디에서 다시 잠길지를 결정합니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>운용 철학은 분명하지만 <code>current_depth + offset</code>은 직관과 다를 수 있습니다. 오프셋이 항상 들어가면 &#x27;놓은 자리 유지&#x27;보다 &#x27;조금 이동한 자리 유지&#x27;가 되어 사용자 혼란을 줄 수 있습니다.</p>
+          </article>
+          <article class="review-card code-card">
+            <h3>실제 코드</h3>
+            <pre><code>def capture_manual_release_target(self, reason: str):
+    self.target_depth = self.current_depth + self.manual_heave_release_target_offset
+    self.clamp_target_depth()
+    self.target_initialized = True
+    self.depth_integral = 0.0
+    self.get_logger().info(
+        f&#x27;{reason} -&gt; captured depth target with release offset: &#x27;
+        f&#x27;current={self.current_depth:.3f} m, &#x27;
+        f&#x27;offset={self.manual_heave_release_target_offset:+.3f} m, &#x27;
+        f&#x27;target={self.target_depth:.3f} m&#x27;
+    )</code></pre>
+          </article>
+        </div>
+      </section> <section id="compensate-depth-sensor-offset" class="review-section">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">Function Review</p>
+            <h2>`compensate_depth_sensor_offset()`</h2>
+          </div>
+        </div>
+        <div class="review-grid">
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>IMU로 센서의 world z 위치 변화를 계산해, pitch/roll 때문에 생기는 depth sensor 오차를 보정합니다.</p>
+            <h3>영향</h3>
+            <p>기체가 기울어져도 가짜 depth 변화에 과민 반응하지 않게 해 줍니다. 즉 depth hold가 실제 수심 변화를 더 정확히 보게 됩니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>이 함수는 실전적인 품질을 크게 올리는 부분입니다. 센서 장착 위치가 중심에서 벗어난 수중체에서는 특히 의미가 큽니다.</p>
+          </article>
+          <article class="review-card code-card">
+            <h3>실제 코드</h3>
+            <pre><code>def imu_callback(self, msg: Imu):
+    self.imu_z_row = quat_to_rotation_z_row(
+        msg.orientation.x,
+        msg.orientation.y,
+        msg.orientation.z,
+        msg.orientation.w,
+    )
+    self.have_imu = True
+
+def compensate_depth_sensor_offset(self, sensor_depth: float) -&gt; float:
+    if not self.depth_sensor_offset_compensation_enabled:
+        return sensor_depth
+    if not self.have_imu:
+        return sensor_depth
+
+    zx, zy, zz = self.imu_z_row
+    sensor_z_in_world = (
+        zx * self.depth_sensor_offset_x +
+        zy * self.depth_sensor_offset_y +
+        zz * self.depth_sensor_offset_z
+    )
+    return sensor_depth + sensor_z_in_world</code></pre>
+          </article>
+        </div>
+      </section> <section id="manual-freshness" class="review-section">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">Function Review</p>
+            <h2>Manual 입력 freshness 계열</h2>
+          </div>
+        </div>
+        <div class="review-grid">
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>manual heave 입력이 최근 입력인지 판정하고, stale이면 안전하게 0으로 되돌리며 필요하면 새 target depth를 다시 잡습니다.</p>
+            <h3>영향</h3>
+            <p>조종기 신호가 끊겼을 때 controller가 마지막 nonzero heave를 계속 믿는 문제를 막습니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>이 계층은 현재 코드베이스에서 가장 좋은 패턴 중 하나입니다. attitude/position도 이 freshness 전략을 가져오면 전체 일관성이 더 좋아집니다.</p>
+          </article>
+          <article class="review-card code-card">
+            <h3>실제 코드</h3>
+            <pre><code>def manual_wrench_callback(self, msg: Wrench):
+    self.manual_heave = msg.force.z
+    self.last_manual_wrench_time = self.get_clock().now()
+
+    self.prev_manual_heave_active = self.manual_heave_active
+    self.manual_heave_active = abs(self.manual_heave) &gt; self.manual_heave_override_threshold
+
+    # Edge detect: manual heave released
+    if self.prev_manual_heave_active and not self.manual_heave_active:
+        if self.current_depth is not None and self.armed:
+            self.capture_manual_release_target(&#x27;Manual heave released&#x27;)
+
+def manual_wrench_is_fresh(self, now) -&gt; bool:
+    if self.manual_wrench_timeout_sec &lt;= 0.0:
+        return True
+    if self.last_manual_wrench_time is None:
+        return False
+
+    age = (now - self.last_manual_wrench_time).nanoseconds * 1e-9
+    return age &lt;= self.manual_wrench_timeout_sec
+
+def clear_stale_manual_heave(self, now):
+    if self.manual_wrench_is_fresh(now):
+        return
+
+    if self.manual_heave_active and self.current_depth is not None and self.armed:
+        self.capture_manual_release_target(&#x27;Manual heave timed out&#x27;)
+
+    self.manual_heave = 0.0
+    self.prev_manual_heave_active = False
+    self.manual_heave_active = False</code></pre>
+          </article>
+        </div>
+      </section> <section id="depth-callback" class="review-section">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">Function Review</p>
+            <h2>`depth_callback()`</h2>
+          </div>
+        </div>
+        <div class="review-grid">
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>depth sample이 들어올 때마다 target capture, depth rate 추정, PID 계산, pilot depth-rate, saturation, slew-rate, status publish를 수행합니다.</p>
+            <h3>영향</h3>
+            <p>이 함수가 곧 depth controller의 본체입니다. PID와 운용 상태 머신이 모두 여기에서 만납니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>구조가 좋고 actuator-friendly합니다. 특히 <code>depth_rate_alpha</code>, <code>max_heave_delta_per_cycle</code>, <code>max_upward_heave</code>가 실제 시스템을 거칠지 않게 만들어 줍니다.</p>
+          </article>
+          <article class="review-card code-card">
+            <h3>실제 코드</h3>
+            <pre><code>def depth_callback(self, msg: Float64):
+    now = self.get_clock().now()
+    sensor_depth = float(msg.data)
+    depth = self.compensate_depth_sensor_offset(sensor_depth)
+    self.current_depth = depth
+    self.clear_stale_manual_heave(now)
+
+    # startup initial capture
+    if self.capture_initial_depth_target and not self.target_initialized:
+        self.target_depth = depth
+        self.clamp_target_depth()
+        self.target_initialized = True
+        self.get_logger().info(
+            f&#x27;Initial depth target captured: {self.target_depth:.3f} m&#x27;
+        )
+
+    raw_depth_rate = 0.0
+    dt = 0.0
+    if self.prev_depth is not None and self.prev_time is not None:
+        dt = (now - self.prev_time).nanoseconds * 1e-9
+        if dt &gt; 1e-6:
+            raw_depth_rate = (depth - self.prev_depth) / dt
+
+    self.filtered_depth_rate = (
+        self.depth_rate_alpha * raw_depth_rate +
+        (1.0 - self.depth_rate_alpha) * self.filtered_depth_rate
+    )
+    depth_rate = self.filtered_depth_rate
+
+    heave_cmd = 0.0
+    raw_cmd = 0.0
+    error = 0.0
+
+    active = self.depth_control_is_active()
+    self.publish_depth_active(active)
+
+    # armed 신호를 못 받았거나 disarm이면 무조건 0
+    if (not self.armed_received) or (not self.armed):
+        heave_cmd = 0.0
+        self.depth_integral = 0.0
+
+    elif not self.control_enabled:
+        heave_cmd = 0.0
+        self.depth_integral = 0.0
+
+    elif self.target_initialized:
+        if self.manual_heave_active and self.pilot_depth_rate_enabled and dt &gt; 1e-6:
+            depth_rate_cmd = (
+                self.pilot_depth_rate_sign *
+                self.manual_heave *
+                abs(self.max_pilot_depth_rate)
+            )
+            self.target_depth += depth_rate_cmd * dt
+            self.clamp_target_depth()
+            self.depth_integral = 0.0
+
+        error = self.target_depth - depth
+        if dt &gt; 1e-6 and not self.manual_heave_active:
+            self.depth_integral += error * dt
+            limit = abs(self.depth_integral_limit)
+            if self.depth_integral &gt; limit:
+                self.depth_integral = limit
+            elif self.depth_integral &lt; -limit:
+                self.depth_integral = -limit
+
+        raw_cmd = (
+            self.kp_depth * error +
+            self.ki_depth * self.depth_integral -
+            self.kd_depth * depth_rate
+        )
+        heave_cmd = self.heave_cmd_sign * raw_cmd
+
+        if heave_cmd &gt; self.max_heave:
+            heave_cmd = self.max_heave
+        elif heave_cmd &lt; -self.max_heave:
+            heave_cmd = -self.max_heave
+
+        upward_sign = 1.0 if self.upward_heave_cmd_sign &gt;= 0.0 else -1.0
+        max_upward = max(0.0, abs(self.max_upward_heave))
+        if heave_cmd * upward_sign &gt; max_upward:
+            heave_cmd = upward_sign * max_upward
+
+        delta = heave_cmd - self.prev_heave_cmd
+        if delta &gt; self.max_heave_delta_per_cycle:
+            heave_cmd = self.prev_heave_cmd + self.max_heave_delta_per_cycle
+        elif delta &lt; -self.max_heave_delta_per_cycle:
+            heave_cmd = self.prev_heave_cmd - self.max_heave_delta_per_cycle
+
+    out = Float64()
+    out.data = heave_cmd
+    self.heave_pub.publish(out)
+
+    target_msg = Float64()
+    target_msg.data = self.target_depth
+    self.target_depth_pub.publish(target_msg)
+
+    error_msg = Float64()
+    error_msg.data = error
+    self.depth_error_pub.publish(error_msg)
+
+    rate_msg = Float64()
+    rate_msg.data = depth_rate
+    self.depth_rate_pub.publish(rate_msg)
+
+    self.prev_heave_cmd = heave_cmd
+    self.prev_depth = depth
+    self.prev_time = now
+
+    # self.get_logger().debug(
+    #     f&#x27;armed={self.armed}, depth={depth:.3f}, target={self.target_depth:.3f}, &#x27;
+    #     f&#x27;error={error:.3f}, raw_depth_rate={raw_depth_rate:.3f}, &#x27;
+    #     f&#x27;filtered_depth_rate={depth_rate:.3f}, raw_cmd={raw_cmd:.3f}, &#x27;
+    #     f&#x27;integral={self.depth_integral:.3f}, heave_cmd={heave_cmd:.3f}, &#x27;
+    #     f&#x27;manual_heave={self.manual_heave:.3f}, &#x27;
+    #     f&#x27;manual_active={self.manual_heave_active}&#x27;
+    # )</code></pre>
+          </article>
+        </div>
+      </section> <section id="on-parameter-update" class="review-section">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">Function Review</p>
+            <h2>`on_parameter_update()`</h2>
+          </div>
+        </div>
+        <div class="review-grid">
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>depth controller의 gain, limit, manual policy, compensation 설정을 런타임에 바꿉니다.</p>
+            <h3>영향</h3>
+            <p>실험 중 depth 감각과 안전 정책을 바로 수정할 수 있게 해줍니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>runtime tuning 친화적이지만, 파라미터가 많을수록 문서가 중요합니다. 이번 리뷰 사이트에서 이 함수가 중요한 이유도 바로 그 때문입니다.</p>
+          </article>
+          <article class="review-card code-card">
+            <h3>실제 코드</h3>
+            <pre><code>def on_parameter_update(self, params):
+    try:
+        for p in params:
+            if p.name == &#x27;kp_depth&#x27;:
+                self.kp_depth = float(p.value)
+            elif p.name == &#x27;ki_depth&#x27;:
+                self.ki_depth = float(p.value)
+            elif p.name == &#x27;kd_depth&#x27;:
+                self.kd_depth = float(p.value)
+            elif p.name == &#x27;max_heave&#x27;:
+                self.max_heave = float(p.value)
+            elif p.name == &#x27;max_upward_heave&#x27;:
+                self.max_upward_heave = float(p.value)
+            elif p.name == &#x27;upward_heave_cmd_sign&#x27;:
+                self.upward_heave_cmd_sign = float(p.value)
+            elif p.name == &#x27;depth_integral_limit&#x27;:
+                self.depth_integral_limit = float(p.value)
+                limit = abs(self.depth_integral_limit)
+                if self.depth_integral &gt; limit:
+                    self.depth_integral = limit
+                elif self.depth_integral &lt; -limit:
+                    self.depth_integral = -limit
+            elif p.name == &#x27;manual_heave_override_threshold&#x27;:
+                self.manual_heave_override_threshold = float(p.value)
+            elif p.name == &#x27;manual_wrench_timeout_sec&#x27;:
+                self.manual_wrench_timeout_sec = float(p.value)
+            elif p.name == &#x27;manual_heave_release_target_offset&#x27;:
+                self.manual_heave_release_target_offset = float(p.value)
+            elif p.name == &#x27;capture_initial_depth_target&#x27;:
+                self.capture_initial_depth_target = bool(p.value)
+            elif p.name == &#x27;pilot_depth_rate_enabled&#x27;:
+                self.pilot_depth_rate_enabled = bool(p.value)
+            elif p.name == &#x27;max_pilot_depth_rate&#x27;:
+                self.max_pilot_depth_rate = float(p.value)
+            elif p.name == &#x27;pilot_depth_rate_sign&#x27;:
+                self.pilot_depth_rate_sign = float(p.value)
+            elif p.name == &#x27;min_target_depth&#x27;:
+                self.min_target_depth = float(p.value)
+                self.clamp_target_depth()
+            elif p.name == &#x27;max_target_depth&#x27;:
+                self.max_target_depth = float(p.value)
+                self.clamp_target_depth()
+            elif p.name == &#x27;control_enabled&#x27;:
+                self._set_control_enabled(bool(p.value))
+            elif p.name == &#x27;heave_cmd_sign&#x27;:
+                self.heave_cmd_sign = float(p.value)
+            elif p.name == &#x27;depth_rate_alpha&#x27;:
+                self.depth_rate_alpha = float(p.value)
+            elif p.name == &#x27;max_heave_delta_per_cycle&#x27;:
+                self.max_heave_delta_per_cycle = float(p.value)
+            elif p.name == &#x27;depth_sensor_offset_x&#x27;:
+                self.depth_sensor_offset_x = float(p.value)
+            elif p.name == &#x27;depth_sensor_offset_y&#x27;:
+                self.depth_sensor_offset_y = float(p.value)
+            elif p.name == &#x27;depth_sensor_offset_z&#x27;:
+                self.depth_sensor_offset_z = float(p.value)
+            elif p.name == &#x27;depth_sensor_offset_compensation_enabled&#x27;:
+                self.depth_sensor_offset_compensation_enabled = bool(p.value)
+
+        self.get_logger().info(&#x27;Depth parameters updated at runtime&#x27;)
+        return SetParametersResult(successful=True)
+    except Exception as e:
+        return SetParametersResult(successful=False, reason=str(e))</code></pre>
+          </article>
+        </div>
+      </section>
+
+      <section id="full-source" class="panel">
+        <div class="panel-heading">
+          <div>
+            <p class="section-kicker">Full Source</p>
+            <h2>전체 코드</h2>
+          </div>
+        </div>
+        <details class="source-details" open>
+          <summary>전체 파일 펼치기 / 접기</summary>
+          <pre><code>#!/usr/bin/env python3
+import math
+
+import rclpy
+from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+
+from std_msgs.msg import Float64, Bool
+from geometry_msgs.msg import Wrench
+from sensor_msgs.msg import Imu
+from rcl_interfaces.msg import SetParametersResult
+
+
+ARMED_QOS = QoSProfile(
+    depth=1,
+    reliability=ReliabilityPolicy.RELIABLE,
+    durability=DurabilityPolicy.TRANSIENT_LOCAL,
+)
+
+CONTROL_SUB_QOS = QoSProfile(
+    depth=10,
+    reliability=ReliabilityPolicy.BEST_EFFORT,
+    durability=DurabilityPolicy.VOLATILE,
+)
+
+
+def quat_to_rotation_z_row(x: float, y: float, z: float, w: float):
+    n = math.sqrt(x * x + y * y + z * z + w * w)
+    if n &lt; 1e-12:
+        return (0.0, 0.0, 1.0)
+    x /= n
+    y /= n
+    z /= n
+    w /= n
+
+    return (
+        2.0 * (x * z - w * y),
+        2.0 * (y * z + w * x),
+        1.0 - 2.0 * (x * x + y * y),
+    )
+
+
+class DepthController(Node):
+
+    def __init__(self):
+        super().__init__(&#x27;depth_controller&#x27;)
+
+        # Parameters
+        self.declare_parameter(&#x27;depth_topic&#x27;, &#x27;/depth_m&#x27;)
+        self.declare_parameter(&#x27;imu_topic&#x27;, &#x27;/imu&#x27;)
+        self.declare_parameter(&#x27;cmd_depth_topic&#x27;, &#x27;/cmd_depth&#x27;)
+        self.declare_parameter(&#x27;manual_wrench_topic&#x27;, &#x27;/rov/wrench_manual&#x27;)
+        self.declare_parameter(&#x27;heave_cmd_topic&#x27;, &#x27;/ctrl/depth_heave&#x27;)
+        self.declare_parameter(&#x27;depth_active_topic&#x27;, &#x27;/ctrl/depth_active&#x27;)
+        self.declare_parameter(&#x27;target_depth_status_topic&#x27;, &#x27;/ctrl/depth_target&#x27;)
+        self.declare_parameter(&#x27;depth_error_topic&#x27;, &#x27;/ctrl/depth_error&#x27;)
+        self.declare_parameter(&#x27;depth_rate_topic&#x27;, &#x27;/ctrl/depth_rate&#x27;)
+        self.declare_parameter(&#x27;armed_topic&#x27;, &#x27;/rov/armed&#x27;)
+        self.declare_parameter(&#x27;control_enabled&#x27;, True)
+
+        self.declare_parameter(&#x27;kp_depth&#x27;, 2.0)
+        self.declare_parameter(&#x27;ki_depth&#x27;, 0.25)
+        self.declare_parameter(&#x27;kd_depth&#x27;, 0.8)
+        self.declare_parameter(&#x27;max_heave&#x27;, 2.0)
+        self.declare_parameter(&#x27;max_upward_heave&#x27;, 0.8)
+        self.declare_parameter(&#x27;upward_heave_cmd_sign&#x27;, -1.0)
+        self.declare_parameter(&#x27;depth_integral_limit&#x27;, 2.0)
+
+        self.declare_parameter(&#x27;manual_heave_override_threshold&#x27;, 0.05)
+        self.declare_parameter(&#x27;manual_wrench_timeout_sec&#x27;, 0.5)
+        self.declare_parameter(&#x27;manual_heave_release_target_offset&#x27;, 0.10)
+        self.declare_parameter(&#x27;capture_initial_depth_target&#x27;, True)
+        self.declare_parameter(&#x27;pilot_depth_rate_enabled&#x27;, True)
+        self.declare_parameter(&#x27;max_pilot_depth_rate&#x27;, 0.35)
+        self.declare_parameter(&#x27;pilot_depth_rate_sign&#x27;, -1.0)
+        self.declare_parameter(&#x27;min_target_depth&#x27;, 0.0)
+        self.declare_parameter(&#x27;max_target_depth&#x27;, 100.0)
+
+        self.declare_parameter(&#x27;heave_cmd_sign&#x27;, -1.0)
+        self.declare_parameter(&#x27;depth_rate_alpha&#x27;, 0.10)
+        self.declare_parameter(&#x27;max_heave_delta_per_cycle&#x27;, 0.8)
+        # depth 센서가 IMU보다 앞에 0.20 m 있으면
+        # depth_sensor_offset_x = 0.20
+
+        # depth 센서가 IMU보다 오른쪽에 0.10 m 있으면
+        # depth_sensor_offset_y = -0.10
+
+        # depth 센서가 IMU보다 아래에 0.05 m 있으면
+        # depth_sensor_offset_z = -0.05
+
+        self.declare_parameter(&#x27;depth_sensor_offset_x&#x27;, -0.3)
+        self.declare_parameter(&#x27;depth_sensor_offset_y&#x27;, 0.0)
+        self.declare_parameter(&#x27;depth_sensor_offset_z&#x27;, 0.0)
+        self.declare_parameter(&#x27;depth_sensor_offset_compensation_enabled&#x27;, True)
+
+        self.depth_topic = self.get_parameter(&#x27;depth_topic&#x27;).get_parameter_value().string_value
+        self.imu_topic = self.get_parameter(&#x27;imu_topic&#x27;).get_parameter_value().string_value
+        self.cmd_depth_topic = self.get_parameter(&#x27;cmd_depth_topic&#x27;).get_parameter_value().string_value
+        self.manual_wrench_topic = self.get_parameter(&#x27;manual_wrench_topic&#x27;).get_parameter_value().string_value
+        self.heave_cmd_topic = self.get_parameter(&#x27;heave_cmd_topic&#x27;).get_parameter_value().string_value
+        self.depth_active_topic = self.get_parameter(
+            &#x27;depth_active_topic&#x27;).get_parameter_value().string_value
+        self.target_depth_status_topic = self.get_parameter(
+            &#x27;target_depth_status_topic&#x27;).get_parameter_value().string_value
+        self.depth_error_topic = self.get_parameter(
+            &#x27;depth_error_topic&#x27;).get_parameter_value().string_value
+        self.depth_rate_topic = self.get_parameter(
+            &#x27;depth_rate_topic&#x27;).get_parameter_value().string_value
+        self.armed_topic = self.get_parameter(&#x27;armed_topic&#x27;).get_parameter_value().string_value
+        self.control_enabled = self.get_parameter(&#x27;control_enabled&#x27;).get_parameter_value().bool_value
+
+        self.kp_depth = self.get_parameter(&#x27;kp_depth&#x27;).get_parameter_value().double_value
+        self.ki_depth = self.get_parameter(&#x27;ki_depth&#x27;).get_parameter_value().double_value
+        self.kd_depth = self.get_parameter(&#x27;kd_depth&#x27;).get_parameter_value().double_value
+        self.max_heave = self.get_parameter(&#x27;max_heave&#x27;).get_parameter_value().double_value
+        self.max_upward_heave = self.get_parameter(
+            &#x27;max_upward_heave&#x27;).get_parameter_value().double_value
+        self.upward_heave_cmd_sign = self.get_parameter(
+            &#x27;upward_heave_cmd_sign&#x27;).get_parameter_value().double_value
+        self.depth_integral_limit = self.get_parameter(
+            &#x27;depth_integral_limit&#x27;).get_parameter_value().double_value
+
+        self.manual_heave_override_threshold = self.get_parameter(
+            &#x27;manual_heave_override_threshold&#x27;).get_parameter_value().double_value
+        self.manual_wrench_timeout_sec = self.get_parameter(
+            &#x27;manual_wrench_timeout_sec&#x27;).get_parameter_value().double_value
+        self.manual_heave_release_target_offset = self.get_parameter(
+            &#x27;manual_heave_release_target_offset&#x27;).get_parameter_value().double_value
+        self.capture_initial_depth_target = self.get_parameter(
+            &#x27;capture_initial_depth_target&#x27;).get_parameter_value().bool_value
+        self.pilot_depth_rate_enabled = self.get_parameter(
+            &#x27;pilot_depth_rate_enabled&#x27;).get_parameter_value().bool_value
+        self.max_pilot_depth_rate = self.get_parameter(
+            &#x27;max_pilot_depth_rate&#x27;).get_parameter_value().double_value
+        self.pilot_depth_rate_sign = self.get_parameter(
+            &#x27;pilot_depth_rate_sign&#x27;).get_parameter_value().double_value
+        self.min_target_depth = self.get_parameter(
+            &#x27;min_target_depth&#x27;).get_parameter_value().double_value
+        self.max_target_depth = self.get_parameter(
+            &#x27;max_target_depth&#x27;).get_parameter_value().double_value
+        self.heave_cmd_sign = self.get_parameter(
+            &#x27;heave_cmd_sign&#x27;).get_parameter_value().double_value
+        self.depth_rate_alpha = self.get_parameter(
+            &#x27;depth_rate_alpha&#x27;).get_parameter_value().double_value
+        self.max_heave_delta_per_cycle = self.get_parameter(
+            &#x27;max_heave_delta_per_cycle&#x27;).get_parameter_value().double_value
+        self.depth_sensor_offset_x = self.get_parameter(
+            &#x27;depth_sensor_offset_x&#x27;).get_parameter_value().double_value
+        self.depth_sensor_offset_y = self.get_parameter(
+            &#x27;depth_sensor_offset_y&#x27;).get_parameter_value().double_value
+        self.depth_sensor_offset_z = self.get_parameter(
+            &#x27;depth_sensor_offset_z&#x27;).get_parameter_value().double_value
+        self.depth_sensor_offset_compensation_enabled = self.get_parameter(
+            &#x27;depth_sensor_offset_compensation_enabled&#x27;).get_parameter_value().bool_value
+
+        # State
+        self.target_depth = 0.0
+        self.target_initialized = False
+
+        self.current_depth = None
+        self.prev_depth = None
+        self.prev_time = None
+        self.have_imu = False
+        self.imu_z_row = (0.0, 0.0, 1.0)
+
+        self.manual_heave = 0.0
+        self.manual_heave_active = False
+        self.prev_manual_heave_active = False
+        self.last_manual_wrench_time = None
+
+        self.filtered_depth_rate = 0.0
+        self.depth_integral = 0.0
+        self.prev_heave_cmd = 0.0
+
+        self.armed = False
+        self.prev_armed = False
+        self.armed_received = False
+
+        # Pub/Sub
+        self.depth_sub = self.create_subscription(
+            Float64,
+            self.depth_topic,
+            self.depth_callback,
+            10
+        )
+
+        self.imu_sub = self.create_subscription(
+            Imu,
+            self.imu_topic,
+            self.imu_callback,
+            CONTROL_SUB_QOS
+        )
+
+        self.cmd_depth_sub = self.create_subscription(
+            Float64,
+            self.cmd_depth_topic,
+            self.cmd_depth_callback,
+            10
+        )
+
+        self.manual_wrench_sub = self.create_subscription(
+            Wrench,
+            self.manual_wrench_topic,
+            self.manual_wrench_callback,
+            CONTROL_SUB_QOS
+        )
+
+        self.armed_sub = self.create_subscription(
+            Bool,
+            self.armed_topic,
+            self.armed_callback,
+            ARMED_QOS
+        )
+
+        self.heave_pub = self.create_publisher(
+            Float64,
+            self.heave_cmd_topic,
+            10
+        )
+        self.depth_active_pub = self.create_publisher(
+            Bool,
+            self.depth_active_topic,
+            10
+        )
+        self.target_depth_pub = self.create_publisher(
+            Float64,
+            self.target_depth_status_topic,
+            10
+        )
+        self.depth_error_pub = self.create_publisher(
+            Float64,
+            self.depth_error_topic,
+            10
+        )
+        self.depth_rate_pub = self.create_publisher(
+            Float64,
+            self.depth_rate_topic,
+            10
+        )
+
+        self.add_on_set_parameters_callback(self.on_parameter_update)
+
+        self.get_logger().info(&#x27;DepthController initialized&#x27;)
+        self.get_logger().info(f&#x27;  depth_topic                     = {self.depth_topic}&#x27;)
+        self.get_logger().info(f&#x27;  imu_topic                       = {self.imu_topic}&#x27;)
+        self.get_logger().info(f&#x27;  cmd_depth_topic                 = {self.cmd_depth_topic}&#x27;)
+        self.get_logger().info(f&#x27;  manual_wrench_topic             = {self.manual_wrench_topic}&#x27;)
+        self.get_logger().info(f&#x27;  heave_cmd_topic                 = {self.heave_cmd_topic}&#x27;)
+        self.get_logger().info(f&#x27;  depth_active_topic              = {self.depth_active_topic}&#x27;)
+        self.get_logger().info(f&#x27;  target_depth_status_topic       = {self.target_depth_status_topic}&#x27;)
+        self.get_logger().info(f&#x27;  depth_error_topic               = {self.depth_error_topic}&#x27;)
+        self.get_logger().info(f&#x27;  depth_rate_topic                = {self.depth_rate_topic}&#x27;)
+        self.get_logger().info(f&#x27;  armed_topic                     = {self.armed_topic}&#x27;)
+        self.get_logger().info(f&#x27;  control_enabled                 = {self.control_enabled}&#x27;)
+        self.get_logger().info(f&#x27;  kp_depth                        = {self.kp_depth}&#x27;)
+        self.get_logger().info(f&#x27;  ki_depth                        = {self.ki_depth}&#x27;)
+        self.get_logger().info(f&#x27;  kd_depth                        = {self.kd_depth}&#x27;)
+        self.get_logger().info(f&#x27;  max_heave                       = {self.max_heave}&#x27;)
+        self.get_logger().info(f&#x27;  max_upward_heave                = {self.max_upward_heave}&#x27;)
+        self.get_logger().info(f&#x27;  upward_heave_cmd_sign           = {self.upward_heave_cmd_sign}&#x27;)
+        self.get_logger().info(f&#x27;  depth_integral_limit            = {self.depth_integral_limit}&#x27;)
+        self.get_logger().info(f&#x27;  manual_heave_override_threshold = {self.manual_heave_override_threshold}&#x27;)
+        self.get_logger().info(f&#x27;  manual_wrench_timeout_sec       = {self.manual_wrench_timeout_sec}&#x27;)
+        self.get_logger().info(
+            f&#x27;  manual_heave_release_offset     = &#x27;
+            f&#x27;{self.manual_heave_release_target_offset}&#x27;
+        )
+        self.get_logger().info(f&#x27;  capture_initial_depth_target    = {self.capture_initial_depth_target}&#x27;)
+        self.get_logger().info(f&#x27;  pilot_depth_rate_enabled        = {self.pilot_depth_rate_enabled}&#x27;)
+        self.get_logger().info(f&#x27;  max_pilot_depth_rate            = {self.max_pilot_depth_rate}&#x27;)
+        self.get_logger().info(f&#x27;  pilot_depth_rate_sign           = {self.pilot_depth_rate_sign}&#x27;)
+        self.get_logger().info(f&#x27;  min_target_depth                = {self.min_target_depth}&#x27;)
+        self.get_logger().info(f&#x27;  max_target_depth                = {self.max_target_depth}&#x27;)
+        self.get_logger().info(f&#x27;  heave_cmd_sign                  = {self.heave_cmd_sign}&#x27;)
+        self.get_logger().info(f&#x27;  depth_rate_alpha                = {self.depth_rate_alpha}&#x27;)
+        self.get_logger().info(f&#x27;  max_heave_delta_per_cycle       = {self.max_heave_delta_per_cycle}&#x27;)
+        self.get_logger().info(
+            f&#x27;  depth_sensor_offset_xyz         = &#x27;
+            f&#x27;({self.depth_sensor_offset_x:.3f}, &#x27;
+            f&#x27;{self.depth_sensor_offset_y:.3f}, &#x27;
+            f&#x27;{self.depth_sensor_offset_z:.3f}) m&#x27;
+        )
+        self.get_logger().info(
+            f&#x27;  depth_sensor_offset_comp        = &#x27;
+            f&#x27;{self.depth_sensor_offset_compensation_enabled}&#x27;
+        )
+
+    def armed_callback(self, msg: Bool):
+        self.prev_armed = self.armed
+        self.armed = bool(msg.data)
+        self.armed_received = True
+
+        # rising edge: DISARMED -&gt; ARMED
+        if (not self.prev_armed) and self.armed:
+            if self.current_depth is not None:
+                self.target_depth = self.current_depth
+                self.target_initialized = True
+                self.prev_heave_cmd = 0.0
+                self.depth_integral = 0.0
+                self.get_logger().info(
+                    f&#x27;ARM rising edge -&gt; captured current depth as new target: &#x27;
+                    f&#x27;{self.target_depth:.3f} m&#x27;
+                )
+
+        # falling edge: ARMED -&gt; DISARMED
+        if self.prev_armed and (not self.armed):
+            self.prev_heave_cmd = 0.0
+            self.depth_integral = 0.0
+            self.get_logger().info(&#x27;DISARM -&gt; depth controller output reset to zero&#x27;)
+            self.publish_depth_active(False)
+
+    def publish_depth_active(self, active: bool):
+        msg = Bool()
+        msg.data = bool(active)
+        self.depth_active_pub.publish(msg)
+
+    def depth_control_is_active(self) -&gt; bool:
+        return (
+            self.armed_received and
+            self.armed and
+            self.control_enabled and
+            self.target_initialized and
+            self.current_depth is not None
+        )
+
+    def clamp_target_depth(self):
+        lo = min(float(self.min_target_depth), float(self.max_target_depth))
+        hi = max(float(self.min_target_depth), float(self.max_target_depth))
+        if self.target_depth &lt; lo:
+            self.target_depth = lo
+        elif self.target_depth &gt; hi:
+            self.target_depth = hi
+
+    def capture_manual_release_target(self, reason: str):
+        self.target_depth = self.current_depth + self.manual_heave_release_target_offset
+        self.clamp_target_depth()
+        self.target_initialized = True
+        self.depth_integral = 0.0
+        self.get_logger().info(
+            f&#x27;{reason} -&gt; captured depth target with release offset: &#x27;
+            f&#x27;current={self.current_depth:.3f} m, &#x27;
+            f&#x27;offset={self.manual_heave_release_target_offset:+.3f} m, &#x27;
+            f&#x27;target={self.target_depth:.3f} m&#x27;
+        )
+
+    def _set_control_enabled(self, enabled: bool):
+        prev = self.control_enabled
+        self.control_enabled = bool(enabled)
+
+        if self.control_enabled:
+            if self.current_depth is not None:
+                self.target_depth = self.current_depth
+                self.clamp_target_depth()
+                self.target_initialized = True
+                self.get_logger().info(
+                    f&#x27;Depth control enabled; captured current depth as target: &#x27;
+                    f&#x27;{self.target_depth:.3f} m&#x27;
+                )
+            else:
+                self.get_logger().warn(
+                    &#x27;Depth control enabled, but no depth sample has been received yet&#x27;
+                )
+            self.prev_heave_cmd = 0.0
+            self.depth_integral = 0.0
+        elif (not self.control_enabled) and prev:
+            self.prev_heave_cmd = 0.0
+            self.depth_integral = 0.0
+            out = Float64()
+            out.data = 0.0
+            self.heave_pub.publish(out)
+            self.publish_depth_active(False)
+            self.get_logger().info(&#x27;Depth control disabled; publishing zero heave command&#x27;)
+
+    def cmd_depth_callback(self, msg: Float64):
+        self.target_depth = msg.data
+        self.clamp_target_depth()
+        self.target_initialized = True
+        self.get_logger().info(f&#x27;Updated target depth from /cmd_depth: {self.target_depth:.3f} m&#x27;)
+
+    def imu_callback(self, msg: Imu):
+        self.imu_z_row = quat_to_rotation_z_row(
+            msg.orientation.x,
+            msg.orientation.y,
+            msg.orientation.z,
+            msg.orientation.w,
+        )
+        self.have_imu = True
+
+    def compensate_depth_sensor_offset(self, sensor_depth: float) -&gt; float:
+        if not self.depth_sensor_offset_compensation_enabled:
+            return sensor_depth
+        if not self.have_imu:
+            return sensor_depth
+
+        zx, zy, zz = self.imu_z_row
+        sensor_z_in_world = (
+            zx * self.depth_sensor_offset_x +
+            zy * self.depth_sensor_offset_y +
+            zz * self.depth_sensor_offset_z
+        )
+        return sensor_depth + sensor_z_in_world
+
+    def manual_wrench_callback(self, msg: Wrench):
+        self.manual_heave = msg.force.z
+        self.last_manual_wrench_time = self.get_clock().now()
+
+        self.prev_manual_heave_active = self.manual_heave_active
+        self.manual_heave_active = abs(self.manual_heave) &gt; self.manual_heave_override_threshold
+
+        # Edge detect: manual heave released
+        if self.prev_manual_heave_active and not self.manual_heave_active:
+            if self.current_depth is not None and self.armed:
+                self.capture_manual_release_target(&#x27;Manual heave released&#x27;)
+
+    def manual_wrench_is_fresh(self, now) -&gt; bool:
+        if self.manual_wrench_timeout_sec &lt;= 0.0:
+            return True
+        if self.last_manual_wrench_time is None:
+            return False
+
+        age = (now - self.last_manual_wrench_time).nanoseconds * 1e-9
+        return age &lt;= self.manual_wrench_timeout_sec
+
+    def clear_stale_manual_heave(self, now):
+        if self.manual_wrench_is_fresh(now):
+            return
+
+        if self.manual_heave_active and self.current_depth is not None and self.armed:
+            self.capture_manual_release_target(&#x27;Manual heave timed out&#x27;)
+
+        self.manual_heave = 0.0
+        self.prev_manual_heave_active = False
+        self.manual_heave_active = False
+
+    def depth_callback(self, msg: Float64):
+        now = self.get_clock().now()
+        sensor_depth = float(msg.data)
+        depth = self.compensate_depth_sensor_offset(sensor_depth)
+        self.current_depth = depth
+        self.clear_stale_manual_heave(now)
+
+        # startup initial capture
+        if self.capture_initial_depth_target and not self.target_initialized:
+            self.target_depth = depth
+            self.clamp_target_depth()
+            self.target_initialized = True
+            self.get_logger().info(
+                f&#x27;Initial depth target captured: {self.target_depth:.3f} m&#x27;
+            )
+
+        raw_depth_rate = 0.0
+        dt = 0.0
+        if self.prev_depth is not None and self.prev_time is not None:
+            dt = (now - self.prev_time).nanoseconds * 1e-9
+            if dt &gt; 1e-6:
+                raw_depth_rate = (depth - self.prev_depth) / dt
+
+        self.filtered_depth_rate = (
+            self.depth_rate_alpha * raw_depth_rate +
+            (1.0 - self.depth_rate_alpha) * self.filtered_depth_rate
+        )
+        depth_rate = self.filtered_depth_rate
+
+        heave_cmd = 0.0
+        raw_cmd = 0.0
+        error = 0.0
+
+        active = self.depth_control_is_active()
+        self.publish_depth_active(active)
+
+        # armed 신호를 못 받았거나 disarm이면 무조건 0
+        if (not self.armed_received) or (not self.armed):
+            heave_cmd = 0.0
+            self.depth_integral = 0.0
+
+        elif not self.control_enabled:
+            heave_cmd = 0.0
+            self.depth_integral = 0.0
+
+        elif self.target_initialized:
+            if self.manual_heave_active and self.pilot_depth_rate_enabled and dt &gt; 1e-6:
+                depth_rate_cmd = (
+                    self.pilot_depth_rate_sign *
+                    self.manual_heave *
+                    abs(self.max_pilot_depth_rate)
+                )
+                self.target_depth += depth_rate_cmd * dt
+                self.clamp_target_depth()
+                self.depth_integral = 0.0
+
+            error = self.target_depth - depth
+            if dt &gt; 1e-6 and not self.manual_heave_active:
+                self.depth_integral += error * dt
+                limit = abs(self.depth_integral_limit)
+                if self.depth_integral &gt; limit:
+                    self.depth_integral = limit
+                elif self.depth_integral &lt; -limit:
+                    self.depth_integral = -limit
+
+            raw_cmd = (
+                self.kp_depth * error +
+                self.ki_depth * self.depth_integral -
+                self.kd_depth * depth_rate
+            )
+            heave_cmd = self.heave_cmd_sign * raw_cmd
+
+            if heave_cmd &gt; self.max_heave:
+                heave_cmd = self.max_heave
+            elif heave_cmd &lt; -self.max_heave:
+                heave_cmd = -self.max_heave
+
+            upward_sign = 1.0 if self.upward_heave_cmd_sign &gt;= 0.0 else -1.0
+            max_upward = max(0.0, abs(self.max_upward_heave))
+            if heave_cmd * upward_sign &gt; max_upward:
+                heave_cmd = upward_sign * max_upward
+
+            delta = heave_cmd - self.prev_heave_cmd
+            if delta &gt; self.max_heave_delta_per_cycle:
+                heave_cmd = self.prev_heave_cmd + self.max_heave_delta_per_cycle
+            elif delta &lt; -self.max_heave_delta_per_cycle:
+                heave_cmd = self.prev_heave_cmd - self.max_heave_delta_per_cycle
+
+        out = Float64()
+        out.data = heave_cmd
+        self.heave_pub.publish(out)
+
+        target_msg = Float64()
+        target_msg.data = self.target_depth
+        self.target_depth_pub.publish(target_msg)
+
+        error_msg = Float64()
+        error_msg.data = error
+        self.depth_error_pub.publish(error_msg)
+
+        rate_msg = Float64()
+        rate_msg.data = depth_rate
+        self.depth_rate_pub.publish(rate_msg)
+
+        self.prev_heave_cmd = heave_cmd
+        self.prev_depth = depth
+        self.prev_time = now
+
+        # self.get_logger().debug(
+        #     f&#x27;armed={self.armed}, depth={depth:.3f}, target={self.target_depth:.3f}, &#x27;
+        #     f&#x27;error={error:.3f}, raw_depth_rate={raw_depth_rate:.3f}, &#x27;
+        #     f&#x27;filtered_depth_rate={depth_rate:.3f}, raw_cmd={raw_cmd:.3f}, &#x27;
+        #     f&#x27;integral={self.depth_integral:.3f}, heave_cmd={heave_cmd:.3f}, &#x27;
+        #     f&#x27;manual_heave={self.manual_heave:.3f}, &#x27;
+        #     f&#x27;manual_active={self.manual_heave_active}&#x27;
+        # )
+
+    def on_parameter_update(self, params):
+        try:
+            for p in params:
+                if p.name == &#x27;kp_depth&#x27;:
+                    self.kp_depth = float(p.value)
+                elif p.name == &#x27;ki_depth&#x27;:
+                    self.ki_depth = float(p.value)
+                elif p.name == &#x27;kd_depth&#x27;:
+                    self.kd_depth = float(p.value)
+                elif p.name == &#x27;max_heave&#x27;:
+                    self.max_heave = float(p.value)
+                elif p.name == &#x27;max_upward_heave&#x27;:
+                    self.max_upward_heave = float(p.value)
+                elif p.name == &#x27;upward_heave_cmd_sign&#x27;:
+                    self.upward_heave_cmd_sign = float(p.value)
+                elif p.name == &#x27;depth_integral_limit&#x27;:
+                    self.depth_integral_limit = float(p.value)
+                    limit = abs(self.depth_integral_limit)
+                    if self.depth_integral &gt; limit:
+                        self.depth_integral = limit
+                    elif self.depth_integral &lt; -limit:
+                        self.depth_integral = -limit
+                elif p.name == &#x27;manual_heave_override_threshold&#x27;:
+                    self.manual_heave_override_threshold = float(p.value)
+                elif p.name == &#x27;manual_wrench_timeout_sec&#x27;:
+                    self.manual_wrench_timeout_sec = float(p.value)
+                elif p.name == &#x27;manual_heave_release_target_offset&#x27;:
+                    self.manual_heave_release_target_offset = float(p.value)
+                elif p.name == &#x27;capture_initial_depth_target&#x27;:
+                    self.capture_initial_depth_target = bool(p.value)
+                elif p.name == &#x27;pilot_depth_rate_enabled&#x27;:
+                    self.pilot_depth_rate_enabled = bool(p.value)
+                elif p.name == &#x27;max_pilot_depth_rate&#x27;:
+                    self.max_pilot_depth_rate = float(p.value)
+                elif p.name == &#x27;pilot_depth_rate_sign&#x27;:
+                    self.pilot_depth_rate_sign = float(p.value)
+                elif p.name == &#x27;min_target_depth&#x27;:
+                    self.min_target_depth = float(p.value)
+                    self.clamp_target_depth()
+                elif p.name == &#x27;max_target_depth&#x27;:
+                    self.max_target_depth = float(p.value)
+                    self.clamp_target_depth()
+                elif p.name == &#x27;control_enabled&#x27;:
+                    self._set_control_enabled(bool(p.value))
+                elif p.name == &#x27;heave_cmd_sign&#x27;:
+                    self.heave_cmd_sign = float(p.value)
+                elif p.name == &#x27;depth_rate_alpha&#x27;:
+                    self.depth_rate_alpha = float(p.value)
+                elif p.name == &#x27;max_heave_delta_per_cycle&#x27;:
+                    self.max_heave_delta_per_cycle = float(p.value)
+                elif p.name == &#x27;depth_sensor_offset_x&#x27;:
+                    self.depth_sensor_offset_x = float(p.value)
+                elif p.name == &#x27;depth_sensor_offset_y&#x27;:
+                    self.depth_sensor_offset_y = float(p.value)
+                elif p.name == &#x27;depth_sensor_offset_z&#x27;:
+                    self.depth_sensor_offset_z = float(p.value)
+                elif p.name == &#x27;depth_sensor_offset_compensation_enabled&#x27;:
+                    self.depth_sensor_offset_compensation_enabled = bool(p.value)
+
+            self.get_logger().info(&#x27;Depth parameters updated at runtime&#x27;)
+            return SetParametersResult(successful=True)
+        except Exception as e:
+            return SetParametersResult(successful=False, reason=str(e))
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = DepthController()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == &#x27;__main__&#x27;:
+    main()</code></pre>
+        </details>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

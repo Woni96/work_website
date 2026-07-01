@@ -1,0 +1,1894 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Attitude Controller Review</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body class="detail-body">
+  <div class="detail-shell">
+    <aside class="detail-sidebar">
+      <a class="back-link" href="index.html">← 리뷰 홈으로</a>
+      <p class="eyebrow">Controller Code Review</p>
+      <h1>Attitude Controller Review</h1>
+      <p class="meta"><code>code_review/code/attitude_controller.py</code></p>
+      <nav class="toc">
+        <a href="#role">역할</a>
+        <a href="#map">함수 맵</a>
+        <a href="#quaternion-angle">Quaternion / Angle 유틸리티</a>
+<a href="#init">`__init__()`</a>
+<a href="#section">목표 자세 캡처 계열</a>
+<a href="#imu-callback">`imu_callback()`</a>
+<a href="#update-control-attitude-filter">`_update_control_attitude_filter()`</a>
+<a href="#translation-tilt-feedforward">`_translation_tilt_feedforward()`</a>
+<a href="#control-loop">`control_loop()`</a>
+<a href="#on-parameter-update">`on_parameter_update()`</a>
+        <a href="#full-source">전체 코드</a>
+      </nav>
+    </aside>
+
+    <main class="detail-content">
+      <section id="role" class="hero">
+        <div>
+          <p class="eyebrow">Module Overview</p>
+          <h2>Attitude Controller Review</h2>
+          <p>이 코드는 IMU와 수동 wrench를 받아 ROV의 <code>roll</code>, <code>pitch</code>, <code>yaw</code> 토크를 만드는 자세 제어기입니다.</p>
+          <p>설계상 핵심은 <code>roll/pitch stabilizer + yaw heading hold</code>입니다. 즉 단순히 자세 오차만 줄이는 것이 아니라, 조종자의 yaw 조작과 translational motion 중에도 trim attitude와 heading hold를 유지하려는 운용 감각이 강하게 들어가 있습니다.</p>
+          <p>리뷰 포인트는 <code>목표 자세를 어떻게 잡는지</code>, <code>IMU를 어떻게 제어 상태로 필터링하는지</code>, <code>yaw manual override와 hold가 어떻게 전환되는지</code>, <code>translation/heave 중 보호 로직이 어떤 출력을 만드는지</code>입니다.</p>
+        </div>
+      </section>
+
+      <section id="map" class="panel">
+        <div class="panel-heading">
+          <div>
+            <p class="section-kicker">Function Map</p>
+            <h2>이 파일에 있는 함수들</h2>
+          </div>
+        </div>
+        <div class="review-card">
+          <ul class="function-map">
+            <li><code>clamp()</code></li>
+<li><code>vec_norm()</code></li>
+<li><code>quat_normalize()</code></li>
+<li><code>quat_conj()</code></li>
+<li><code>quat_mul()</code></li>
+<li><code>quat_to_rpy()</code></li>
+<li><code>rpy_to_quat()</code></li>
+<li><code>wrap_to_pi()</code></li>
+<li><code>__init__()</code></li>
+<li><code>_update_target_quaternion()</code></li>
+<li><code>_force_level_roll_pitch_target()</code></li>
+<li><code>_capture_current_attitude_as_target()</code></li>
+<li><code>_capture_current_yaw_as_target()</code></li>
+<li><code>_set_control_enabled()</code></li>
+<li><code>imu_callback()</code></li>
+<li><code>manual_wrench_callback()</code></li>
+<li><code>cmd_attitude_callback()</code></li>
+<li><code>cmd_attitude_trim_callback()</code></li>
+<li><code>_apply_deadband()</code></li>
+<li><code>_reset_control_attitude_filter()</code></li>
+<li><code>_update_control_attitude_filter()</code></li>
+<li><code>_apply_rp_torque_slew()</code></li>
+<li><code>_translation_tilt_feedforward()</code></li>
+<li><code>control_loop()</code></li>
+<li><code>on_parameter_update()</code></li>
+<li><code>main()</code></li>
+          </ul>
+        </div>
+      </section>
+
+      <section id="quaternion-angle" class="review-section">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">Function Review</p>
+            <h2>Quaternion / Angle 유틸리티</h2>
+          </div>
+        </div>
+        <div class="review-grid">
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>이 함수들은 제어기 본체보다 먼저, 자세 표현을 다루기 위한 공통 도구입니다. Quaternion을 정규화하고 곱하고 Euler angle로 바꾸는 역할을 맡습니다.</p>
+            <h3>영향</h3>
+            <p>이 유틸리티가 안정적이어야 목표 자세 계산과 yaw wrapping이 깨지지 않습니다. 특히 <code>wrap_to_pi()</code>는 yaw 오차가 <code>+π/-π</code> 경계에서 튀는 문제를 막아줍니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>이 계층은 제어식의 기반이라서 작아 보여도 중요합니다. 자세 제어가 갑자기 반대로 튀거나 yaw 오차가 크게 보이는 문제는 여기서 시작되는 경우가 많습니다.</p>
+          </article>
+          <article class="review-card code-card">
+            <h3>실제 코드</h3>
+            <pre><code>def clamp(x: float, lo: float, hi: float) -&gt; float:
+    return max(lo, min(hi, x))
+
+def vec_norm(x: float, y: float, z: float) -&gt; float:
+    return math.sqrt(x * x + y * y + z * z)
+
+def quat_normalize(q: Tuple[float, float, float, float]) -&gt; Tuple[float, float, float, float]:
+    x, y, z, w = q
+    n = math.sqrt(x * x + y * y + z * z + w * w)
+    if n &lt; 1e-12:
+        return (0.0, 0.0, 0.0, 1.0)
+    return (x / n, y / n, z / n, w / n)
+
+def quat_conj(q: Tuple[float, float, float, float]) -&gt; Tuple[float, float, float, float]:
+    x, y, z, w = q
+    return (-x, -y, -z, w)
+
+def quat_mul(a: Tuple[float, float, float, float],
+             b: Tuple[float, float, float, float]) -&gt; Tuple[float, float, float, float]:
+    ax, ay, az, aw = a
+    bx, by, bz, bw = b
+    return (
+        aw * bx + ax * bw + ay * bz - az * by,
+        aw * by - ax * bz + ay * bw + az * bx,
+        aw * bz + ax * by - ay * bx + az * bw,
+        aw * bw - ax * bx - ay * by - az * bz,
+    )
+
+def quat_to_rpy(x: float, y: float, z: float, w: float):
+    sinr_cosp = 2.0 * (w * x + y * z)
+    cosr_cosp = 1.0 - 2.0 * (x * x + y * y)
+    roll = math.atan2(sinr_cosp, cosr_cosp)
+
+    sinp = 2.0 * (w * y - z * x)
+    if abs(sinp) &gt;= 1.0:
+        pitch = math.copysign(math.pi / 2.0, sinp)
+    else:
+        pitch = math.asin(sinp)
+
+    siny_cosp = 2.0 * (w * z + x * y)
+    cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
+    yaw = math.atan2(siny_cosp, cosy_cosp)
+
+    return roll, pitch, yaw
+
+def rpy_to_quat(roll: float, pitch: float, yaw: float) -&gt; Tuple[float, float, float, float]:
+    cr = math.cos(roll * 0.5)
+    sr = math.sin(roll * 0.5)
+    cp = math.cos(pitch * 0.5)
+    sp = math.sin(pitch * 0.5)
+    cy = math.cos(yaw * 0.5)
+    sy = math.sin(yaw * 0.5)
+
+    qx = sr * cp * cy - cr * sp * sy
+    qy = cr * sp * cy + sr * cp * sy
+    qz = cr * cp * sy - sr * sp * cy
+    qw = cr * cp * cy + sr * sp * sy
+    return quat_normalize((qx, qy, qz, qw))
+
+def wrap_to_pi(angle: float) -&gt; float:
+    return math.atan2(math.sin(angle), math.cos(angle))</code></pre>
+          </article>
+        </div>
+      </section> <section id="init" class="review-section">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">Function Review</p>
+            <h2>`__init__()`</h2>
+          </div>
+        </div>
+        <div class="review-grid">
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>노드의 토픽, 게인, 제한값, 보호 로직, yaw hold 정책을 전부 선언하고 상태 변수를 초기화합니다.</p>
+            <h3>영향</h3>
+            <p>이 함수가 곧 제어기의 운용 정책 선언부입니다. 어떤 입력을 받고 어떤 보호 로직이 켜지는지, yaw stick을 놓았을 때 어떤 감각으로 복귀하는지가 여기서 결정됩니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>파라미터가 많지만 모두 의미가 분명합니다. 다만 수동 입력 freshness를 위한 timestamp/state가 없는 점은 후반 제어 루프에서 stale manual state로 이어질 수 있습니다.</p>
+          </article>
+          <article class="review-card code-card">
+            <h3>실제 코드</h3>
+            <pre><code>def __init__(self):
+    super().__init__(&#x27;attitude_controller&#x27;)
+
+    # Topics / rate
+    self.declare_parameter(&#x27;imu_topic&#x27;, &#x27;/imu&#x27;)
+    self.declare_parameter(&#x27;manual_wrench_topic&#x27;, &#x27;/rov/wrench_manual&#x27;)
+    self.declare_parameter(&#x27;output_torque_topic&#x27;, &#x27;/ctrl/attitude_torque&#x27;)
+    self.declare_parameter(&#x27;cmd_attitude_topic&#x27;, &#x27;/cmd_attitude&#x27;)
+    self.declare_parameter(&#x27;cmd_attitude_trim_topic&#x27;, &#x27;/cmd_attitude_trim&#x27;)
+    self.declare_parameter(&#x27;control_rate_hz&#x27;, 50.0)
+    self.declare_parameter(&#x27;control_enabled&#x27;, True)
+
+    # Gains
+    self.declare_parameter(&#x27;kp_roll&#x27;, 0.50)
+    self.declare_parameter(&#x27;kd_roll&#x27;, 0.0)
+    self.declare_parameter(&#x27;ki_roll&#x27;, 0.04)
+    self.declare_parameter(&#x27;kp_pitch&#x27;, 0.45)
+    self.declare_parameter(&#x27;kd_pitch&#x27;, 0.08)
+    self.declare_parameter(&#x27;ki_pitch&#x27;, 0.04)
+    self.declare_parameter(&#x27;kp_yaw&#x27;, 0.4)
+    self.declare_parameter(&#x27;kd_yaw&#x27;, 0.12)
+
+    # Limits
+    self.declare_parameter(&#x27;tx_limit&#x27;, 0.16)
+    self.declare_parameter(&#x27;ty_limit&#x27;, 0.16)
+    self.declare_parameter(&#x27;tz_limit&#x27;, 0.08)
+    self.declare_parameter(&#x27;rp_torque_slew_rate&#x27;, 0.8)
+
+    # Behavior
+    self.declare_parameter(&#x27;capture_initial_target&#x27;, True)
+    self.declare_parameter(&#x27;level_roll_pitch_target&#x27;, True)
+    self.declare_parameter(&#x27;target_roll_deg&#x27;, 0.0)
+    self.declare_parameter(&#x27;target_pitch_deg&#x27;, 0.0)
+    self.declare_parameter(&#x27;roll_trim_deg&#x27;, 0.0)
+    self.declare_parameter(&#x27;pitch_trim_deg&#x27;, 0.0)
+    self.declare_parameter(&#x27;heave_protect_threshold&#x27;, 0.08)
+    self.declare_parameter(&#x27;strong_heave_threshold&#x27;, 0.20)
+    self.declare_parameter(&#x27;xy_motion_protect_threshold&#x27;, 0.05)
+    self.declare_parameter(&#x27;strong_xy_motion_threshold&#x27;, 0.20)
+    self.declare_parameter(&#x27;rp_scale_when_xy_motion&#x27;, 0.45)
+    self.declare_parameter(&#x27;rp_scale_when_strong_xy_motion&#x27;, 0.25)
+    self.declare_parameter(&#x27;xy_soft_trim_ignore_forward&#x27;, True)
+    self.declare_parameter(&#x27;forward_surge_sign&#x27;, 1.0)
+    self.declare_parameter(&#x27;yaw_scale_when_heave&#x27;, 1.0)
+    self.declare_parameter(&#x27;yaw_scale_when_strong_heave&#x27;, 0.7)
+    self.declare_parameter(&#x27;max_body_rate_for_control&#x27;, 1.5)
+    self.declare_parameter(&#x27;large_tilt_disable_deg&#x27;, 85.0)
+    self.declare_parameter(&#x27;torque_deadband&#x27;, 1e-4)
+    self.declare_parameter(&#x27;roll_pitch_error_deadband_deg&#x27;, 1.0)
+    self.declare_parameter(&#x27;roll_integral_limit&#x27;, 0.20)
+    self.declare_parameter(&#x27;orientation_filter_enabled&#x27;, True)
+    self.declare_parameter(&#x27;orientation_filter_measurement_alpha&#x27;, 0.08)
+    self.declare_parameter(&#x27;orientation_filter_max_correction_rate_deg&#x27;, 45.0)
+    self.declare_parameter(&#x27;translation_tilt_ff_enabled&#x27;, False)
+    self.declare_parameter(&#x27;translation_pitch_ff_gain&#x27;, 0.0)
+    self.declare_parameter(&#x27;translation_roll_ff_gain&#x27;, 0.0)
+    self.declare_parameter(&#x27;translation_tilt_ff_max&#x27;, 0.08)
+    self.declare_parameter(&#x27;translation_tilt_ff_deadband&#x27;, 0.03)
+
+    # Yaw manual override / hold update
+    self.declare_parameter(&#x27;yaw_hold_enabled&#x27;, True)
+    self.declare_parameter(&#x27;yaw_manual_override_threshold&#x27;, 0.02)
+    self.declare_parameter(&#x27;capture_yaw_target_on_release&#x27;, True)
+    self.declare_parameter(&#x27;yaw_hold_settle_time_sec&#x27;, 0.25)
+    self.declare_parameter(&#x27;yaw_error_deadband_deg&#x27;, 0.5)
+
+    # Load parameters
+    imu_topic = self.get_parameter(&#x27;imu_topic&#x27;).value
+    manual_wrench_topic = self.get_parameter(&#x27;manual_wrench_topic&#x27;).value
+    output_torque_topic = self.get_parameter(&#x27;output_torque_topic&#x27;).value
+    cmd_attitude_topic = self.get_parameter(&#x27;cmd_attitude_topic&#x27;).value
+    cmd_attitude_trim_topic = self.get_parameter(&#x27;cmd_attitude_trim_topic&#x27;).value
+    control_rate_hz = float(self.get_parameter(&#x27;control_rate_hz&#x27;).value)
+    self.control_enabled = bool(self.get_parameter(&#x27;control_enabled&#x27;).value)
+
+    self.kp_roll = float(self.get_parameter(&#x27;kp_roll&#x27;).value)
+    self.kd_roll = float(self.get_parameter(&#x27;kd_roll&#x27;).value)
+    self.ki_roll = float(self.get_parameter(&#x27;ki_roll&#x27;).value)
+    self.kp_pitch = float(self.get_parameter(&#x27;kp_pitch&#x27;).value)
+    self.kd_pitch = float(self.get_parameter(&#x27;kd_pitch&#x27;).value)
+    self.ki_pitch = float(self.get_parameter(&#x27;ki_pitch&#x27;).value)
+    self.kp_yaw = float(self.get_parameter(&#x27;kp_yaw&#x27;).value)
+    self.kd_yaw = float(self.get_parameter(&#x27;kd_yaw&#x27;).value)
+
+    self.tx_limit = float(self.get_parameter(&#x27;tx_limit&#x27;).value)
+    self.ty_limit = float(self.get_parameter(&#x27;ty_limit&#x27;).value)
+    self.tz_limit = float(self.get_parameter(&#x27;tz_limit&#x27;).value)
+    self.rp_torque_slew_rate = float(self.get_parameter(&#x27;rp_torque_slew_rate&#x27;).value)
+
+    self.capture_initial_target = bool(self.get_parameter(&#x27;capture_initial_target&#x27;).value)
+    self.level_roll_pitch_target = bool(self.get_parameter(&#x27;level_roll_pitch_target&#x27;).value)
+    self.target_roll_deg = float(self.get_parameter(&#x27;target_roll_deg&#x27;).value)
+    self.target_pitch_deg = float(self.get_parameter(&#x27;target_pitch_deg&#x27;).value)
+    self.roll_trim_deg = float(self.get_parameter(&#x27;roll_trim_deg&#x27;).value)
+    self.pitch_trim_deg = float(self.get_parameter(&#x27;pitch_trim_deg&#x27;).value)
+
+    self.heave_protect_threshold = float(self.get_parameter(&#x27;heave_protect_threshold&#x27;).value)
+    self.strong_heave_threshold = float(self.get_parameter(&#x27;strong_heave_threshold&#x27;).value)
+    self.xy_motion_protect_threshold = float(
+        self.get_parameter(&#x27;xy_motion_protect_threshold&#x27;).value
+    )
+    self.strong_xy_motion_threshold = float(
+        self.get_parameter(&#x27;strong_xy_motion_threshold&#x27;).value
+    )
+    self.rp_scale_when_xy_motion = float(
+        self.get_parameter(&#x27;rp_scale_when_xy_motion&#x27;).value
+    )
+    self.rp_scale_when_strong_xy_motion = float(
+        self.get_parameter(&#x27;rp_scale_when_strong_xy_motion&#x27;).value
+    )
+    self.xy_soft_trim_ignore_forward = bool(
+        self.get_parameter(&#x27;xy_soft_trim_ignore_forward&#x27;).value
+    )
+    self.forward_surge_sign = float(self.get_parameter(&#x27;forward_surge_sign&#x27;).value)
+    self.yaw_scale_when_heave = float(self.get_parameter(&#x27;yaw_scale_when_heave&#x27;).value)
+    self.yaw_scale_when_strong_heave = float(self.get_parameter(&#x27;yaw_scale_when_strong_heave&#x27;).value)
+
+    self.max_body_rate_for_control = float(self.get_parameter(&#x27;max_body_rate_for_control&#x27;).value)
+    self.large_tilt_disable_deg = float(self.get_parameter(&#x27;large_tilt_disable_deg&#x27;).value)
+    self.large_tilt_disable_rad = math.radians(self.large_tilt_disable_deg)
+
+    self.torque_deadband = float(self.get_parameter(&#x27;torque_deadband&#x27;).value)
+    self.roll_pitch_error_deadband = math.radians(
+        float(self.get_parameter(&#x27;roll_pitch_error_deadband_deg&#x27;).value)
+    )
+    self.roll_integral_limit = float(self.get_parameter(&#x27;roll_integral_limit&#x27;).value)
+    self.orientation_filter_enabled = bool(
+        self.get_parameter(&#x27;orientation_filter_enabled&#x27;).value
+    )
+    self.orientation_filter_measurement_alpha = float(
+        self.get_parameter(&#x27;orientation_filter_measurement_alpha&#x27;).value
+    )
+    self.orientation_filter_max_correction_rate = math.radians(
+        float(self.get_parameter(&#x27;orientation_filter_max_correction_rate_deg&#x27;).value)
+    )
+    self.translation_tilt_ff_enabled = bool(
+        self.get_parameter(&#x27;translation_tilt_ff_enabled&#x27;).value
+    )
+    self.translation_pitch_ff_gain = float(
+        self.get_parameter(&#x27;translation_pitch_ff_gain&#x27;).value
+    )
+    self.translation_roll_ff_gain = float(
+        self.get_parameter(&#x27;translation_roll_ff_gain&#x27;).value
+    )
+    self.translation_tilt_ff_max = float(
+        self.get_parameter(&#x27;translation_tilt_ff_max&#x27;).value
+    )
+    self.translation_tilt_ff_deadband = float(
+        self.get_parameter(&#x27;translation_tilt_ff_deadband&#x27;).value
+    )
+
+    self.yaw_hold_enabled = bool(self.get_parameter(&#x27;yaw_hold_enabled&#x27;).value)
+    self.yaw_manual_override_threshold = float(
+        self.get_parameter(&#x27;yaw_manual_override_threshold&#x27;).value
+    )
+    self.capture_yaw_target_on_release = bool(
+        self.get_parameter(&#x27;capture_yaw_target_on_release&#x27;).value
+    )
+    self.yaw_hold_settle_time_sec = float(
+        self.get_parameter(&#x27;yaw_hold_settle_time_sec&#x27;).value
+    )
+    self.yaw_error_deadband = math.radians(
+        float(self.get_parameter(&#x27;yaw_error_deadband_deg&#x27;).value)
+    )
+
+    # State
+    self.have_imu = False
+    self.target_initialized = False
+
+    self.q_current = (0.0, 0.0, 0.0, 1.0)
+    self.q_target = (0.0, 0.0, 0.0, 1.0)
+
+    self.roll = 0.0
+    self.pitch = 0.0
+    self.yaw = 0.0
+    self.control_roll = 0.0
+    self.control_pitch = 0.0
+    self.control_attitude_filter_initialized = False
+
+    self.target_roll = 0.0
+    self.target_pitch = 0.0
+    self.target_yaw = 0.0
+
+    self.p_rate = 0.0
+    self.q_rate = 0.0
+    self.r_rate = 0.0
+
+    self.manual_wrench = Wrench()
+    self.yaw_manual_active = False
+    self.prev_yaw_manual_active = False
+    self.last_manual_yaw_input_time = None
+    self._log_counter = 0
+    self.last_control_time = None
+    self.roll_integral = 0.0
+    self.pitch_integral = 0.0
+    self.prev_tx_ctrl = 0.0
+    self.prev_ty_ctrl = 0.0
+
+    # If initial capture is disabled, level attitude (0,0) is used immediately.
+    if not self.capture_initial_target:
+        self._update_target_quaternion()
+
+    # Subs / pubs
+    self.sub_imu = self.create_subscription(
+        Imu,
+        imu_topic,
+        self.imu_callback,
+        10
+    )
+
+    self.sub_manual = self.create_subscription(
+        Wrench,
+        manual_wrench_topic,
+        self.manual_wrench_callback,
+        CONTROL_QOS
+    )
+
+    self.sub_cmd_att = self.create_subscription(
+        Vector3,
+        cmd_attitude_topic,
+        self.cmd_attitude_callback,
+        CONTROL_QOS
+    )
+    self.sub_cmd_att_trim = self.create_subscription(
+        Vector3,
+        cmd_attitude_trim_topic,
+        self.cmd_attitude_trim_callback,
+        CONTROL_QOS
+    )
+
+    self.pub_torque = self.create_publisher(
+        Wrench,
+        output_torque_topic,
+        10
+    )
+
+    self.timer = self.create_timer(1.0 / control_rate_hz, self.control_loop)
+
+    self.add_on_set_parameters_callback(self.on_parameter_update)
+
+    self.get_logger().info(&#x27;AttitudeController initialized&#x27;)
+    self.get_logger().info(f&#x27;  imu_topic={imu_topic}&#x27;)
+    self.get_logger().info(f&#x27;  manual_wrench_topic={manual_wrench_topic}&#x27;)
+    self.get_logger().info(f&#x27;  output_torque_topic={output_torque_topic}&#x27;)
+    self.get_logger().info(f&#x27;  cmd_attitude_topic={cmd_attitude_topic}&#x27;)
+    self.get_logger().info(f&#x27;  cmd_attitude_trim_topic={cmd_attitude_trim_topic}&#x27;)
+    self.get_logger().info(f&#x27;  control_rate_hz={control_rate_hz}&#x27;)
+    self.get_logger().info(f&#x27;  control_enabled={self.control_enabled}&#x27;)
+    self.get_logger().info(f&#x27;  capture_initial_target={self.capture_initial_target}&#x27;)
+    self.get_logger().info(f&#x27;  roll_trim_deg={self.roll_trim_deg:.2f}&#x27;)
+    self.get_logger().info(f&#x27;  pitch_trim_deg={self.pitch_trim_deg:.2f}&#x27;)
+    self.get_logger().info(f&#x27;  yaw_hold_enabled={self.yaw_hold_enabled}&#x27;)
+    self.get_logger().info(f&#x27;  yaw_manual_override_threshold={self.yaw_manual_override_threshold}&#x27;)
+    self.get_logger().info(f&#x27;  capture_yaw_target_on_release={self.capture_yaw_target_on_release}&#x27;)
+    self.get_logger().info(f&#x27;  yaw_hold_settle_time_sec={self.yaw_hold_settle_time_sec}&#x27;)
+    self.get_logger().info(f&#x27;  yaw_error_deadband_deg={math.degrees(self.yaw_error_deadband):.2f}&#x27;)
+    self.get_logger().info(
+        f&#x27;  roll_pitch_error_deadband_deg={math.degrees(self.roll_pitch_error_deadband):.2f}&#x27;
+    )
+    self.get_logger().info(
+        f&#x27;  orientation_filter={self.orientation_filter_enabled}, &#x27;
+        f&#x27;measurement_alpha={self.orientation_filter_measurement_alpha:.3f}, &#x27;
+        f&#x27;max_correction_rate_deg={math.degrees(self.orientation_filter_max_correction_rate):.1f}&#x27;
+    )
+    self.get_logger().info(
+        f&#x27;  xy_soft_trim_ignore_forward={self.xy_soft_trim_ignore_forward}, &#x27;
+        f&#x27;forward_surge_sign={self.forward_surge_sign:.1f}, &#x27;
+        f&#x27;xy_threshold={self.xy_motion_protect_threshold:.3f}, &#x27;
+        f&#x27;strong_xy_threshold={self.strong_xy_motion_threshold:.3f}&#x27;
+    )
+    self.get_logger().info(
+        f&#x27;  translation_tilt_ff={self.translation_tilt_ff_enabled}, &#x27;
+        f&#x27;pitch_gain={self.translation_pitch_ff_gain:.3f}, &#x27;
+        f&#x27;roll_gain={self.translation_roll_ff_gain:.3f}, &#x27;
+        f&#x27;max={self.translation_tilt_ff_max:.3f}&#x27;
+    )</code></pre>
+          </article>
+        </div>
+      </section> <section id="section" class="review-section">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">Function Review</p>
+            <h2>목표 자세 캡처 계열</h2>
+          </div>
+        </div>
+        <div class="review-grid">
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>이 함수들은 &#x27;지금 무엇을 목표 자세로 볼 것인가&#x27;를 정하는 계층입니다. 초기 캡처, level target 유지, yaw release 후 heading hold 재설정이 모두 여기서 일어납니다.</p>
+            <h3>영향</h3>
+            <p>사용자가 조작을 놓았을 때 기체가 어느 자세로 돌아갈지 결정합니다. 운용감이 좋은지, trim이 유지되는지, yaw hold가 자연스러운지가 이 계층에 달려 있습니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>이 코드의 운용 감각은 꽤 좋습니다. 특히 yaw target을 현재 yaw로 다시 잡는 설계는 실제 조종 감각을 부드럽게 만듭니다.</p>
+          </article>
+          <article class="review-card code-card">
+            <h3>실제 코드</h3>
+            <pre><code>def _update_target_quaternion(self):
+    self.q_target = rpy_to_quat(self.target_roll, self.target_pitch, self.target_yaw)
+    self.target_initialized = True
+
+def _force_level_roll_pitch_target(self):
+    if not self.level_roll_pitch_target:
+        return
+    self.target_roll = math.radians(self.target_roll_deg + self.roll_trim_deg)
+    self.target_pitch = math.radians(self.target_pitch_deg + self.pitch_trim_deg)
+    self._update_target_quaternion()
+
+def _capture_current_attitude_as_target(self):
+    self.target_yaw = wrap_to_pi(self.yaw)
+    if self.level_roll_pitch_target:
+        self.target_roll = math.radians(self.target_roll_deg + self.roll_trim_deg)
+        self.target_pitch = math.radians(self.target_pitch_deg + self.pitch_trim_deg)
+    else:
+        self.target_roll = self.control_roll
+        self.target_pitch = self.control_pitch
+    self._update_target_quaternion()
+
+def _capture_current_yaw_as_target(self):
+    self.target_yaw = wrap_to_pi(self.yaw)
+    self._update_target_quaternion()</code></pre>
+          </article>
+        </div>
+      </section> <section id="imu-callback" class="review-section">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">Function Review</p>
+            <h2>`imu_callback()`</h2>
+          </div>
+        </div>
+        <div class="review-grid">
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>IMU quaternion과 body rate를 읽어 현재 자세와 각속도를 최신 상태로 갱신합니다.</p>
+            <h3>영향</h3>
+            <p>제어기의 모든 피드백이 여기서 들어옵니다. 처음 IMU를 받으면 초기 target을 캡처하기 때문에, 이 함수는 센서 수신과 target initialization을 동시에 담당합니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>초기 target capture와 IMU 상태 갱신이 한 곳에 모여 있어 흐름은 명확합니다. 다만 manual freshness와는 독립이라 이후 control loop가 오래된 manual 입력을 그대로 읽을 수 있습니다.</p>
+          </article>
+          <article class="review-card code-card">
+            <h3>실제 코드</h3>
+            <pre><code>def imu_callback(self, msg: Imu):
+    self.q_current = quat_normalize((
+        msg.orientation.x,
+        msg.orientation.y,
+        msg.orientation.z,
+        msg.orientation.w,
+    ))
+
+    self.roll, self.pitch, self.yaw = quat_to_rpy(*self.q_current)
+
+    self.p_rate = msg.angular_velocity.x
+    self.q_rate = msg.angular_velocity.y
+    self.r_rate = msg.angular_velocity.z
+
+    self.have_imu = True
+
+    if self.capture_initial_target and not self.target_initialized:
+        self._reset_control_attitude_filter()
+        self._capture_current_attitude_as_target()
+        self.get_logger().info(
+            f&#x27;Initial target captured: &#x27;
+            f&#x27;roll={self.target_roll:.3f}, pitch={self.target_pitch:.3f}, yaw={self.target_yaw:.3f}&#x27;
+        )</code></pre>
+          </article>
+        </div>
+      </section> <section id="update-control-attitude-filter" class="review-section">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">Function Review</p>
+            <h2>`_update_control_attitude_filter()`</h2>
+          </div>
+        </div>
+        <div class="review-grid">
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>IMU 자세를 그대로 쓰지 않고, body rate 적분 예측값과 measurement를 섞어서 <code>control_roll</code>, <code>control_pitch</code>를 만듭니다.</p>
+            <h3>영향</h3>
+            <p>센서 노이즈와 순간 흔들림을 줄이고 제어 대상 자세를 더 부드럽게 만듭니다. 즉 이 함수는 제어 입력의 품질을 개선하는 내부 observer 역할을 합니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>이 필터는 attitude hold를 덜 거칠게 만들어 주는 좋은 계층입니다. 또한 <code>dt</code>가 비정상이면 reset하도록 만들어 센서 타이밍 문제에 비교적 안전합니다.</p>
+          </article>
+          <article class="review-card code-card">
+            <h3>실제 코드</h3>
+            <pre><code>def _reset_control_attitude_filter(self):
+    self.control_roll = self.roll
+    self.control_pitch = self.pitch
+    self.control_attitude_filter_initialized = True
+
+def _update_control_attitude_filter(self, dt: float):
+    if (
+        not self.orientation_filter_enabled or
+        not self.control_attitude_filter_initialized or
+        dt &lt;= 0.0 or
+        dt &gt; 0.2
+    ):
+        self._reset_control_attitude_filter()
+        return
+
+    predicted_roll = self.control_roll + self.p_rate * dt
+    predicted_pitch = self.control_pitch + self.q_rate * dt
+    alpha = clamp(float(self.orientation_filter_measurement_alpha), 0.0, 1.0)
+    max_correction = max(0.0, self.orientation_filter_max_correction_rate) * dt
+
+    roll_correction = wrap_to_pi(self.roll - predicted_roll) * alpha
+    pitch_correction = wrap_to_pi(self.pitch - predicted_pitch) * alpha
+    if max_correction &gt; 0.0:
+        roll_correction = clamp(roll_correction, -max_correction, max_correction)
+        pitch_correction = clamp(pitch_correction, -max_correction, max_correction)
+
+    self.control_roll = wrap_to_pi(predicted_roll + roll_correction)
+    self.control_pitch = wrap_to_pi(predicted_pitch + pitch_correction)</code></pre>
+          </article>
+        </div>
+      </section> <section id="translation-tilt-feedforward" class="review-section">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">Function Review</p>
+            <h2>`_translation_tilt_feedforward()`</h2>
+          </div>
+        </div>
+        <div class="review-grid">
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>수동 surge/sway가 있을 때 미리 roll/pitch 토크를 보정해 translation 중 trim 자세 붕괴를 줄이려는 feedforward 함수입니다.</p>
+            <h3>영향</h3>
+            <p>이 함수가 켜지면 단순 PID 복원보다 더 적극적으로 자세를 유지하려고 합니다. 특히 기체가 이동하면서 생기는 pitch-up / roll-off 경향을 선제적으로 누를 수 있습니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>기능 자체는 고급스럽지만, 튜닝 의존성이 큽니다. gain이 과하면 조종감이 뻣뻣해질 수 있어 실제 운용 로그와 함께 봐야 합니다.</p>
+          </article>
+          <article class="review-card code-card">
+            <h3>실제 코드</h3>
+            <pre><code>def _translation_tilt_feedforward(self, manual_surge: float, manual_sway: float):
+    if not self.translation_tilt_ff_enabled:
+        return 0.0, 0.0
+
+    surge_abs = max(0.0, abs(float(manual_surge)) - self.translation_tilt_ff_deadband)
+    sway_abs = max(0.0, abs(float(manual_sway)) - self.translation_tilt_ff_deadband)
+    drive = max(surge_abs, sway_abs)
+    if drive &lt;= 0.0:
+        return 0.0, 0.0
+
+    limit = max(0.0, abs(float(self.translation_tilt_ff_max)))
+    tx_ff = self.translation_roll_ff_gain * self.target_roll * drive
+    ty_ff = self.translation_pitch_ff_gain * self.target_pitch * drive
+    return clamp(tx_ff, -limit, limit), clamp(ty_ff, -limit, limit)</code></pre>
+          </article>
+        </div>
+      </section> <section id="control-loop" class="review-section">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">Function Review</p>
+            <h2>`control_loop()`</h2>
+          </div>
+        </div>
+        <div class="review-grid">
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>실제 제어법칙이 수행되는 중심 함수입니다. 자세 오차 계산, 적분, rate damping, yaw manual override, translation/heave 보호, slew limit, 최종 토크 publish가 모두 여기에 있습니다.</p>
+            <h3>영향</h3>
+            <p>이 함수의 동작이 곧 조종감입니다. 조종자가 translation 중인지, heave를 주는지, yaw stick을 놓았는지에 따라 토크 출력 정책이 바뀝니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>구조는 매우 좋고 운용 의도도 분명합니다. 다만 manual wrench freshness가 없어서 <code>yaw_manual_active</code>, <code>heave_protect</code>, <code>xy_soft_trim</code>이 오래 남을 수 있는 리스크가 있습니다.</p>
+          </article>
+          <article class="review-card code-card">
+            <h3>실제 코드</h3>
+            <pre><code>def control_loop(self):
+    if not self.have_imu or not self.target_initialized:
+        return
+
+    now = self.get_clock().now()
+    dt = 0.0
+    if self.last_control_time is not None:
+        dt = (now - self.last_control_time).nanoseconds * 1e-9
+    self.last_control_time = now
+
+    out = Wrench()
+    out.force.x = 0.0
+    out.force.y = 0.0
+    out.force.z = 0.0
+    out.torque.x = 0.0
+    out.torque.y = 0.0
+    out.torque.z = 0.0
+
+    if not self.control_enabled:
+        self.prev_tx_ctrl = 0.0
+        self.prev_ty_ctrl = 0.0
+        self.control_attitude_filter_initialized = False
+        self.pub_torque.publish(out)
+        return
+
+    self._update_control_attitude_filter(dt)
+    self._force_level_roll_pitch_target()
+
+    manual_heave = self.manual_wrench.force.z
+    manual_surge = self.manual_wrench.force.x
+    manual_sway = self.manual_wrench.force.y
+    tx_manual = self.manual_wrench.torque.x
+    ty_manual = self.manual_wrench.torque.y
+    tz_manual = self.manual_wrench.torque.z
+
+    # Safety gate: tilt too large
+    if (
+        abs(self.control_roll) &gt; self.large_tilt_disable_rad or
+        abs(self.control_pitch) &gt; self.large_tilt_disable_rad
+    ):
+        self.roll_integral = 0.0
+        self.pitch_integral = 0.0
+        self.prev_tx_ctrl = 0.0
+        self.prev_ty_ctrl = 0.0
+        self.pub_torque.publish(out)
+        return
+
+    # High body-rate guard: keep attitude hold active, but clamp the
+    # derivative term. A hard zero-output gate makes trim attitude drop out
+    # during translation, then snap back when the rate falls.
+    body_rate_mag = vec_norm(self.p_rate, self.q_rate, self.r_rate)
+    rate_limit = max(0.0, self.max_body_rate_for_control)
+    if rate_limit &gt; 1e-6:
+        p_rate_ctrl = clamp(self.p_rate, -rate_limit, rate_limit)
+        q_rate_ctrl = clamp(self.q_rate, -rate_limit, rate_limit)
+        r_rate_ctrl = clamp(self.r_rate, -rate_limit, rate_limit)
+    else:
+        p_rate_ctrl = self.p_rate
+        q_rate_ctrl = self.q_rate
+        r_rate_ctrl = self.r_rate
+    high_body_rate = rate_limit &gt; 1e-6 and body_rate_mag &gt; rate_limit
+
+    # BlueROV-style heading hold:
+    # - yaw stick active: manual yaw rate command wins and the heading target follows current yaw
+    # - yaw stick released: damp yaw rate briefly, then lock the released heading
+    yaw_hold_active = self.yaw_hold_enabled
+    yaw_manual_active = abs(tz_manual) &gt; self.yaw_manual_override_threshold
+    yaw_released = self.prev_yaw_manual_active and not yaw_manual_active
+
+    if yaw_manual_active:
+        self.last_manual_yaw_input_time = now
+        self._capture_current_yaw_as_target()
+    elif yaw_released and self.capture_yaw_target_on_release:
+        self.last_manual_yaw_input_time = now
+        self._capture_current_yaw_as_target()
+        self.get_logger().info(
+            f&#x27;Yaw stick released -&gt; captured heading target: &#x27;
+            f&#x27;{math.degrees(self.target_yaw):+.1f} deg&#x27;
+        )
+
+    self.prev_yaw_manual_active = yaw_manual_active
+
+    # Roll/pitch: direct angle error for robust recovery at large tilt.
+    roll_err = wrap_to_pi(self.target_roll - self.control_roll)
+    pitch_err = wrap_to_pi(self.target_pitch - self.control_pitch)
+    if dt &gt; 1e-6 and not high_body_rate:
+        self.roll_integral += roll_err * dt
+        self.pitch_integral += pitch_err * dt
+        self.roll_integral = clamp(self.roll_integral, -self.roll_integral_limit, self.roll_integral_limit)
+        self.pitch_integral = clamp(self.pitch_integral, -self.roll_integral_limit, self.roll_integral_limit)
+
+    if abs(roll_err) &lt; self.roll_pitch_error_deadband:
+        roll_err = 0.0
+    if abs(pitch_err) &lt; self.roll_pitch_error_deadband:
+        pitch_err = 0.0
+
+    tx_ctrl = self.kp_roll * roll_err + self.ki_roll * self.roll_integral - self.kd_roll * p_rate_ctrl
+    ty_ctrl = self.kp_pitch * pitch_err + self.ki_pitch * self.pitch_integral - self.kd_pitch * q_rate_ctrl
+    tx_ff, ty_ff = self._translation_tilt_feedforward(manual_surge, manual_sway)
+    tx_ctrl += tx_ff
+    ty_ctrl += ty_ff
+
+    # Yaw heading-position hold. Direct yaw error is easier to tune than the
+    # quaternion z component because kp_yaw maps to radian heading error.
+    yaw_err = wrap_to_pi(self.target_yaw - self.yaw)
+    if abs(yaw_err) &lt; self.yaw_error_deadband:
+        yaw_err = 0.0
+    tz_ctrl = 0.0 if not yaw_hold_active else (self.kp_yaw * yaw_err - self.kd_yaw * r_rate_ctrl)
+
+    yaw_settle_active = False
+    if yaw_hold_active and (not yaw_manual_active) and self.last_manual_yaw_input_time is not None:
+        dt_since_manual = (now - self.last_manual_yaw_input_time).nanoseconds * 1e-9
+        yaw_settle_active = (
+            self.capture_yaw_target_on_release and
+            dt_since_manual &lt; self.yaw_hold_settle_time_sec
+        )
+
+    # While user is manually commanding yaw, disable yaw hold contribution
+    if yaw_manual_active:
+        tz_ctrl = 0.0
+    elif yaw_settle_active:
+        # ArduSub/BlueROV-style anti-bounce: briefly damp yaw rate before locking heading.
+        tz_ctrl = -self.kd_yaw * r_rate_ctrl
+        self.target_yaw = wrap_to_pi(self.yaw)
+        self._update_target_quaternion()
+
+    # Make roll/pitch trim hold softer while the pilot is translating.
+    # Forward surge is excluded by default because forward thrust can create
+    # a pitch-up moment; weakening pitch hold there lets a nose-down trim
+    # collapse back toward level.
+    xy_abs = max(abs(float(manual_surge)), abs(float(manual_sway)))
+    forward_surge = float(manual_surge) * float(self.forward_surge_sign)
+    keep_forward_trim = (
+        self.xy_soft_trim_ignore_forward and
+        forward_surge &gt; self.xy_motion_protect_threshold and
+        abs(float(manual_sway)) &lt;= self.strong_xy_motion_threshold
+    )
+    rp_scale = 1.0
+    if keep_forward_trim:
+        mode = &#x27;FORWARD_TRIM_HOLD&#x27;
+    elif xy_abs &gt; self.strong_xy_motion_threshold:
+        rp_scale = self.rp_scale_when_strong_xy_motion
+        mode = &#x27;STRONG_XY_SOFT_TRIM&#x27;
+    elif xy_abs &gt; self.xy_motion_protect_threshold:
+        rp_scale = self.rp_scale_when_xy_motion
+        mode = &#x27;XY_SOFT_TRIM&#x27;
+    else:
+        mode = &#x27;NORMAL&#x27;
+
+    tx_scale = rp_scale
+    ty_scale = rp_scale
+
+    # If the pilot/controller requested a non-level roll or pitch target,
+    # keep that trim authority during translation. Otherwise lateral motion
+    # can make a deliberate 25 deg pitch target collapse toward level until
+    # the stick is released.
+    if abs(self.target_roll) &gt; self.roll_pitch_error_deadband:
+        tx_scale = 1.0
+    if abs(self.target_pitch) &gt; self.roll_pitch_error_deadband:
+        ty_scale = 1.0
+
+    tx_ctrl *= tx_scale
+    ty_ctrl *= ty_scale
+
+    # Protect yaw hold during heave stick input without scaling roll/pitch further.
+    heave_abs = abs(manual_heave)
+    if heave_abs &gt; self.strong_heave_threshold:
+        if not yaw_manual_active:
+            tz_ctrl *= self.yaw_scale_when_strong_heave
+        mode += &#x27;|STRONG_HEAVE_PROTECT&#x27;
+    elif heave_abs &gt; self.heave_protect_threshold:
+        if not yaw_manual_active:
+            tz_ctrl *= self.yaw_scale_when_heave
+        mode += &#x27;|HEAVE_PROTECT&#x27;
+
+    if high_body_rate:
+        mode += &#x27;|RATE_LIMIT&#x27;
+
+    if yaw_manual_active:
+        mode += &#x27;|YAW_MANUAL&#x27;
+    elif yaw_settle_active:
+        mode += &#x27;|YAW_SETTLE&#x27;
+
+    tx_ctrl = clamp(tx_ctrl, -self.tx_limit, self.tx_limit)
+    ty_ctrl = clamp(ty_ctrl, -self.ty_limit, self.ty_limit)
+    tz_ctrl = clamp(tz_ctrl, -self.tz_limit, self.tz_limit)
+
+    tx_ctrl, ty_ctrl = self._apply_rp_torque_slew(tx_ctrl, ty_ctrl, dt)
+
+    # tx_ctrl = self._apply_deadband(tx_ctrl)
+    # ty_ctrl = self._apply_deadband(ty_ctrl)
+    # tz_ctrl = self._apply_deadband(tz_ctrl)
+
+    # Keep existing manual torque bias if any
+    out.torque.x = tx_manual + tx_ctrl
+    out.torque.y = ty_manual + ty_ctrl
+    out.torque.z = tz_manual + tz_ctrl
+
+    self.pub_torque.publish(out)
+
+    self._log_counter += 1
+    # if self._log_counter % 25 == 0:
+    #     self.get_logger().info(
+    #         f&#x27;mode={mode}, heave={manual_heave:.3f}, yaw_manual={tz_manual:.3f}, &#x27;
+    #         f&#x27;target_rpy=({self.target_roll:.3f}, {self.target_pitch:.3f}, {self.target_yaw:.3f}), &#x27;
+    #         f&#x27;ctrl_torque=({tx_ctrl:.4f}, {ty_ctrl:.4f}, {tz_ctrl:.4f}), &#x27;
+    #         f&#x27;out_torque=({out.torque.x:.4f}, {out.torque.y:.4f}, {out.torque.z:.4f}), &#x27;
+    #         f&#x27;rpy=({self.roll:.3f}, {self.pitch:.3f}, {self.yaw:.3f}), &#x27;
+    #         f&#x27;control_rp=({self.control_roll:.3f}, {self.control_pitch:.3f})&#x27;
+    #     )</code></pre>
+          </article>
+        </div>
+      </section> <section id="on-parameter-update" class="review-section">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">Function Review</p>
+            <h2>`on_parameter_update()`</h2>
+          </div>
+        </div>
+        <div class="review-grid">
+          <article class="review-card prose-card">
+            <h3>의미</h3>
+            <p>런타임 파라미터 갱신을 받아 제어기 상태와 게인을 즉시 바꾸는 함수입니다.</p>
+            <h3>영향</h3>
+            <p>GUI나 runtime tuning에서 실시간으로 gain과 정책을 바꿀 수 있게 해줍니다. 실험 속도를 크게 올리는 대신, 파라미터 변경 시 즉시 제어 감각이 달라집니다.</p>
+            <h3>리뷰 메모</h3>
+            <p>runtime tuning을 적극적으로 지원하는 점은 강점입니다. 동시에 리뷰 관점에서는 파라미터 변화가 control loop에 어떤 영향을 주는지 문서가 꼭 필요하다는 뜻이기도 합니다.</p>
+          </article>
+          <article class="review-card code-card">
+            <h3>실제 코드</h3>
+            <pre><code>def on_parameter_update(self, params):
+    try:
+        for p in params:
+            if p.name == &#x27;kp_roll&#x27;:
+                self.kp_roll = float(p.value)
+            elif p.name == &#x27;kd_roll&#x27;:
+                self.kd_roll = float(p.value)
+            elif p.name == &#x27;ki_roll&#x27;:
+                self.ki_roll = float(p.value)
+            elif p.name == &#x27;kp_pitch&#x27;:
+                self.kp_pitch = float(p.value)
+            elif p.name == &#x27;kd_pitch&#x27;:
+                self.kd_pitch = float(p.value)
+            elif p.name == &#x27;ki_pitch&#x27;:
+                self.ki_pitch = float(p.value)
+            elif p.name == &#x27;kp_yaw&#x27;:
+                self.kp_yaw = float(p.value)
+            elif p.name == &#x27;kd_yaw&#x27;:
+                self.kd_yaw = float(p.value)
+
+            elif p.name == &#x27;tx_limit&#x27;:
+                self.tx_limit = float(p.value)
+            elif p.name == &#x27;ty_limit&#x27;:
+                self.ty_limit = float(p.value)
+            elif p.name == &#x27;tz_limit&#x27;:
+                self.tz_limit = float(p.value)
+            elif p.name == &#x27;rp_torque_slew_rate&#x27;:
+                self.rp_torque_slew_rate = float(p.value)
+
+            elif p.name == &#x27;capture_initial_target&#x27;:
+                self.capture_initial_target = bool(p.value)
+            elif p.name == &#x27;level_roll_pitch_target&#x27;:
+                self.level_roll_pitch_target = bool(p.value)
+                self._force_level_roll_pitch_target()
+            elif p.name == &#x27;target_roll_deg&#x27;:
+                self.target_roll_deg = float(p.value)
+                self._force_level_roll_pitch_target()
+            elif p.name == &#x27;target_pitch_deg&#x27;:
+                self.target_pitch_deg = float(p.value)
+                self._force_level_roll_pitch_target()
+            elif p.name == &#x27;roll_trim_deg&#x27;:
+                self.roll_trim_deg = float(p.value)
+                self._force_level_roll_pitch_target()
+            elif p.name == &#x27;pitch_trim_deg&#x27;:
+                self.pitch_trim_deg = float(p.value)
+                self._force_level_roll_pitch_target()
+            elif p.name == &#x27;control_enabled&#x27;:
+                self._set_control_enabled(bool(p.value))
+
+            elif p.name == &#x27;heave_protect_threshold&#x27;:
+                self.heave_protect_threshold = float(p.value)
+            elif p.name == &#x27;strong_heave_threshold&#x27;:
+                self.strong_heave_threshold = float(p.value)
+            elif p.name == &#x27;xy_motion_protect_threshold&#x27;:
+                self.xy_motion_protect_threshold = float(p.value)
+            elif p.name == &#x27;strong_xy_motion_threshold&#x27;:
+                self.strong_xy_motion_threshold = float(p.value)
+            elif p.name == &#x27;rp_scale_when_xy_motion&#x27;:
+                self.rp_scale_when_xy_motion = float(p.value)
+            elif p.name == &#x27;rp_scale_when_strong_xy_motion&#x27;:
+                self.rp_scale_when_strong_xy_motion = float(p.value)
+            elif p.name == &#x27;xy_soft_trim_ignore_forward&#x27;:
+                self.xy_soft_trim_ignore_forward = bool(p.value)
+            elif p.name == &#x27;forward_surge_sign&#x27;:
+                self.forward_surge_sign = float(p.value)
+            elif p.name == &#x27;yaw_scale_when_heave&#x27;:
+                self.yaw_scale_when_heave = float(p.value)
+            elif p.name == &#x27;yaw_scale_when_strong_heave&#x27;:
+                self.yaw_scale_when_strong_heave = float(p.value)
+
+            elif p.name == &#x27;yaw_manual_override_threshold&#x27;:
+                self.yaw_manual_override_threshold = float(p.value)
+            elif p.name == &#x27;yaw_hold_enabled&#x27;:
+                self.yaw_hold_enabled = bool(p.value)
+            elif p.name == &#x27;capture_yaw_target_on_release&#x27;:
+                self.capture_yaw_target_on_release = bool(p.value)
+            elif p.name == &#x27;yaw_hold_settle_time_sec&#x27;:
+                self.yaw_hold_settle_time_sec = float(p.value)
+            elif p.name == &#x27;yaw_error_deadband_deg&#x27;:
+                self.yaw_error_deadband = math.radians(float(p.value))
+
+            elif p.name == &#x27;max_body_rate_for_control&#x27;:
+                self.max_body_rate_for_control = float(p.value)
+            elif p.name == &#x27;large_tilt_disable_deg&#x27;:
+                self.large_tilt_disable_deg = float(p.value)
+                self.large_tilt_disable_rad = math.radians(self.large_tilt_disable_deg)
+            elif p.name == &#x27;torque_deadband&#x27;:
+                self.torque_deadband = float(p.value)
+            elif p.name == &#x27;roll_pitch_error_deadband_deg&#x27;:
+                self.roll_pitch_error_deadband = math.radians(float(p.value))
+            elif p.name == &#x27;roll_integral_limit&#x27;:
+                self.roll_integral_limit = float(p.value)
+                self.roll_integral = clamp(self.roll_integral, -self.roll_integral_limit, self.roll_integral_limit)
+                self.pitch_integral = clamp(self.pitch_integral, -self.roll_integral_limit, self.roll_integral_limit)
+            elif p.name == &#x27;orientation_filter_enabled&#x27;:
+                self.orientation_filter_enabled = bool(p.value)
+                self._reset_control_attitude_filter()
+            elif p.name == &#x27;orientation_filter_measurement_alpha&#x27;:
+                self.orientation_filter_measurement_alpha = float(p.value)
+            elif p.name == &#x27;orientation_filter_max_correction_rate_deg&#x27;:
+                self.orientation_filter_max_correction_rate = math.radians(float(p.value))
+            elif p.name == &#x27;translation_tilt_ff_enabled&#x27;:
+                self.translation_tilt_ff_enabled = bool(p.value)
+            elif p.name == &#x27;translation_pitch_ff_gain&#x27;:
+                self.translation_pitch_ff_gain = float(p.value)
+            elif p.name == &#x27;translation_roll_ff_gain&#x27;:
+                self.translation_roll_ff_gain = float(p.value)
+            elif p.name == &#x27;translation_tilt_ff_max&#x27;:
+                self.translation_tilt_ff_max = float(p.value)
+            elif p.name == &#x27;translation_tilt_ff_deadband&#x27;:
+                self.translation_tilt_ff_deadband = float(p.value)
+
+        self.get_logger().info(&#x27;Attitude parameters updated at runtime&#x27;)
+        return SetParametersResult(successful=True)
+    except Exception as e:
+        return SetParametersResult(successful=False, reason=str(e))</code></pre>
+          </article>
+        </div>
+      </section>
+
+      <section id="full-source" class="panel">
+        <div class="panel-heading">
+          <div>
+            <p class="section-kicker">Full Source</p>
+            <h2>전체 코드</h2>
+          </div>
+        </div>
+        <details class="source-details" open>
+          <summary>전체 파일 펼치기 / 접기</summary>
+          <pre><code>#!/usr/bin/env python3
+import math
+from typing import Tuple
+
+import rclpy
+from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+
+from sensor_msgs.msg import Imu
+from geometry_msgs.msg import Wrench, Vector3
+from rcl_interfaces.msg import SetParametersResult
+
+
+CONTROL_QOS = QoSProfile(
+    depth=10,
+    reliability=ReliabilityPolicy.BEST_EFFORT,
+    durability=DurabilityPolicy.VOLATILE,
+)
+
+def clamp(x: float, lo: float, hi: float) -&gt; float:
+    return max(lo, min(hi, x))
+
+
+def vec_norm(x: float, y: float, z: float) -&gt; float:
+    return math.sqrt(x * x + y * y + z * z)
+
+
+def quat_normalize(q: Tuple[float, float, float, float]) -&gt; Tuple[float, float, float, float]:
+    x, y, z, w = q
+    n = math.sqrt(x * x + y * y + z * z + w * w)
+    if n &lt; 1e-12:
+        return (0.0, 0.0, 0.0, 1.0)
+    return (x / n, y / n, z / n, w / n)
+
+
+def quat_conj(q: Tuple[float, float, float, float]) -&gt; Tuple[float, float, float, float]:
+    x, y, z, w = q
+    return (-x, -y, -z, w)
+
+
+def quat_mul(a: Tuple[float, float, float, float],
+             b: Tuple[float, float, float, float]) -&gt; Tuple[float, float, float, float]:
+    ax, ay, az, aw = a
+    bx, by, bz, bw = b
+    return (
+        aw * bx + ax * bw + ay * bz - az * by,
+        aw * by - ax * bz + ay * bw + az * bx,
+        aw * bz + ax * by - ay * bx + az * bw,
+        aw * bw - ax * bx - ay * by - az * bz,
+    )
+
+
+def quat_to_rpy(x: float, y: float, z: float, w: float):
+    sinr_cosp = 2.0 * (w * x + y * z)
+    cosr_cosp = 1.0 - 2.0 * (x * x + y * y)
+    roll = math.atan2(sinr_cosp, cosr_cosp)
+
+    sinp = 2.0 * (w * y - z * x)
+    if abs(sinp) &gt;= 1.0:
+        pitch = math.copysign(math.pi / 2.0, sinp)
+    else:
+        pitch = math.asin(sinp)
+
+    siny_cosp = 2.0 * (w * z + x * y)
+    cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
+    yaw = math.atan2(siny_cosp, cosy_cosp)
+
+    return roll, pitch, yaw
+
+
+def rpy_to_quat(roll: float, pitch: float, yaw: float) -&gt; Tuple[float, float, float, float]:
+    cr = math.cos(roll * 0.5)
+    sr = math.sin(roll * 0.5)
+    cp = math.cos(pitch * 0.5)
+    sp = math.sin(pitch * 0.5)
+    cy = math.cos(yaw * 0.5)
+    sy = math.sin(yaw * 0.5)
+
+    qx = sr * cp * cy - cr * sp * sy
+    qy = cr * sp * cy + sr * cp * sy
+    qz = cr * cp * sy - sr * sp * cy
+    qw = cr * cp * cy + sr * sp * sy
+    return quat_normalize((qx, qy, qz, qw))
+
+
+def wrap_to_pi(angle: float) -&gt; float:
+    return math.atan2(math.sin(angle), math.cos(angle))
+
+
+class AttitudeController(Node):
+
+    def __init__(self):
+        super().__init__(&#x27;attitude_controller&#x27;)
+
+        # Topics / rate
+        self.declare_parameter(&#x27;imu_topic&#x27;, &#x27;/imu&#x27;)
+        self.declare_parameter(&#x27;manual_wrench_topic&#x27;, &#x27;/rov/wrench_manual&#x27;)
+        self.declare_parameter(&#x27;output_torque_topic&#x27;, &#x27;/ctrl/attitude_torque&#x27;)
+        self.declare_parameter(&#x27;cmd_attitude_topic&#x27;, &#x27;/cmd_attitude&#x27;)
+        self.declare_parameter(&#x27;cmd_attitude_trim_topic&#x27;, &#x27;/cmd_attitude_trim&#x27;)
+        self.declare_parameter(&#x27;control_rate_hz&#x27;, 50.0)
+        self.declare_parameter(&#x27;control_enabled&#x27;, True)
+
+        # Gains
+        self.declare_parameter(&#x27;kp_roll&#x27;, 0.50)
+        self.declare_parameter(&#x27;kd_roll&#x27;, 0.0)
+        self.declare_parameter(&#x27;ki_roll&#x27;, 0.04)
+        self.declare_parameter(&#x27;kp_pitch&#x27;, 0.45)
+        self.declare_parameter(&#x27;kd_pitch&#x27;, 0.08)
+        self.declare_parameter(&#x27;ki_pitch&#x27;, 0.04)
+        self.declare_parameter(&#x27;kp_yaw&#x27;, 0.4)
+        self.declare_parameter(&#x27;kd_yaw&#x27;, 0.12)
+
+        # Limits
+        self.declare_parameter(&#x27;tx_limit&#x27;, 0.16)
+        self.declare_parameter(&#x27;ty_limit&#x27;, 0.16)
+        self.declare_parameter(&#x27;tz_limit&#x27;, 0.08)
+        self.declare_parameter(&#x27;rp_torque_slew_rate&#x27;, 0.8)
+
+        # Behavior
+        self.declare_parameter(&#x27;capture_initial_target&#x27;, True)
+        self.declare_parameter(&#x27;level_roll_pitch_target&#x27;, True)
+        self.declare_parameter(&#x27;target_roll_deg&#x27;, 0.0)
+        self.declare_parameter(&#x27;target_pitch_deg&#x27;, 0.0)
+        self.declare_parameter(&#x27;roll_trim_deg&#x27;, 0.0)
+        self.declare_parameter(&#x27;pitch_trim_deg&#x27;, 0.0)
+        self.declare_parameter(&#x27;heave_protect_threshold&#x27;, 0.08)
+        self.declare_parameter(&#x27;strong_heave_threshold&#x27;, 0.20)
+        self.declare_parameter(&#x27;xy_motion_protect_threshold&#x27;, 0.05)
+        self.declare_parameter(&#x27;strong_xy_motion_threshold&#x27;, 0.20)
+        self.declare_parameter(&#x27;rp_scale_when_xy_motion&#x27;, 0.45)
+        self.declare_parameter(&#x27;rp_scale_when_strong_xy_motion&#x27;, 0.25)
+        self.declare_parameter(&#x27;xy_soft_trim_ignore_forward&#x27;, True)
+        self.declare_parameter(&#x27;forward_surge_sign&#x27;, 1.0)
+        self.declare_parameter(&#x27;yaw_scale_when_heave&#x27;, 1.0)
+        self.declare_parameter(&#x27;yaw_scale_when_strong_heave&#x27;, 0.7)
+        self.declare_parameter(&#x27;max_body_rate_for_control&#x27;, 1.5)
+        self.declare_parameter(&#x27;large_tilt_disable_deg&#x27;, 85.0)
+        self.declare_parameter(&#x27;torque_deadband&#x27;, 1e-4)
+        self.declare_parameter(&#x27;roll_pitch_error_deadband_deg&#x27;, 1.0)
+        self.declare_parameter(&#x27;roll_integral_limit&#x27;, 0.20)
+        self.declare_parameter(&#x27;orientation_filter_enabled&#x27;, True)
+        self.declare_parameter(&#x27;orientation_filter_measurement_alpha&#x27;, 0.08)
+        self.declare_parameter(&#x27;orientation_filter_max_correction_rate_deg&#x27;, 45.0)
+        self.declare_parameter(&#x27;translation_tilt_ff_enabled&#x27;, False)
+        self.declare_parameter(&#x27;translation_pitch_ff_gain&#x27;, 0.0)
+        self.declare_parameter(&#x27;translation_roll_ff_gain&#x27;, 0.0)
+        self.declare_parameter(&#x27;translation_tilt_ff_max&#x27;, 0.08)
+        self.declare_parameter(&#x27;translation_tilt_ff_deadband&#x27;, 0.03)
+
+        # Yaw manual override / hold update
+        self.declare_parameter(&#x27;yaw_hold_enabled&#x27;, True)
+        self.declare_parameter(&#x27;yaw_manual_override_threshold&#x27;, 0.02)
+        self.declare_parameter(&#x27;capture_yaw_target_on_release&#x27;, True)
+        self.declare_parameter(&#x27;yaw_hold_settle_time_sec&#x27;, 0.25)
+        self.declare_parameter(&#x27;yaw_error_deadband_deg&#x27;, 0.5)
+
+        # Load parameters
+        imu_topic = self.get_parameter(&#x27;imu_topic&#x27;).value
+        manual_wrench_topic = self.get_parameter(&#x27;manual_wrench_topic&#x27;).value
+        output_torque_topic = self.get_parameter(&#x27;output_torque_topic&#x27;).value
+        cmd_attitude_topic = self.get_parameter(&#x27;cmd_attitude_topic&#x27;).value
+        cmd_attitude_trim_topic = self.get_parameter(&#x27;cmd_attitude_trim_topic&#x27;).value
+        control_rate_hz = float(self.get_parameter(&#x27;control_rate_hz&#x27;).value)
+        self.control_enabled = bool(self.get_parameter(&#x27;control_enabled&#x27;).value)
+
+        self.kp_roll = float(self.get_parameter(&#x27;kp_roll&#x27;).value)
+        self.kd_roll = float(self.get_parameter(&#x27;kd_roll&#x27;).value)
+        self.ki_roll = float(self.get_parameter(&#x27;ki_roll&#x27;).value)
+        self.kp_pitch = float(self.get_parameter(&#x27;kp_pitch&#x27;).value)
+        self.kd_pitch = float(self.get_parameter(&#x27;kd_pitch&#x27;).value)
+        self.ki_pitch = float(self.get_parameter(&#x27;ki_pitch&#x27;).value)
+        self.kp_yaw = float(self.get_parameter(&#x27;kp_yaw&#x27;).value)
+        self.kd_yaw = float(self.get_parameter(&#x27;kd_yaw&#x27;).value)
+
+        self.tx_limit = float(self.get_parameter(&#x27;tx_limit&#x27;).value)
+        self.ty_limit = float(self.get_parameter(&#x27;ty_limit&#x27;).value)
+        self.tz_limit = float(self.get_parameter(&#x27;tz_limit&#x27;).value)
+        self.rp_torque_slew_rate = float(self.get_parameter(&#x27;rp_torque_slew_rate&#x27;).value)
+
+        self.capture_initial_target = bool(self.get_parameter(&#x27;capture_initial_target&#x27;).value)
+        self.level_roll_pitch_target = bool(self.get_parameter(&#x27;level_roll_pitch_target&#x27;).value)
+        self.target_roll_deg = float(self.get_parameter(&#x27;target_roll_deg&#x27;).value)
+        self.target_pitch_deg = float(self.get_parameter(&#x27;target_pitch_deg&#x27;).value)
+        self.roll_trim_deg = float(self.get_parameter(&#x27;roll_trim_deg&#x27;).value)
+        self.pitch_trim_deg = float(self.get_parameter(&#x27;pitch_trim_deg&#x27;).value)
+
+        self.heave_protect_threshold = float(self.get_parameter(&#x27;heave_protect_threshold&#x27;).value)
+        self.strong_heave_threshold = float(self.get_parameter(&#x27;strong_heave_threshold&#x27;).value)
+        self.xy_motion_protect_threshold = float(
+            self.get_parameter(&#x27;xy_motion_protect_threshold&#x27;).value
+        )
+        self.strong_xy_motion_threshold = float(
+            self.get_parameter(&#x27;strong_xy_motion_threshold&#x27;).value
+        )
+        self.rp_scale_when_xy_motion = float(
+            self.get_parameter(&#x27;rp_scale_when_xy_motion&#x27;).value
+        )
+        self.rp_scale_when_strong_xy_motion = float(
+            self.get_parameter(&#x27;rp_scale_when_strong_xy_motion&#x27;).value
+        )
+        self.xy_soft_trim_ignore_forward = bool(
+            self.get_parameter(&#x27;xy_soft_trim_ignore_forward&#x27;).value
+        )
+        self.forward_surge_sign = float(self.get_parameter(&#x27;forward_surge_sign&#x27;).value)
+        self.yaw_scale_when_heave = float(self.get_parameter(&#x27;yaw_scale_when_heave&#x27;).value)
+        self.yaw_scale_when_strong_heave = float(self.get_parameter(&#x27;yaw_scale_when_strong_heave&#x27;).value)
+
+        self.max_body_rate_for_control = float(self.get_parameter(&#x27;max_body_rate_for_control&#x27;).value)
+        self.large_tilt_disable_deg = float(self.get_parameter(&#x27;large_tilt_disable_deg&#x27;).value)
+        self.large_tilt_disable_rad = math.radians(self.large_tilt_disable_deg)
+
+        self.torque_deadband = float(self.get_parameter(&#x27;torque_deadband&#x27;).value)
+        self.roll_pitch_error_deadband = math.radians(
+            float(self.get_parameter(&#x27;roll_pitch_error_deadband_deg&#x27;).value)
+        )
+        self.roll_integral_limit = float(self.get_parameter(&#x27;roll_integral_limit&#x27;).value)
+        self.orientation_filter_enabled = bool(
+            self.get_parameter(&#x27;orientation_filter_enabled&#x27;).value
+        )
+        self.orientation_filter_measurement_alpha = float(
+            self.get_parameter(&#x27;orientation_filter_measurement_alpha&#x27;).value
+        )
+        self.orientation_filter_max_correction_rate = math.radians(
+            float(self.get_parameter(&#x27;orientation_filter_max_correction_rate_deg&#x27;).value)
+        )
+        self.translation_tilt_ff_enabled = bool(
+            self.get_parameter(&#x27;translation_tilt_ff_enabled&#x27;).value
+        )
+        self.translation_pitch_ff_gain = float(
+            self.get_parameter(&#x27;translation_pitch_ff_gain&#x27;).value
+        )
+        self.translation_roll_ff_gain = float(
+            self.get_parameter(&#x27;translation_roll_ff_gain&#x27;).value
+        )
+        self.translation_tilt_ff_max = float(
+            self.get_parameter(&#x27;translation_tilt_ff_max&#x27;).value
+        )
+        self.translation_tilt_ff_deadband = float(
+            self.get_parameter(&#x27;translation_tilt_ff_deadband&#x27;).value
+        )
+
+        self.yaw_hold_enabled = bool(self.get_parameter(&#x27;yaw_hold_enabled&#x27;).value)
+        self.yaw_manual_override_threshold = float(
+            self.get_parameter(&#x27;yaw_manual_override_threshold&#x27;).value
+        )
+        self.capture_yaw_target_on_release = bool(
+            self.get_parameter(&#x27;capture_yaw_target_on_release&#x27;).value
+        )
+        self.yaw_hold_settle_time_sec = float(
+            self.get_parameter(&#x27;yaw_hold_settle_time_sec&#x27;).value
+        )
+        self.yaw_error_deadband = math.radians(
+            float(self.get_parameter(&#x27;yaw_error_deadband_deg&#x27;).value)
+        )
+
+        # State
+        self.have_imu = False
+        self.target_initialized = False
+
+        self.q_current = (0.0, 0.0, 0.0, 1.0)
+        self.q_target = (0.0, 0.0, 0.0, 1.0)
+
+        self.roll = 0.0
+        self.pitch = 0.0
+        self.yaw = 0.0
+        self.control_roll = 0.0
+        self.control_pitch = 0.0
+        self.control_attitude_filter_initialized = False
+
+        self.target_roll = 0.0
+        self.target_pitch = 0.0
+        self.target_yaw = 0.0
+
+        self.p_rate = 0.0
+        self.q_rate = 0.0
+        self.r_rate = 0.0
+
+        self.manual_wrench = Wrench()
+        self.yaw_manual_active = False
+        self.prev_yaw_manual_active = False
+        self.last_manual_yaw_input_time = None
+        self._log_counter = 0
+        self.last_control_time = None
+        self.roll_integral = 0.0
+        self.pitch_integral = 0.0
+        self.prev_tx_ctrl = 0.0
+        self.prev_ty_ctrl = 0.0
+
+        # If initial capture is disabled, level attitude (0,0) is used immediately.
+        if not self.capture_initial_target:
+            self._update_target_quaternion()
+
+        # Subs / pubs
+        self.sub_imu = self.create_subscription(
+            Imu,
+            imu_topic,
+            self.imu_callback,
+            10
+        )
+
+        self.sub_manual = self.create_subscription(
+            Wrench,
+            manual_wrench_topic,
+            self.manual_wrench_callback,
+            CONTROL_QOS
+        )
+
+        self.sub_cmd_att = self.create_subscription(
+            Vector3,
+            cmd_attitude_topic,
+            self.cmd_attitude_callback,
+            CONTROL_QOS
+        )
+        self.sub_cmd_att_trim = self.create_subscription(
+            Vector3,
+            cmd_attitude_trim_topic,
+            self.cmd_attitude_trim_callback,
+            CONTROL_QOS
+        )
+
+        self.pub_torque = self.create_publisher(
+            Wrench,
+            output_torque_topic,
+            10
+        )
+
+        self.timer = self.create_timer(1.0 / control_rate_hz, self.control_loop)
+
+        self.add_on_set_parameters_callback(self.on_parameter_update)
+
+        self.get_logger().info(&#x27;AttitudeController initialized&#x27;)
+        self.get_logger().info(f&#x27;  imu_topic={imu_topic}&#x27;)
+        self.get_logger().info(f&#x27;  manual_wrench_topic={manual_wrench_topic}&#x27;)
+        self.get_logger().info(f&#x27;  output_torque_topic={output_torque_topic}&#x27;)
+        self.get_logger().info(f&#x27;  cmd_attitude_topic={cmd_attitude_topic}&#x27;)
+        self.get_logger().info(f&#x27;  cmd_attitude_trim_topic={cmd_attitude_trim_topic}&#x27;)
+        self.get_logger().info(f&#x27;  control_rate_hz={control_rate_hz}&#x27;)
+        self.get_logger().info(f&#x27;  control_enabled={self.control_enabled}&#x27;)
+        self.get_logger().info(f&#x27;  capture_initial_target={self.capture_initial_target}&#x27;)
+        self.get_logger().info(f&#x27;  roll_trim_deg={self.roll_trim_deg:.2f}&#x27;)
+        self.get_logger().info(f&#x27;  pitch_trim_deg={self.pitch_trim_deg:.2f}&#x27;)
+        self.get_logger().info(f&#x27;  yaw_hold_enabled={self.yaw_hold_enabled}&#x27;)
+        self.get_logger().info(f&#x27;  yaw_manual_override_threshold={self.yaw_manual_override_threshold}&#x27;)
+        self.get_logger().info(f&#x27;  capture_yaw_target_on_release={self.capture_yaw_target_on_release}&#x27;)
+        self.get_logger().info(f&#x27;  yaw_hold_settle_time_sec={self.yaw_hold_settle_time_sec}&#x27;)
+        self.get_logger().info(f&#x27;  yaw_error_deadband_deg={math.degrees(self.yaw_error_deadband):.2f}&#x27;)
+        self.get_logger().info(
+            f&#x27;  roll_pitch_error_deadband_deg={math.degrees(self.roll_pitch_error_deadband):.2f}&#x27;
+        )
+        self.get_logger().info(
+            f&#x27;  orientation_filter={self.orientation_filter_enabled}, &#x27;
+            f&#x27;measurement_alpha={self.orientation_filter_measurement_alpha:.3f}, &#x27;
+            f&#x27;max_correction_rate_deg={math.degrees(self.orientation_filter_max_correction_rate):.1f}&#x27;
+        )
+        self.get_logger().info(
+            f&#x27;  xy_soft_trim_ignore_forward={self.xy_soft_trim_ignore_forward}, &#x27;
+            f&#x27;forward_surge_sign={self.forward_surge_sign:.1f}, &#x27;
+            f&#x27;xy_threshold={self.xy_motion_protect_threshold:.3f}, &#x27;
+            f&#x27;strong_xy_threshold={self.strong_xy_motion_threshold:.3f}&#x27;
+        )
+        self.get_logger().info(
+            f&#x27;  translation_tilt_ff={self.translation_tilt_ff_enabled}, &#x27;
+            f&#x27;pitch_gain={self.translation_pitch_ff_gain:.3f}, &#x27;
+            f&#x27;roll_gain={self.translation_roll_ff_gain:.3f}, &#x27;
+            f&#x27;max={self.translation_tilt_ff_max:.3f}&#x27;
+        )
+
+    def _update_target_quaternion(self):
+        self.q_target = rpy_to_quat(self.target_roll, self.target_pitch, self.target_yaw)
+        self.target_initialized = True
+
+    def _force_level_roll_pitch_target(self):
+        if not self.level_roll_pitch_target:
+            return
+        self.target_roll = math.radians(self.target_roll_deg + self.roll_trim_deg)
+        self.target_pitch = math.radians(self.target_pitch_deg + self.pitch_trim_deg)
+        self._update_target_quaternion()
+
+    def _capture_current_attitude_as_target(self):
+        self.target_yaw = wrap_to_pi(self.yaw)
+        if self.level_roll_pitch_target:
+            self.target_roll = math.radians(self.target_roll_deg + self.roll_trim_deg)
+            self.target_pitch = math.radians(self.target_pitch_deg + self.pitch_trim_deg)
+        else:
+            self.target_roll = self.control_roll
+            self.target_pitch = self.control_pitch
+        self._update_target_quaternion()
+
+    def _capture_current_yaw_as_target(self):
+        self.target_yaw = wrap_to_pi(self.yaw)
+        self._update_target_quaternion()
+
+    def _set_control_enabled(self, enabled: bool):
+        prev = self.control_enabled
+        self.control_enabled = bool(enabled)
+
+        if self.control_enabled and not prev and self.have_imu:
+            self._reset_control_attitude_filter()
+            self._capture_current_attitude_as_target()
+            self.roll_integral = 0.0
+            self.pitch_integral = 0.0
+            self.get_logger().info(
+                &#x27;Attitude control enabled; captured yaw and kept roll/pitch trim target&#x27;
+            )
+        elif (not self.control_enabled) and prev:
+            self.roll_integral = 0.0
+            self.pitch_integral = 0.0
+            self.pub_torque.publish(Wrench())
+            self.get_logger().info(&#x27;Attitude control disabled; publishing zero torque&#x27;)
+
+    def imu_callback(self, msg: Imu):
+        self.q_current = quat_normalize((
+            msg.orientation.x,
+            msg.orientation.y,
+            msg.orientation.z,
+            msg.orientation.w,
+        ))
+
+        self.roll, self.pitch, self.yaw = quat_to_rpy(*self.q_current)
+
+        self.p_rate = msg.angular_velocity.x
+        self.q_rate = msg.angular_velocity.y
+        self.r_rate = msg.angular_velocity.z
+
+        self.have_imu = True
+
+        if self.capture_initial_target and not self.target_initialized:
+            self._reset_control_attitude_filter()
+            self._capture_current_attitude_as_target()
+            self.get_logger().info(
+                f&#x27;Initial target captured: &#x27;
+                f&#x27;roll={self.target_roll:.3f}, pitch={self.target_pitch:.3f}, yaw={self.target_yaw:.3f}&#x27;
+            )
+
+    def manual_wrench_callback(self, msg: Wrench):
+        self.manual_wrench = msg
+
+    def cmd_attitude_callback(self, msg: Vector3):
+        updated = False
+
+        if not math.isnan(msg.x):
+            self.target_roll = msg.x
+            updated = True
+
+        if not math.isnan(msg.y):
+            self.target_pitch = msg.y
+            updated = True
+
+        if self.yaw_hold_enabled and (not math.isnan(msg.z)):
+            self.target_yaw = wrap_to_pi(msg.z)
+            updated = True
+
+        if not updated:
+            return
+
+        self._update_target_quaternion()
+
+        self.get_logger().info(
+            f&#x27;Updated target attitude: &#x27;
+            f&#x27;roll={self.target_roll:.3f}, pitch={self.target_pitch:.3f}, yaw={self.target_yaw:.3f}&#x27;
+        )
+
+    def cmd_attitude_trim_callback(self, msg: Vector3):
+        updated = False
+
+        if not math.isnan(msg.x):
+            self.roll_trim_deg = math.degrees(msg.x)
+            updated = True
+
+        if not math.isnan(msg.y):
+            self.pitch_trim_deg = math.degrees(msg.y)
+            updated = True
+
+        if not updated:
+            return
+
+        self._force_level_roll_pitch_target()
+        self.get_logger().info(
+            f&#x27;Updated attitude trim: &#x27;
+            f&#x27;roll_trim={self.roll_trim_deg:.1f} deg, &#x27;
+            f&#x27;pitch_trim={self.pitch_trim_deg:.1f} deg&#x27;
+        )
+
+    def _apply_deadband(self, x: float) -&gt; float:
+        return 0.0 if abs(x) &lt; self.torque_deadband else x
+
+    def _reset_control_attitude_filter(self):
+        self.control_roll = self.roll
+        self.control_pitch = self.pitch
+        self.control_attitude_filter_initialized = True
+
+    def _update_control_attitude_filter(self, dt: float):
+        if (
+            not self.orientation_filter_enabled or
+            not self.control_attitude_filter_initialized or
+            dt &lt;= 0.0 or
+            dt &gt; 0.2
+        ):
+            self._reset_control_attitude_filter()
+            return
+
+        predicted_roll = self.control_roll + self.p_rate * dt
+        predicted_pitch = self.control_pitch + self.q_rate * dt
+        alpha = clamp(float(self.orientation_filter_measurement_alpha), 0.0, 1.0)
+        max_correction = max(0.0, self.orientation_filter_max_correction_rate) * dt
+
+        roll_correction = wrap_to_pi(self.roll - predicted_roll) * alpha
+        pitch_correction = wrap_to_pi(self.pitch - predicted_pitch) * alpha
+        if max_correction &gt; 0.0:
+            roll_correction = clamp(roll_correction, -max_correction, max_correction)
+            pitch_correction = clamp(pitch_correction, -max_correction, max_correction)
+
+        self.control_roll = wrap_to_pi(predicted_roll + roll_correction)
+        self.control_pitch = wrap_to_pi(predicted_pitch + pitch_correction)
+
+    def _apply_rp_torque_slew(self, tx_ctrl: float, ty_ctrl: float, dt: float):
+        if dt &lt;= 0.0:
+            max_delta = 0.0
+        else:
+            # rp_torque_slew_rate is torque command units per second.
+            max_delta = max(0.0, self.rp_torque_slew_rate) * min(dt, 0.1)
+        tx_out = clamp(tx_ctrl, self.prev_tx_ctrl - max_delta, self.prev_tx_ctrl + max_delta)
+        ty_out = clamp(ty_ctrl, self.prev_ty_ctrl - max_delta, self.prev_ty_ctrl + max_delta)
+        self.prev_tx_ctrl = tx_out
+        self.prev_ty_ctrl = ty_out
+        return tx_out, ty_out
+
+    def _translation_tilt_feedforward(self, manual_surge: float, manual_sway: float):
+        if not self.translation_tilt_ff_enabled:
+            return 0.0, 0.0
+
+        surge_abs = max(0.0, abs(float(manual_surge)) - self.translation_tilt_ff_deadband)
+        sway_abs = max(0.0, abs(float(manual_sway)) - self.translation_tilt_ff_deadband)
+        drive = max(surge_abs, sway_abs)
+        if drive &lt;= 0.0:
+            return 0.0, 0.0
+
+        limit = max(0.0, abs(float(self.translation_tilt_ff_max)))
+        tx_ff = self.translation_roll_ff_gain * self.target_roll * drive
+        ty_ff = self.translation_pitch_ff_gain * self.target_pitch * drive
+        return clamp(tx_ff, -limit, limit), clamp(ty_ff, -limit, limit)
+
+    def control_loop(self):
+        if not self.have_imu or not self.target_initialized:
+            return
+
+        now = self.get_clock().now()
+        dt = 0.0
+        if self.last_control_time is not None:
+            dt = (now - self.last_control_time).nanoseconds * 1e-9
+        self.last_control_time = now
+
+        out = Wrench()
+        out.force.x = 0.0
+        out.force.y = 0.0
+        out.force.z = 0.0
+        out.torque.x = 0.0
+        out.torque.y = 0.0
+        out.torque.z = 0.0
+
+        if not self.control_enabled:
+            self.prev_tx_ctrl = 0.0
+            self.prev_ty_ctrl = 0.0
+            self.control_attitude_filter_initialized = False
+            self.pub_torque.publish(out)
+            return
+
+        self._update_control_attitude_filter(dt)
+        self._force_level_roll_pitch_target()
+
+        manual_heave = self.manual_wrench.force.z
+        manual_surge = self.manual_wrench.force.x
+        manual_sway = self.manual_wrench.force.y
+        tx_manual = self.manual_wrench.torque.x
+        ty_manual = self.manual_wrench.torque.y
+        tz_manual = self.manual_wrench.torque.z
+
+        # Safety gate: tilt too large
+        if (
+            abs(self.control_roll) &gt; self.large_tilt_disable_rad or
+            abs(self.control_pitch) &gt; self.large_tilt_disable_rad
+        ):
+            self.roll_integral = 0.0
+            self.pitch_integral = 0.0
+            self.prev_tx_ctrl = 0.0
+            self.prev_ty_ctrl = 0.0
+            self.pub_torque.publish(out)
+            return
+
+        # High body-rate guard: keep attitude hold active, but clamp the
+        # derivative term. A hard zero-output gate makes trim attitude drop out
+        # during translation, then snap back when the rate falls.
+        body_rate_mag = vec_norm(self.p_rate, self.q_rate, self.r_rate)
+        rate_limit = max(0.0, self.max_body_rate_for_control)
+        if rate_limit &gt; 1e-6:
+            p_rate_ctrl = clamp(self.p_rate, -rate_limit, rate_limit)
+            q_rate_ctrl = clamp(self.q_rate, -rate_limit, rate_limit)
+            r_rate_ctrl = clamp(self.r_rate, -rate_limit, rate_limit)
+        else:
+            p_rate_ctrl = self.p_rate
+            q_rate_ctrl = self.q_rate
+            r_rate_ctrl = self.r_rate
+        high_body_rate = rate_limit &gt; 1e-6 and body_rate_mag &gt; rate_limit
+
+        # BlueROV-style heading hold:
+        # - yaw stick active: manual yaw rate command wins and the heading target follows current yaw
+        # - yaw stick released: damp yaw rate briefly, then lock the released heading
+        yaw_hold_active = self.yaw_hold_enabled
+        yaw_manual_active = abs(tz_manual) &gt; self.yaw_manual_override_threshold
+        yaw_released = self.prev_yaw_manual_active and not yaw_manual_active
+
+        if yaw_manual_active:
+            self.last_manual_yaw_input_time = now
+            self._capture_current_yaw_as_target()
+        elif yaw_released and self.capture_yaw_target_on_release:
+            self.last_manual_yaw_input_time = now
+            self._capture_current_yaw_as_target()
+            self.get_logger().info(
+                f&#x27;Yaw stick released -&gt; captured heading target: &#x27;
+                f&#x27;{math.degrees(self.target_yaw):+.1f} deg&#x27;
+            )
+
+        self.prev_yaw_manual_active = yaw_manual_active
+
+        # Roll/pitch: direct angle error for robust recovery at large tilt.
+        roll_err = wrap_to_pi(self.target_roll - self.control_roll)
+        pitch_err = wrap_to_pi(self.target_pitch - self.control_pitch)
+        if dt &gt; 1e-6 and not high_body_rate:
+            self.roll_integral += roll_err * dt
+            self.pitch_integral += pitch_err * dt
+            self.roll_integral = clamp(self.roll_integral, -self.roll_integral_limit, self.roll_integral_limit)
+            self.pitch_integral = clamp(self.pitch_integral, -self.roll_integral_limit, self.roll_integral_limit)
+
+        if abs(roll_err) &lt; self.roll_pitch_error_deadband:
+            roll_err = 0.0
+        if abs(pitch_err) &lt; self.roll_pitch_error_deadband:
+            pitch_err = 0.0
+
+        tx_ctrl = self.kp_roll * roll_err + self.ki_roll * self.roll_integral - self.kd_roll * p_rate_ctrl
+        ty_ctrl = self.kp_pitch * pitch_err + self.ki_pitch * self.pitch_integral - self.kd_pitch * q_rate_ctrl
+        tx_ff, ty_ff = self._translation_tilt_feedforward(manual_surge, manual_sway)
+        tx_ctrl += tx_ff
+        ty_ctrl += ty_ff
+
+        # Yaw heading-position hold. Direct yaw error is easier to tune than the
+        # quaternion z component because kp_yaw maps to radian heading error.
+        yaw_err = wrap_to_pi(self.target_yaw - self.yaw)
+        if abs(yaw_err) &lt; self.yaw_error_deadband:
+            yaw_err = 0.0
+        tz_ctrl = 0.0 if not yaw_hold_active else (self.kp_yaw * yaw_err - self.kd_yaw * r_rate_ctrl)
+
+        yaw_settle_active = False
+        if yaw_hold_active and (not yaw_manual_active) and self.last_manual_yaw_input_time is not None:
+            dt_since_manual = (now - self.last_manual_yaw_input_time).nanoseconds * 1e-9
+            yaw_settle_active = (
+                self.capture_yaw_target_on_release and
+                dt_since_manual &lt; self.yaw_hold_settle_time_sec
+            )
+
+        # While user is manually commanding yaw, disable yaw hold contribution
+        if yaw_manual_active:
+            tz_ctrl = 0.0
+        elif yaw_settle_active:
+            # ArduSub/BlueROV-style anti-bounce: briefly damp yaw rate before locking heading.
+            tz_ctrl = -self.kd_yaw * r_rate_ctrl
+            self.target_yaw = wrap_to_pi(self.yaw)
+            self._update_target_quaternion()
+
+        # Make roll/pitch trim hold softer while the pilot is translating.
+        # Forward surge is excluded by default because forward thrust can create
+        # a pitch-up moment; weakening pitch hold there lets a nose-down trim
+        # collapse back toward level.
+        xy_abs = max(abs(float(manual_surge)), abs(float(manual_sway)))
+        forward_surge = float(manual_surge) * float(self.forward_surge_sign)
+        keep_forward_trim = (
+            self.xy_soft_trim_ignore_forward and
+            forward_surge &gt; self.xy_motion_protect_threshold and
+            abs(float(manual_sway)) &lt;= self.strong_xy_motion_threshold
+        )
+        rp_scale = 1.0
+        if keep_forward_trim:
+            mode = &#x27;FORWARD_TRIM_HOLD&#x27;
+        elif xy_abs &gt; self.strong_xy_motion_threshold:
+            rp_scale = self.rp_scale_when_strong_xy_motion
+            mode = &#x27;STRONG_XY_SOFT_TRIM&#x27;
+        elif xy_abs &gt; self.xy_motion_protect_threshold:
+            rp_scale = self.rp_scale_when_xy_motion
+            mode = &#x27;XY_SOFT_TRIM&#x27;
+        else:
+            mode = &#x27;NORMAL&#x27;
+
+        tx_scale = rp_scale
+        ty_scale = rp_scale
+
+        # If the pilot/controller requested a non-level roll or pitch target,
+        # keep that trim authority during translation. Otherwise lateral motion
+        # can make a deliberate 25 deg pitch target collapse toward level until
+        # the stick is released.
+        if abs(self.target_roll) &gt; self.roll_pitch_error_deadband:
+            tx_scale = 1.0
+        if abs(self.target_pitch) &gt; self.roll_pitch_error_deadband:
+            ty_scale = 1.0
+
+        tx_ctrl *= tx_scale
+        ty_ctrl *= ty_scale
+
+        # Protect yaw hold during heave stick input without scaling roll/pitch further.
+        heave_abs = abs(manual_heave)
+        if heave_abs &gt; self.strong_heave_threshold:
+            if not yaw_manual_active:
+                tz_ctrl *= self.yaw_scale_when_strong_heave
+            mode += &#x27;|STRONG_HEAVE_PROTECT&#x27;
+        elif heave_abs &gt; self.heave_protect_threshold:
+            if not yaw_manual_active:
+                tz_ctrl *= self.yaw_scale_when_heave
+            mode += &#x27;|HEAVE_PROTECT&#x27;
+
+        if high_body_rate:
+            mode += &#x27;|RATE_LIMIT&#x27;
+
+        if yaw_manual_active:
+            mode += &#x27;|YAW_MANUAL&#x27;
+        elif yaw_settle_active:
+            mode += &#x27;|YAW_SETTLE&#x27;
+
+        tx_ctrl = clamp(tx_ctrl, -self.tx_limit, self.tx_limit)
+        ty_ctrl = clamp(ty_ctrl, -self.ty_limit, self.ty_limit)
+        tz_ctrl = clamp(tz_ctrl, -self.tz_limit, self.tz_limit)
+
+        tx_ctrl, ty_ctrl = self._apply_rp_torque_slew(tx_ctrl, ty_ctrl, dt)
+
+        # tx_ctrl = self._apply_deadband(tx_ctrl)
+        # ty_ctrl = self._apply_deadband(ty_ctrl)
+        # tz_ctrl = self._apply_deadband(tz_ctrl)
+
+        # Keep existing manual torque bias if any
+        out.torque.x = tx_manual + tx_ctrl
+        out.torque.y = ty_manual + ty_ctrl
+        out.torque.z = tz_manual + tz_ctrl
+
+        self.pub_torque.publish(out)
+
+        self._log_counter += 1
+        # if self._log_counter % 25 == 0:
+        #     self.get_logger().info(
+        #         f&#x27;mode={mode}, heave={manual_heave:.3f}, yaw_manual={tz_manual:.3f}, &#x27;
+        #         f&#x27;target_rpy=({self.target_roll:.3f}, {self.target_pitch:.3f}, {self.target_yaw:.3f}), &#x27;
+        #         f&#x27;ctrl_torque=({tx_ctrl:.4f}, {ty_ctrl:.4f}, {tz_ctrl:.4f}), &#x27;
+        #         f&#x27;out_torque=({out.torque.x:.4f}, {out.torque.y:.4f}, {out.torque.z:.4f}), &#x27;
+        #         f&#x27;rpy=({self.roll:.3f}, {self.pitch:.3f}, {self.yaw:.3f}), &#x27;
+        #         f&#x27;control_rp=({self.control_roll:.3f}, {self.control_pitch:.3f})&#x27;
+        #     )
+
+    def on_parameter_update(self, params):
+        try:
+            for p in params:
+                if p.name == &#x27;kp_roll&#x27;:
+                    self.kp_roll = float(p.value)
+                elif p.name == &#x27;kd_roll&#x27;:
+                    self.kd_roll = float(p.value)
+                elif p.name == &#x27;ki_roll&#x27;:
+                    self.ki_roll = float(p.value)
+                elif p.name == &#x27;kp_pitch&#x27;:
+                    self.kp_pitch = float(p.value)
+                elif p.name == &#x27;kd_pitch&#x27;:
+                    self.kd_pitch = float(p.value)
+                elif p.name == &#x27;ki_pitch&#x27;:
+                    self.ki_pitch = float(p.value)
+                elif p.name == &#x27;kp_yaw&#x27;:
+                    self.kp_yaw = float(p.value)
+                elif p.name == &#x27;kd_yaw&#x27;:
+                    self.kd_yaw = float(p.value)
+
+                elif p.name == &#x27;tx_limit&#x27;:
+                    self.tx_limit = float(p.value)
+                elif p.name == &#x27;ty_limit&#x27;:
+                    self.ty_limit = float(p.value)
+                elif p.name == &#x27;tz_limit&#x27;:
+                    self.tz_limit = float(p.value)
+                elif p.name == &#x27;rp_torque_slew_rate&#x27;:
+                    self.rp_torque_slew_rate = float(p.value)
+
+                elif p.name == &#x27;capture_initial_target&#x27;:
+                    self.capture_initial_target = bool(p.value)
+                elif p.name == &#x27;level_roll_pitch_target&#x27;:
+                    self.level_roll_pitch_target = bool(p.value)
+                    self._force_level_roll_pitch_target()
+                elif p.name == &#x27;target_roll_deg&#x27;:
+                    self.target_roll_deg = float(p.value)
+                    self._force_level_roll_pitch_target()
+                elif p.name == &#x27;target_pitch_deg&#x27;:
+                    self.target_pitch_deg = float(p.value)
+                    self._force_level_roll_pitch_target()
+                elif p.name == &#x27;roll_trim_deg&#x27;:
+                    self.roll_trim_deg = float(p.value)
+                    self._force_level_roll_pitch_target()
+                elif p.name == &#x27;pitch_trim_deg&#x27;:
+                    self.pitch_trim_deg = float(p.value)
+                    self._force_level_roll_pitch_target()
+                elif p.name == &#x27;control_enabled&#x27;:
+                    self._set_control_enabled(bool(p.value))
+
+                elif p.name == &#x27;heave_protect_threshold&#x27;:
+                    self.heave_protect_threshold = float(p.value)
+                elif p.name == &#x27;strong_heave_threshold&#x27;:
+                    self.strong_heave_threshold = float(p.value)
+                elif p.name == &#x27;xy_motion_protect_threshold&#x27;:
+                    self.xy_motion_protect_threshold = float(p.value)
+                elif p.name == &#x27;strong_xy_motion_threshold&#x27;:
+                    self.strong_xy_motion_threshold = float(p.value)
+                elif p.name == &#x27;rp_scale_when_xy_motion&#x27;:
+                    self.rp_scale_when_xy_motion = float(p.value)
+                elif p.name == &#x27;rp_scale_when_strong_xy_motion&#x27;:
+                    self.rp_scale_when_strong_xy_motion = float(p.value)
+                elif p.name == &#x27;xy_soft_trim_ignore_forward&#x27;:
+                    self.xy_soft_trim_ignore_forward = bool(p.value)
+                elif p.name == &#x27;forward_surge_sign&#x27;:
+                    self.forward_surge_sign = float(p.value)
+                elif p.name == &#x27;yaw_scale_when_heave&#x27;:
+                    self.yaw_scale_when_heave = float(p.value)
+                elif p.name == &#x27;yaw_scale_when_strong_heave&#x27;:
+                    self.yaw_scale_when_strong_heave = float(p.value)
+
+                elif p.name == &#x27;yaw_manual_override_threshold&#x27;:
+                    self.yaw_manual_override_threshold = float(p.value)
+                elif p.name == &#x27;yaw_hold_enabled&#x27;:
+                    self.yaw_hold_enabled = bool(p.value)
+                elif p.name == &#x27;capture_yaw_target_on_release&#x27;:
+                    self.capture_yaw_target_on_release = bool(p.value)
+                elif p.name == &#x27;yaw_hold_settle_time_sec&#x27;:
+                    self.yaw_hold_settle_time_sec = float(p.value)
+                elif p.name == &#x27;yaw_error_deadband_deg&#x27;:
+                    self.yaw_error_deadband = math.radians(float(p.value))
+
+                elif p.name == &#x27;max_body_rate_for_control&#x27;:
+                    self.max_body_rate_for_control = float(p.value)
+                elif p.name == &#x27;large_tilt_disable_deg&#x27;:
+                    self.large_tilt_disable_deg = float(p.value)
+                    self.large_tilt_disable_rad = math.radians(self.large_tilt_disable_deg)
+                elif p.name == &#x27;torque_deadband&#x27;:
+                    self.torque_deadband = float(p.value)
+                elif p.name == &#x27;roll_pitch_error_deadband_deg&#x27;:
+                    self.roll_pitch_error_deadband = math.radians(float(p.value))
+                elif p.name == &#x27;roll_integral_limit&#x27;:
+                    self.roll_integral_limit = float(p.value)
+                    self.roll_integral = clamp(self.roll_integral, -self.roll_integral_limit, self.roll_integral_limit)
+                    self.pitch_integral = clamp(self.pitch_integral, -self.roll_integral_limit, self.roll_integral_limit)
+                elif p.name == &#x27;orientation_filter_enabled&#x27;:
+                    self.orientation_filter_enabled = bool(p.value)
+                    self._reset_control_attitude_filter()
+                elif p.name == &#x27;orientation_filter_measurement_alpha&#x27;:
+                    self.orientation_filter_measurement_alpha = float(p.value)
+                elif p.name == &#x27;orientation_filter_max_correction_rate_deg&#x27;:
+                    self.orientation_filter_max_correction_rate = math.radians(float(p.value))
+                elif p.name == &#x27;translation_tilt_ff_enabled&#x27;:
+                    self.translation_tilt_ff_enabled = bool(p.value)
+                elif p.name == &#x27;translation_pitch_ff_gain&#x27;:
+                    self.translation_pitch_ff_gain = float(p.value)
+                elif p.name == &#x27;translation_roll_ff_gain&#x27;:
+                    self.translation_roll_ff_gain = float(p.value)
+                elif p.name == &#x27;translation_tilt_ff_max&#x27;:
+                    self.translation_tilt_ff_max = float(p.value)
+                elif p.name == &#x27;translation_tilt_ff_deadband&#x27;:
+                    self.translation_tilt_ff_deadband = float(p.value)
+
+            self.get_logger().info(&#x27;Attitude parameters updated at runtime&#x27;)
+            return SetParametersResult(successful=True)
+        except Exception as e:
+            return SetParametersResult(successful=False, reason=str(e))
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = AttitudeController()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == &#x27;__main__&#x27;:
+    main()</code></pre>
+        </details>
+      </section>
+    </main>
+  </div>
+</body>
+</html>
