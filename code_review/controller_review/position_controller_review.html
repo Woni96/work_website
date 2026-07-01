@@ -147,7 +147,8 @@ def quat_rotate_vector(q, v):
             <p>이 계층이 있어야 yaw가 바뀌어도 같은 world 위치를 유지할 수 있습니다. 즉 이 controller의 존재 이유 자체가 여기서 시작됩니다.</p>
             <h3>리뷰 메모</h3>
             <p>수학 유틸리티는 단순하지만 매우 중요합니다. 좌표계가 꼬이면 controller tuning 문제가 아니라 frame mismatch 문제가 됩니다.</p>
-            
+            <h3>상세 해설</h3><p>position hold에서 가장 중요한 것은 오차 자체보다 오차가 어느 좌표계에서 정의되는가입니다. 이 유틸리티 묶음은 DVL 속도, hold target, 최종 force를 world/body frame 사이에서 일관되게 회전시키는 기반을 제공합니다.</p>
+<p>즉 이 코드가 단순 planar PD가 아니라 yaw가 변해도 같은 world 위치를 붙잡을 수 있는 이유가 바로 이 계층에 있습니다. 문제가 생기면 게인을 의심하기 전에 frame rotation이 올바른지 먼저 확인해야 합니다.</p>
             
           </article>
         </div>
@@ -375,8 +376,9 @@ def _dvl_position_is_finite(self, msg: PointStamped) -&gt; bool:
             <p>센서가 유효하지 않으면 output을 0으로 내리고, enable edge에서 hold target을 다시 캡처할 수 있습니다.</p>
             <h3>리뷰 메모</h3>
             <p>이 보조 계층 덕분에 publish 조건이 깔끔합니다. 실제 control law보다 앞단의 상태 판정이 잘 분리된 점이 장점입니다.</p>
-            
-            
+            <h3>상세 해설</h3><p>이 함수들은 각각 작아 보여도 제어기 안정성의 기본 골격을 담당합니다. <code>_has_valid_position_reference()</code>는 DVL 기반 상태가 충분히 최신인지 검사하고, <code>_set_control_enabled()</code>는 enable edge에서 target 재캡처와 zero-force 출력을 관리합니다. <code>_capture_current_position_as_target()</code>은 pilot release나 enable 시점에서 hold 기준점을 다시 정합니다.</p>
+<p>즉 이 계층은 &#x27;position error를 계산하기 전에 무엇이 유효한 상태인가&#x27;를 먼저 정의합니다. 센서가 stale이거나 armed 상태가 아닌데도 force를 계속 내지 않도록 막는 방어 로직이 여기 모여 있습니다.</p>
+            <h3>이 함수와 관련된 파라미터</h3><ul class="parameter-list"><li><strong><code>valid_timeout_sec</code></strong><span>position reference가 stale인지 판단하는 기준 시간입니다.</span></li><li><strong><code>control_enabled</code></strong><span>hold force 계산 자체를 허용할지 정합니다.</span></li><li><strong><code>force_deadband</code></strong><span>작은 force를 제거하는 deadband 크기입니다.</span></li><li><strong><code>capture_initial_position_target</code></strong><span>초기 유효 position을 target으로 자동 캡처할지 정합니다.</span></li></ul>
           </article>
         </div>
       </section> <section id="manual-wrench-callback" class="review-section">
@@ -416,8 +418,9 @@ def _dvl_position_is_finite(self, msg: PointStamped) -&gt; bool:
             <p>조종자가 이동을 끝내고 stick을 놓았을 때 그 자리에서 poshold가 다시 잠기게 만드는 함수입니다.</p>
             <h3>리뷰 메모</h3>
             <p>운용감은 좋지만 freshness timeout이 없어서 마지막 manual XY가 남으면 poshold 복귀가 안 될 수 있습니다. 현재 코드의 대표적인 개선 후보입니다.</p>
-            
-            
+            <h3>상세 해설</h3><p>이 함수는 manual XY를 단순히 저장하는 것보다, 현재 자동 hold를 잠시 끊어야 하는지 판단하는 역할이 더 큽니다. threshold를 넘는 입력이 들어오면 <code>manual_xy_active</code>를 켜고, release edge에서 현재 위치를 새 target으로 캡처해 자연스럽게 poshold로 복귀하게 만듭니다.</p>
+<p>즉 사용자는 &#x27;직접 움직이다가 손을 놓으면 그 자리에서 다시 hold&#x27;되는 감각을 얻게 됩니다. 다만 freshness 관리가 없기 때문에, 입력 주기가 끊겼을 때 manual 상태가 오래 남을 수 있다는 점은 문서에서 분명히 짚어야 합니다.</p>
+            <h3>이 함수와 관련된 파라미터</h3><ul class="parameter-list"><li><strong><code>manual_xy_override_threshold</code></strong><span>manual XY가 auto hold를 끊는 기준입니다.</span></li><li><strong><code>capture_target_on_manual_release</code></strong><span>pilot release 시 현재 위치를 새 hold target으로 잡을지 결정합니다.</span></li></ul>
           </article>
         </div>
       </section> <section id="dvl" class="review-section">
@@ -511,8 +514,9 @@ def dvl_callback(self, msg: DVLData):
             <p>센서 구성에 따라 absolute hold와 dead-reckoning hold를 모두 지원하게 해줍니다.</p>
             <h3>리뷰 메모</h3>
             <p>유연성이 높고 실제 운용에 유리합니다. 특히 <code>use_dvl_position=False</code> fallback 설계는 테스트 단계에서 큰 장점이 됩니다.</p>
-            
-            
+            <h3>상세 해설</h3><p>이 계층은 position controller가 어떤 형태의 DVL 정보를 받아도 내부 world-frame position/velocity 상태로 변환해 주는 센서 적응 계층입니다. <code>dvl_position_callback()</code>은 absolute position이 있을 때 이를 직접 hold 기준으로 쓰고, <code>dvl_callback()</code>은 body-frame velocity를 IMU yaw를 이용해 world frame으로 돌린 뒤 적분 fallback까지 수행합니다.</p>
+<p>즉 센서가 완벽하지 않아도 position hold를 최대한 유지하려는 실무형 구조입니다. absolute 위치와 dead-reckoning 위치가 어떻게 전환되는지 이해하면, poshold drift의 원인이 센서인지 controller인지 구분하기 쉬워집니다.</p>
+            <h3>이 함수와 관련된 파라미터</h3><ul class="parameter-list"><li><strong><code>use_dvl_position</code></strong><span>absolute DVL position을 직접 사용할지 정합니다.</span></li><li><strong><code>integrate_dvl_velocity_when_position_unavailable</code></strong><span>position이 없을 때 velocity 적분 fallback을 사용할지 정합니다.</span></li><li><strong><code>dvl_mount_roll_deg</code>, <code>dvl_mount_pitch_deg</code>, <code>dvl_mount_yaw_deg</code></strong><span>DVL 축이 body frame과 어긋난 경우 보정합니다.</span></li><li><strong><code>valid_timeout_sec</code></strong><span>최근 DVL 기준을 얼마나 오래 유효로 볼지 정합니다.</span></li></ul>
           </article>
         </div>
       </section> <section id="publish-position-estimate" class="review-section">
@@ -541,7 +545,8 @@ def dvl_callback(self, msg: DVLData):
             <p>상위 시각화, 디버깅, 로깅에서 controller 내부 상태를 그대로 볼 수 있게 해줍니다.</p>
             <h3>리뷰 메모</h3>
             <p>작은 함수지만 디버깅 가치가 큽니다. 이런 상태 출력이 없으면 position hold 문제를 센서 문제와 구분하기 어렵습니다.</p>
-            
+            <h3>상세 해설</h3><p>이 함수는 controller 내부가 현재 어떤 위치를 믿고 있는지 외부로 드러내는 관찰 창입니다. 사용자는 이 publish를 통해 hold target과 현재 estimate 사이의 차이를 시각화하거나 로그로 비교할 수 있습니다.</p>
+<p>실제 제어 문제는 &#x27;힘이 이상하다&#x27;보다 &#x27;컨트롤러가 잘못된 위치를 믿고 있다&#x27;에서 시작되는 경우가 많습니다. 그래서 이런 상태 publish 함수는 작아도 리뷰에서 반드시 의미를 설명해 줘야 합니다.</p>
             
           </article>
         </div>
@@ -703,7 +708,8 @@ def dvl_callback(self, msg: DVLData):
             <p>테스트 중 poshold의 stiffness와 damping을 바로 바꿀 수 있습니다.</p>
             <h3>리뷰 메모</h3>
             <p>runtime tuning은 강점이지만, 어떤 파라미터가 어떤 함수를 통해 결과에 연결되는지 문서가 꼭 필요합니다. 이번 리뷰 문서가 그 연결을 설명하는 역할을 합니다.</p>
-            
+            <h3>상세 해설</h3><p>position hold는 gain뿐 아니라 sensor strategy, manual override policy, yaw damping 정책을 함께 튜닝해야 합니다. 즉 이 함수는 단순 PD gain 조정기가 아니라, 제어 law와 센서 해석 정책을 함께 바꾸는 관리 포인트입니다.</p>
+<p>그래서 문서에서도 각 파라미터를 단독 설명하는 수준을 넘어, 어떤 함수에서 사용되고 어떤 동작 분기를 바꾸는지까지 함께 설명하는 것이 중요합니다.</p>
             
           </article>
         </div>

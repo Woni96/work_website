@@ -115,7 +115,8 @@
             <p>depth sensor가 기체 중심에서 떨어져 있을 때, pitch/roll에 의해 측정 depth가 흔들리는 문제를 보정할 수 있게 해줍니다.</p>
             <h3>리뷰 메모</h3>
             <p>작은 함수지만 depth sensor offset compensation의 핵심 기반입니다. 이 함수가 없으면 IMU를 depth controller가 활용할 방법이 사라집니다.</p>
-            
+            <h3>상세 해설</h3><p>depth sensor가 기체 중심이 아니라 다른 위치에 달려 있으면, 같은 수심에서도 pitch/roll에 따라 센서의 world z 좌표가 달라집니다. 이 함수는 바로 그 보정을 위해 body z축이 world에서 어떻게 놓여 있는지를 계산합니다.</p>
+<p>즉 depth controller가 &#x27;수심&#x27;만 보는 것 같아도 실제로는 자세 정보를 함께 써서 센서 물리 위치를 보정하는 구조이고, 이 함수가 그 수학적 출발점입니다.</p>
             
           </article>
         </div>
@@ -447,8 +448,9 @@ def clamp_target_depth(self):
             <p>ROV가 arm 될 때 current depth를 target으로 잡고, disarm 시 integrator와 출력 상태를 초기화합니다. 즉 이 계층은 안전성과 target 일관성을 담당합니다.</p>
             <h3>리뷰 메모</h3>
             <p>상태 전이가 비교적 명확합니다. 실무에서는 <code>depth_control_is_active()</code> 같은 함수가 있어야 상위 시스템에서 상태를 해석하기 쉬워집니다.</p>
-            
-            
+            <h3>상세 해설</h3><p>이 계층은 depth controller가 &#x27;언제 계산할 수 있는가&#x27;보다 &#x27;언제 계산해야 하는가&#x27;를 정의합니다. <code>armed_callback()</code>은 arm/disarm 전이에서 integrator와 last output 같은 내부 상태를 정리하고, <code>publish_depth_active()</code>는 상위 merger나 UI가 depth hold 상태를 명시적으로 알 수 있게 합니다. <code>clamp_target_depth()</code>는 target이 물리적으로 지나치게 벗어나지 않도록 제한하는 방어 계층입니다.</p>
+<p>즉 PID 수식은 depth를 맞추는 역할이고, 이 계층은 그 PID가 잘못된 상태에서 과하게 일하지 않도록 경계를 세우는 역할입니다.</p>
+            <h3>이 함수와 관련된 파라미터</h3><ul class="parameter-list"><li><strong><code>control_enabled</code></strong><span>depth hold 계산 자체를 허용할지 정합니다.</span></li><li><strong><code>max_depth</code>, <code>min_depth</code></strong><span>있다면 target clamp에 직접 연결되는 안전 한계입니다.</span></li></ul>
           </article>
         </div>
       </section> <section id="capture-manual-release-target" class="review-section">
@@ -480,8 +482,9 @@ def clamp_target_depth(self):
             <p>이 함수가 조종자가 stick을 놓은 뒤 depth hold가 어디에서 다시 잠길지를 결정합니다.</p>
             <h3>리뷰 메모</h3>
             <p>운용 철학은 분명하지만 <code>current_depth + offset</code>은 직관과 다를 수 있습니다. 오프셋이 항상 들어가면 &#x27;놓은 자리 유지&#x27;보다 &#x27;조금 이동한 자리 유지&#x27;가 되어 사용자 혼란을 줄 수 있습니다.</p>
-            
-            
+            <h3>상세 해설</h3><p>이 함수는 manual heave 조작이 끝났을 때 depth hold가 다시 어느 수심을 목표로 삼을지 결정합니다. 현재 구현은 단순히 마지막 stick 명령을 끄는 것이 아니라, 현재 depth를 기준으로 새 target을 다시 잡는 철학을 갖고 있습니다.</p>
+<p>따라서 이 함수의 존재는 depth controller가 &#x27;추력 hold&#x27;가 아니라 &#x27;목표 수심 hold&#x27;라는 점을 분명히 보여줍니다. 사용자가 stick을 놓은 순간 즉시 안정적으로 잠기는 감각을 좌우하는 핵심 함수입니다.</p>
+            <h3>이 함수와 관련된 파라미터</h3><ul class="parameter-list"><li><strong><code>manual_heave_release_target_offset</code></strong><span>release 시 현재 depth에서 얼마나 이동한 위치를 새 target으로 삼을지 정합니다.</span></li></ul>
           </article>
         </div>
       </section> <section id="compensate-depth-sensor-offset" class="review-section">
@@ -524,8 +527,9 @@ def compensate_depth_sensor_offset(self, sensor_depth: float) -&gt; float:
             <p>기체가 기울어져도 가짜 depth 변화에 과민 반응하지 않게 해 줍니다. 즉 depth hold가 실제 수심 변화를 더 정확히 보게 됩니다.</p>
             <h3>리뷰 메모</h3>
             <p>이 함수는 실전적인 품질을 크게 올리는 부분입니다. 센서 장착 위치가 중심에서 벗어난 수중체에서는 특히 의미가 큽니다.</p>
-            
-            
+            <h3>상세 해설</h3><p>이 함수는 센서가 측정한 raw depth를 그대로 믿지 않고, 현재 자세와 센서 오프셋을 이용해 기체 기준점 depth로 다시 환산합니다. 즉 pitch를 크게 주는 순간 센서가 위아래로 움직여 생기는 가짜 depth 변화에 controller가 속지 않도록 합니다.</p>
+<p>실제 운용에서는 이 차이가 큽니다. 보정이 없으면 전진/상승 동작과 자세 변화가 섞일 때 depth hold가 필요 이상으로 heave를 흔들 수 있는데, 이 함수가 그 coupling을 줄여 줍니다.</p>
+            <h3>이 함수와 관련된 파라미터</h3><ul class="parameter-list"><li><strong><code>depth_sensor_offset_x/y/z</code></strong><span>센서가 기체 기준점에서 얼마나 떨어져 있는지 나타냅니다.</span></li><li><strong><code>depth_sensor_offset_compensation_enabled</code></strong><span>자세 기반 위치 보정을 사용할지 정합니다.</span></li></ul>
           </article>
         </div>
       </section> <section id="manual-freshness" class="review-section">
@@ -577,8 +581,9 @@ def clear_stale_manual_heave(self, now):
             <p>조종기 신호가 끊겼을 때 controller가 마지막 nonzero heave를 계속 믿는 문제를 막습니다.</p>
             <h3>리뷰 메모</h3>
             <p>이 계층은 현재 코드베이스에서 가장 좋은 패턴 중 하나입니다. attitude/position도 이 freshness 전략을 가져오면 전체 일관성이 더 좋아집니다.</p>
-            
-            
+            <h3>상세 해설</h3><p>이 묶음은 manual input을 단순한 값이 아니라 시간축이 있는 상태로 다룬다는 점에서 중요합니다. <code>manual_wrench_callback()</code>이 마지막 입력과 시각을 저장하고, <code>manual_wrench_is_fresh()</code>가 그것이 아직 유효한지 판단하며, <code>clear_stale_manual_heave()</code>가 오래된 입력을 안전하게 0으로 복구합니다.</p>
+<p>즉 이 계층은 통신 끊김이나 joystick 정지 상황에서 마지막 nonzero 입력이 controller 안에 유령처럼 남아 있는 문제를 막습니다. 실전 제어 소프트웨어에서는 이런 freshness 처리가 PID 게인만큼 중요합니다.</p>
+            <h3>이 함수와 관련된 파라미터</h3><ul class="parameter-list"><li><strong><code>manual_heave_override_threshold</code></strong><span>manual heave가 실제 override로 간주되는 최소 크기입니다.</span></li><li><strong><code>manual_wrench_timeout_sec</code></strong><span>이 시간이 지나면 마지막 manual 입력을 stale로 보고 지웁니다.</span></li></ul>
           </article>
         </div>
       </section> <section id="depth-callback" class="review-section">
@@ -801,7 +806,8 @@ def clear_stale_manual_heave(self, now):
             <p>실험 중 depth 감각과 안전 정책을 바로 수정할 수 있게 해줍니다.</p>
             <h3>리뷰 메모</h3>
             <p>runtime tuning 친화적이지만, 파라미터가 많을수록 문서가 중요합니다. 이번 리뷰 사이트에서 이 함수가 중요한 이유도 바로 그 때문입니다.</p>
-            
+            <h3>상세 해설</h3><p>depth hold는 겉보기보다 정책 파라미터가 많습니다. direct heave처럼 느껴질지, target depth rate처럼 느껴질지, release 후 즉시 잠길지, 상승 방향을 얼마나 제한할지 모두 런타임에 바뀔 수 있습니다.</p>
+<p>따라서 이 함수는 단순 관리 루틴이 아니라 현장 튜닝 인터페이스입니다. 리뷰 문서가 파라미터-동작 연결을 자세히 설명해야 하는 이유가 여기 있습니다.</p>
             
           </article>
         </div>

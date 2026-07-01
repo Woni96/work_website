@@ -159,7 +159,8 @@ def quat_to_rpy(x: float, y: float, z: float, w: float):
             <p>allocation 행렬과 IMU 기반 보상 항의 수학적 기반을 제공합니다.</p>
             <h3>리뷰 메모</h3>
             <p>작은 함수지만 allocator가 단순 mixer가 아니라 IMU-aware allocation이라는 점을 보여줍니다.</p>
-            
+            <h3>상세 해설</h3><p>allocator에서 이 유틸리티들은 단순 계산 편의 함수가 아니라, 뒤쪽 보상 로직과 allocation geometry가 모두 기대고 있는 수학 기반입니다. <code>normalize_group_unit()</code>은 한 그룹 출력이 saturation을 넘지 않도록 정규화하고, <code>quat_to_rotation_z_row()</code>는 현재 기체의 기울기 정보를 보상 항 계산에 사용할 수 있게 해 줍니다.</p>
+<p>즉 allocator가 고정된 행렬 곱셈기를 넘어, 현재 자세를 아는 분배기처럼 동작하게 만드는 첫 계층입니다.</p>
             
           </article>
         </div>
@@ -480,8 +481,9 @@ def joy_speed_scale_callback(self, msg: Float64):
             <p>이 함수들이 있어 allocator는 단순 분배가 아니라 현재 자세와 운용 상태를 고려하는 smart mixer가 됩니다.</p>
             <h3>리뷰 메모</h3>
             <p>상위 controller와 allocator가 느슨하지만 의미 있게 연결되어 있습니다.</p>
-            
-            
+            <h3>상세 해설</h3><p>이 계층은 allocator가 독립적인 하위 노드이면서도 상위 자세 제어 의도와 조종 상태를 읽을 수 있게 해 줍니다. <code>imu_callback()</code>은 현재 pitch/roll을 보상 함수들에 제공하고, <code>cmd_attitude_callback()</code> 및 <code>cmd_attitude_trim_callback()</code>은 목표 자세 기준을 allocator 보상에 연결합니다. <code>output_scale_callback()</code>과 <code>joy_speed_scale_callback()</code>은 전체 추진 크기를 런타임에 조절하는 운영 인터페이스입니다.</p>
+<p>즉 allocator는 단순 수동 mixer가 아니라, 상위 제어 의도와 현재 기체 자세를 함께 반영하는 output shaping layer입니다.</p>
+            <h3>이 함수와 관련된 파라미터</h3><ul class="parameter-list"><li><strong><code>cmd_attitude_topic</code>, <code>cmd_attitude_trim_topic</code></strong><span>목표 pitch/trim 기준을 allocator 보상에 전달합니다.</span></li><li><strong><code>output_scale_topic</code>, <code>joy_speed_scale_topic</code>, <code>use_joy_speed_scale_for_output</code></strong><span>최종 thruster 출력의 전체 크기를 외부에서 조정합니다.</span></li></ul>
           </article>
         </div>
       </section> <section id="compensation" class="review-section">
@@ -577,8 +579,9 @@ def imu_pitch_hold_compensation(self, fx: float) -&gt; float:
             <p>이 함수들이 켜지면 allocator는 단순 분배기에서 벗어나, 기체 자세와 운동 모드에 따라 더 실용적인 출력을 냅니다.</p>
             <h3>리뷰 메모</h3>
             <p>이 부분이 가장 실험적이면서도 고급스럽습니다. 동시에 gain 의존성이 큰 영역이므로 기능별 로그와 문서가 꼭 있어야 합니다.</p>
-            
-            
+            <h3>상세 해설</h3><p>이 묶음은 allocator를 단순한 TAM 분배기에서 실제 운용형 shaping node로 바꿔 주는 핵심입니다. <code>level_horizontal_heave_compensation()</code>은 기체가 기울어진 상태에서 수평 추력이 수직 성분을 만드는 문제를 완화하고, <code>attitude_priority_horizontal_scale()</code>은 자세 토크 요구가 클 때 수평 이동을 일부 희생하게 만듭니다. <code>surge_pitch_moment_compensation()</code>과 <code>imu_pitch_hold_compensation()</code>은 전진 thrust와 현재 pitch 상태를 반영해 추가적인 수직 보상을 생성합니다.</p>
+<p>즉 이 계층은 &#x27;요구 wrench&#x27;와 &#x27;실제 기체가 체감하는 거동&#x27; 사이의 간극을 메우는 경험적 보상층입니다. 튜닝 난이도는 있지만, 제대로 맞으면 상위 제어기가 덜 힘들어집니다.</p>
+            <h3>이 함수와 관련된 파라미터</h3><ul class="parameter-list"><li><strong><code>level_horizontal_compensation_*</code></strong><span>수평 추진에 따라 생기는 heave leak 보상 정책입니다.</span></li><li><strong><code>attitude_priority_horizontal_slowdown_*</code></strong><span>자세 토크가 커질수록 horizontal 출력을 얼마나 줄일지 정합니다.</span></li><li><strong><code>surge_pitch_moment_*</code></strong><span>전진 추력이 만드는 pitch moment 보상 강도와 활성 조건입니다.</span></li><li><strong><code>imu_pitch_hold_*</code></strong><span>현재/목표 pitch 차이에 따라 추가 보상을 넣는 allocator 내부 hold 파라미터입니다.</span></li></ul>
           </article>
         </div>
       </section> <section id="init-matrices" class="review-section">
@@ -662,8 +665,9 @@ def imu_pitch_hold_compensation(self, fx: float) -&gt; float:
             <p>기체 배치가 이 함수에 담깁니다. 행렬이 틀리면 heave만 줘도 pitch가 생기고, yaw만 줘도 sway가 생깁니다.</p>
             <h3>리뷰 메모</h3>
             <p>allocator 해석의 핵심입니다. 실제 모델과 이 함수의 thruster geometry가 맞는지 항상 함께 검증해야 합니다.</p>
-            
-            
+            <h3>상세 해설</h3><p>이 함수는 기체의 thruster 위치와 방향을 수학 모델로 고정하는 구간입니다. 수평 4기와 수직 4기의 각 레버암과 thrust 방향이 여기서 TAM과 pseudo-inverse 행렬로 변환됩니다.</p>
+<p>따라서 allocator 문제의 상당수는 사실 이 함수에서 시작됩니다. yaw만 줬는데 sway가 섞이거나 heave만 줬는데 pitch가 생긴다면, 게인보다 먼저 이 geometry와 부호 정의가 실제 하드웨어와 일치하는지 검증해야 합니다.</p>
+            <h3>이 함수와 관련된 파라미터</h3><ul class="parameter-list"><li><strong><code>rear_vertical_bias</code>, <code>pitch_torque_gain</code></strong><span>수직 thruster 분배 행렬이 실제로 어떤 성향을 띨지에 간접적으로 영향을 줍니다.</span></li></ul>
           </article>
         </div>
       </section> <section id="allocation-shaping" class="review-section">
@@ -739,8 +743,9 @@ def apply_slew_rate(self, target):
             <p>수치적으로는 같은 wrench라도 actuator 친화성은 크게 달라집니다. 이 함수들이 saturation 시 거동과 응답 속도를 정합니다.</p>
             <h3>리뷰 메모</h3>
             <p>현재 allocator가 heuristic allocator라는 점이 가장 잘 드러나는 구간입니다. 이 계층 덕분에 practical하지만, 최적화 기반 allocator와는 성격이 다릅니다.</p>
-            
-            
+            <h3>상세 해설</h3><p>이 함수들은 이상적인 연속 wrench를 실제 actuator가 낼 수 있는 명령열로 다듬는 후처리 계층입니다. <code>add_component_with_headroom()</code>과 <code>allocate_priority_components()</code>는 saturation 가까이에서 어떤 성분을 먼저 살릴지 결정하고, <code>apply_deadband()</code>는 너무 작은 명령을 없애 chatter를 줄이며, <code>apply_slew_rate()</code>는 한 번에 급격히 바뀌는 thrust를 막습니다.</p>
+<p>즉 allocator 품질은 행렬 해석만으로 끝나지 않습니다. 같은 wrench라도 이런 shaping 계층이 다르면 실제 모터 체감, 발열, 응답성, 자세 안정성이 크게 달라집니다.</p>
+            <h3>이 함수와 관련된 파라미터</h3><ul class="parameter-list"><li><strong><code>slew_rate</code></strong><span>출력이 시간적으로 얼마나 빨리 변할 수 있는지 제한합니다.</span></li><li><strong><code>output_deadband</code></strong><span>아주 작은 thrust 명령을 제거합니다.</span></li><li><strong><code>max_output</code>, <code>output_scale</code></strong><span>최종 thrust의 절대 크기와 전체 배율을 정합니다.</span></li></ul>
           </article>
         </div>
       </section> <section id="callback" class="review-section">
@@ -1014,7 +1019,8 @@ def apply_slew_rate(self, target):
             <p>allocator tuning을 빠르게 반복할 수 있게 해줍니다.</p>
             <h3>리뷰 메모</h3>
             <p>실험 속도를 크게 올리는 좋은 구조입니다. 이번 리뷰 문서에서 함수-파라미터 연결을 설명하는 이유도 이 함수 때문입니다.</p>
-            
+            <h3>상세 해설</h3><p>allocator는 실제로 현장 튜닝 비중이 매우 높은 모듈입니다. thrust geometry는 고정되어 있어도, gain과 compensation만으로도 체감 조종감이 크게 달라집니다. 이 함수는 그 조정을 런타임에 가능하게 만들어 테스트 반복 속도를 높여 줍니다.</p>
+<p>대신 문서가 부족하면 위험합니다. 어떤 파라미터가 allocation 행렬 이전에 적용되는지, 어떤 것은 compensation이고 어떤 것은 최종 shaping인지 구분되지 않으면 잘못된 축을 튜닝할 수 있기 때문입니다.</p>
             
           </article>
         </div>

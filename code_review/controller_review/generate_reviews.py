@@ -91,6 +91,13 @@ MODULES: tuple[ModuleConfig, ...] = (
                     "이 계층은 제어식의 기반이라서 작아 보여도 중요합니다. "
                     "자세 제어가 갑자기 반대로 튀거나 yaw 오차가 크게 보이는 문제는 여기서 시작되는 경우가 많습니다."
                 ),
+                details=(
+                    "이 유틸리티 묶음은 attitude controller가 어떤 좌표 표현을 믿고 있는지 보여주는 기반입니다. "
+                    "`quat_normalize()`는 센서 quaternion의 수치 안정성을 확보하고, `quat_mul()`과 `quat_conj()`는 목표 자세와 현재 자세의 관계를 계산할 수 있게 해 줍니다. "
+                    "`quat_to_rpy()`와 `rpy_to_quat()`는 사람이 이해하기 쉬운 roll/pitch/yaw와 내부 quaternion 표현을 오가는 다리 역할을 합니다.\n\n"
+                    "특히 `wrap_to_pi()`는 yaw hold에서 필수적입니다. heading target이 179도이고 현재 yaw가 -179도일 때, 이 함수를 거치지 않으면 오차를 358도로 해석해 잘못된 큰 토크가 나올 수 있습니다. "
+                    "즉 이 계층은 '작은 보조 함수'가 아니라 제어기의 오차 정의와 좌표계 일관성을 지키는 기반 계층입니다."
+                ),
             ),
             ReviewItem(
                 heading="`__init__()`",
@@ -143,6 +150,19 @@ MODULES: tuple[ModuleConfig, ...] = (
                 review=(
                     "이 코드의 운용 감각은 꽤 좋습니다. 특히 yaw target을 현재 yaw로 다시 잡는 설계는 실제 조종 감각을 부드럽게 만듭니다."
                 ),
+                details=(
+                    "이 함수들은 모두 'target attitude를 언제, 무엇으로 재정의할 것인가'에 답하는 계층입니다. "
+                    "`_capture_current_attitude_as_target()`은 현재 기체 자세를 그대로 목표로 잠그고, `_capture_current_yaw_as_target()`은 yaw만 현재값으로 다시 잡습니다. "
+                    "`_force_level_roll_pitch_target()`은 roll/pitch를 level 또는 trim 기준으로 되돌리는 강한 정책 함수입니다.\n\n"
+                    "운용 관점에서 중요한 점은, 이 계층이 단순한 초기화 코드가 아니라 control loop가 참조하는 목표 상태를 직접 바꾼다는 것입니다. "
+                    "따라서 기체가 '왜 지금 이 자세를 목표로 삼고 있는지'를 이해하려면 PID 게인보다 먼저 이 계층을 봐야 합니다."
+                ),
+                parameter_notes=(
+                    ("`capture_initial_target`", "첫 IMU 수신 시 현재 자세를 목표로 잡을지 결정합니다."),
+                    ("`level_roll_pitch_target`, `target_roll_deg`, `target_pitch_deg`", "roll/pitch target을 항상 수평 또는 지정된 trim 기준으로 강제할지 정합니다."),
+                    ("`roll_trim_deg`, `pitch_trim_deg`", "완전한 level 대신 운용상 필요한 기준 기울기를 target에 더합니다."),
+                    ("`capture_yaw_target_on_release`", "manual yaw를 놓은 뒤 현재 heading을 다시 잠글지 정합니다."),
+                ),
             ),
             ReviewItem(
                 heading="`imu_callback()`",
@@ -157,6 +177,12 @@ MODULES: tuple[ModuleConfig, ...] = (
                 review=(
                     "초기 target capture와 IMU 상태 갱신이 한 곳에 모여 있어 흐름은 명확합니다. "
                     "다만 manual freshness와는 독립이라 이후 control loop가 오래된 manual 입력을 그대로 읽을 수 있습니다."
+                ),
+                details=(
+                    "이 함수는 attitude controller의 센서 입력 관문입니다. quaternion에서 현재 roll/pitch/yaw를 해석하고, body rate를 읽어 control loop가 사용할 최신 피드백 상태를 갱신합니다. "
+                    "또한 첫 IMU가 들어왔을 때 target attitude를 초기화하는 역할도 함께 담당합니다.\n\n"
+                    "즉 이 함수는 단순한 센서 수신기가 아니라, '제어를 시작할 준비가 되었는가'를 판단하는 초기화 관문이기도 합니다. "
+                    "IMU 데이터가 흔들리거나 지연되면 이후 제어 오차 계산 전체가 흔들리므로, 디버깅 시에는 토크 출력보다 먼저 이 함수가 갱신하는 상태를 확인해야 합니다."
                 ),
             ),
             ReviewItem(
@@ -173,6 +199,16 @@ MODULES: tuple[ModuleConfig, ...] = (
                     "이 필터는 attitude hold를 덜 거칠게 만들어 주는 좋은 계층입니다. "
                     "또한 `dt`가 비정상이면 reset하도록 만들어 센서 타이밍 문제에 비교적 안전합니다."
                 ),
+                details=(
+                    "이 함수는 IMU measurement를 곧바로 제어 오차에 넣지 않고, 예측과 보정을 섞어 조금 더 매끈한 `control attitude`를 만듭니다. "
+                    "body rate를 적분해 예측한 자세를 만들고, measurement와의 차이를 제한된 correction rate로만 따라가게 해 순간적인 센서 튐이 바로 torque 튐으로 이어지지 않게 합니다.\n\n"
+                    "결국 이 계층은 observer에 가까운 역할을 합니다. 측정값의 진실성은 유지하되, 제어 대상은 조금 더 조종 친화적인 상태로 바꿔 쓰는 구조입니다."
+                ),
+                parameter_notes=(
+                    ("`orientation_filter_enabled`", "필터를 켤지, IMU 자세를 그대로 쓸지 결정합니다."),
+                    ("`orientation_filter_measurement_alpha`", "measurement correction 비중을 정합니다."),
+                    ("`orientation_filter_max_correction_rate_deg`", "한 주기에서 measurement 쪽으로 얼마나 빠르게 끌려갈지 제한합니다."),
+                ),
             ),
             ReviewItem(
                 heading="`_translation_tilt_feedforward()`",
@@ -187,6 +223,18 @@ MODULES: tuple[ModuleConfig, ...] = (
                 review=(
                     "기능 자체는 고급스럽지만, 튜닝 의존성이 큽니다. "
                     "gain이 과하면 조종감이 뻣뻣해질 수 있어 실제 운용 로그와 함께 봐야 합니다."
+                ),
+                details=(
+                    "이 함수는 translation 명령이 들어왔을 때 발생할 것으로 예상되는 기체 기울어짐을 PID가 뒤늦게 복구하기 전에 미리 보상하는 계층입니다. "
+                    "예를 들어 전진 thrust가 들어가면 nose-up 경향이 있다면, surge 입력만 보고 바로 pitch 반대 토크를 조금 넣어 줄 수 있습니다.\n\n"
+                    "이런 feedforward는 잘 맞으면 조종감이 훨씬 단단해지지만, 잘못 맞으면 사용자가 의도하지 않은 자동 개입처럼 느껴질 수 있습니다. "
+                    "그래서 이 함수는 수학적으로보다 운용감 측면에서 더 신중하게 설명되어야 하는 구간입니다."
+                ),
+                parameter_notes=(
+                    ("`translation_tilt_ff_enabled`", "translation 기반 선행 보상을 사용할지 정합니다."),
+                    ("`translation_pitch_ff_gain`, `translation_roll_ff_gain`", "surge/sway 입력이 각각 얼마나 pitch/roll 보상으로 연결될지 정합니다."),
+                    ("`translation_tilt_ff_max`", "feedforward 토크 최대치를 제한합니다."),
+                    ("`translation_tilt_ff_deadband`", "작은 조작에서는 feedforward가 개입하지 않도록 합니다."),
                 ),
             ),
             ReviewItem(
@@ -226,6 +274,11 @@ MODULES: tuple[ModuleConfig, ...] = (
                 review=(
                     "runtime tuning을 적극적으로 지원하는 점은 강점입니다. "
                     "동시에 리뷰 관점에서는 파라미터 변화가 control loop에 어떤 영향을 주는지 문서가 꼭 필요하다는 뜻이기도 합니다."
+                ),
+                details=(
+                    "이 함수는 단순히 숫자를 바꾸는 관리 함수가 아닙니다. 실제로는 제어 정책을 런타임에 갈아끼우는 진입점입니다. "
+                    "예를 들어 yaw hold 민감도, roll/pitch torque 제한, translation 보호 강도, orientation filter 성향이 모두 비행 중 즉시 달라질 수 있습니다.\n\n"
+                    "그래서 이 함수가 있는 모듈은 문서가 특히 중요합니다. 파라미터 이름만 나열해서는 충분하지 않고, 어떤 값이 어느 함수의 어떤 분기를 바꾸는지까지 연결해 줘야 안전하게 튜닝할 수 있습니다."
                 ),
             ),
         ),
@@ -279,6 +332,11 @@ MODULES: tuple[ModuleConfig, ...] = (
                     "작은 함수지만 depth sensor offset compensation의 핵심 기반입니다. "
                     "이 함수가 없으면 IMU를 depth controller가 활용할 방법이 사라집니다."
                 ),
+                details=(
+                    "depth sensor가 기체 중심이 아니라 다른 위치에 달려 있으면, 같은 수심에서도 pitch/roll에 따라 센서의 world z 좌표가 달라집니다. "
+                    "이 함수는 바로 그 보정을 위해 body z축이 world에서 어떻게 놓여 있는지를 계산합니다.\n\n"
+                    "즉 depth controller가 '수심'만 보는 것 같아도 실제로는 자세 정보를 함께 써서 센서 물리 위치를 보정하는 구조이고, 이 함수가 그 수학적 출발점입니다."
+                ),
             ),
             ReviewItem(
                 heading="`__init__()`",
@@ -326,6 +384,17 @@ MODULES: tuple[ModuleConfig, ...] = (
                     "상태 전이가 비교적 명확합니다. "
                     "실무에서는 `depth_control_is_active()` 같은 함수가 있어야 상위 시스템에서 상태를 해석하기 쉬워집니다."
                 ),
+                details=(
+                    "이 계층은 depth controller가 '언제 계산할 수 있는가'보다 '언제 계산해야 하는가'를 정의합니다. "
+                    "`armed_callback()`은 arm/disarm 전이에서 integrator와 last output 같은 내부 상태를 정리하고, "
+                    "`publish_depth_active()`는 상위 merger나 UI가 depth hold 상태를 명시적으로 알 수 있게 합니다. "
+                    "`clamp_target_depth()`는 target이 물리적으로 지나치게 벗어나지 않도록 제한하는 방어 계층입니다.\n\n"
+                    "즉 PID 수식은 depth를 맞추는 역할이고, 이 계층은 그 PID가 잘못된 상태에서 과하게 일하지 않도록 경계를 세우는 역할입니다."
+                ),
+                parameter_notes=(
+                    ("`control_enabled`", "depth hold 계산 자체를 허용할지 정합니다."),
+                    ("`max_depth`, `min_depth`", "있다면 target clamp에 직접 연결되는 안전 한계입니다."),
+                ),
             ),
             ReviewItem(
                 heading="`capture_manual_release_target()`",
@@ -339,6 +408,15 @@ MODULES: tuple[ModuleConfig, ...] = (
                 review=(
                     "운용 철학은 분명하지만 `current_depth + offset`은 직관과 다를 수 있습니다. "
                     "오프셋이 항상 들어가면 '놓은 자리 유지'보다 '조금 이동한 자리 유지'가 되어 사용자 혼란을 줄 수 있습니다."
+                ),
+                details=(
+                    "이 함수는 manual heave 조작이 끝났을 때 depth hold가 다시 어느 수심을 목표로 삼을지 결정합니다. "
+                    "현재 구현은 단순히 마지막 stick 명령을 끄는 것이 아니라, 현재 depth를 기준으로 새 target을 다시 잡는 철학을 갖고 있습니다.\n\n"
+                    "따라서 이 함수의 존재는 depth controller가 '추력 hold'가 아니라 '목표 수심 hold'라는 점을 분명히 보여줍니다. "
+                    "사용자가 stick을 놓은 순간 즉시 안정적으로 잠기는 감각을 좌우하는 핵심 함수입니다."
+                ),
+                parameter_notes=(
+                    ("`manual_heave_release_target_offset`", "release 시 현재 depth에서 얼마나 이동한 위치를 새 target으로 삼을지 정합니다."),
                 ),
             ),
             ReviewItem(
@@ -355,6 +433,15 @@ MODULES: tuple[ModuleConfig, ...] = (
                     "이 함수는 실전적인 품질을 크게 올리는 부분입니다. "
                     "센서 장착 위치가 중심에서 벗어난 수중체에서는 특히 의미가 큽니다."
                 ),
+                details=(
+                    "이 함수는 센서가 측정한 raw depth를 그대로 믿지 않고, 현재 자세와 센서 오프셋을 이용해 기체 기준점 depth로 다시 환산합니다. "
+                    "즉 pitch를 크게 주는 순간 센서가 위아래로 움직여 생기는 가짜 depth 변화에 controller가 속지 않도록 합니다.\n\n"
+                    "실제 운용에서는 이 차이가 큽니다. 보정이 없으면 전진/상승 동작과 자세 변화가 섞일 때 depth hold가 필요 이상으로 heave를 흔들 수 있는데, 이 함수가 그 coupling을 줄여 줍니다."
+                ),
+                parameter_notes=(
+                    ("`depth_sensor_offset_x/y/z`", "센서가 기체 기준점에서 얼마나 떨어져 있는지 나타냅니다."),
+                    ("`depth_sensor_offset_compensation_enabled`", "자세 기반 위치 보정을 사용할지 정합니다."),
+                ),
             ),
             ReviewItem(
                 heading="Manual 입력 freshness 계열",
@@ -368,6 +455,17 @@ MODULES: tuple[ModuleConfig, ...] = (
                 review=(
                     "이 계층은 현재 코드베이스에서 가장 좋은 패턴 중 하나입니다. "
                     "attitude/position도 이 freshness 전략을 가져오면 전체 일관성이 더 좋아집니다."
+                ),
+                details=(
+                    "이 묶음은 manual input을 단순한 값이 아니라 시간축이 있는 상태로 다룬다는 점에서 중요합니다. "
+                    "`manual_wrench_callback()`이 마지막 입력과 시각을 저장하고, `manual_wrench_is_fresh()`가 그것이 아직 유효한지 판단하며, "
+                    "`clear_stale_manual_heave()`가 오래된 입력을 안전하게 0으로 복구합니다.\n\n"
+                    "즉 이 계층은 통신 끊김이나 joystick 정지 상황에서 마지막 nonzero 입력이 controller 안에 유령처럼 남아 있는 문제를 막습니다. "
+                    "실전 제어 소프트웨어에서는 이런 freshness 처리가 PID 게인만큼 중요합니다."
+                ),
+                parameter_notes=(
+                    ("`manual_heave_override_threshold`", "manual heave가 실제 override로 간주되는 최소 크기입니다."),
+                    ("`manual_wrench_timeout_sec`", "이 시간이 지나면 마지막 manual 입력을 stale로 보고 지웁니다."),
                 ),
             ),
             ReviewItem(
@@ -406,6 +504,10 @@ MODULES: tuple[ModuleConfig, ...] = (
                 review=(
                     "runtime tuning 친화적이지만, 파라미터가 많을수록 문서가 중요합니다. "
                     "이번 리뷰 사이트에서 이 함수가 중요한 이유도 바로 그 때문입니다."
+                ),
+                details=(
+                    "depth hold는 겉보기보다 정책 파라미터가 많습니다. direct heave처럼 느껴질지, target depth rate처럼 느껴질지, release 후 즉시 잠길지, 상승 방향을 얼마나 제한할지 모두 런타임에 바뀔 수 있습니다.\n\n"
+                    "따라서 이 함수는 단순 관리 루틴이 아니라 현장 튜닝 인터페이스입니다. 리뷰 문서가 파라미터-동작 연결을 자세히 설명해야 하는 이유가 여기 있습니다."
                 ),
             ),
         ),
@@ -462,6 +564,12 @@ MODULES: tuple[ModuleConfig, ...] = (
                     "수학 유틸리티는 단순하지만 매우 중요합니다. "
                     "좌표계가 꼬이면 controller tuning 문제가 아니라 frame mismatch 문제가 됩니다."
                 ),
+                details=(
+                    "position hold에서 가장 중요한 것은 오차 자체보다 오차가 어느 좌표계에서 정의되는가입니다. "
+                    "이 유틸리티 묶음은 DVL 속도, hold target, 최종 force를 world/body frame 사이에서 일관되게 회전시키는 기반을 제공합니다.\n\n"
+                    "즉 이 코드가 단순 planar PD가 아니라 yaw가 변해도 같은 world 위치를 붙잡을 수 있는 이유가 바로 이 계층에 있습니다. "
+                    "문제가 생기면 게인을 의심하기 전에 frame rotation이 올바른지 먼저 확인해야 합니다."
+                ),
             ),
             ReviewItem(
                 heading="`__init__()`",
@@ -509,6 +617,19 @@ MODULES: tuple[ModuleConfig, ...] = (
                     "이 보조 계층 덕분에 publish 조건이 깔끔합니다. "
                     "실제 control law보다 앞단의 상태 판정이 잘 분리된 점이 장점입니다."
                 ),
+                details=(
+                    "이 함수들은 각각 작아 보여도 제어기 안정성의 기본 골격을 담당합니다. "
+                    "`_has_valid_position_reference()`는 DVL 기반 상태가 충분히 최신인지 검사하고, `_set_control_enabled()`는 enable edge에서 target 재캡처와 zero-force 출력을 관리합니다. "
+                    "`_capture_current_position_as_target()`은 pilot release나 enable 시점에서 hold 기준점을 다시 정합니다.\n\n"
+                    "즉 이 계층은 'position error를 계산하기 전에 무엇이 유효한 상태인가'를 먼저 정의합니다. "
+                    "센서가 stale이거나 armed 상태가 아닌데도 force를 계속 내지 않도록 막는 방어 로직이 여기 모여 있습니다."
+                ),
+                parameter_notes=(
+                    ("`valid_timeout_sec`", "position reference가 stale인지 판단하는 기준 시간입니다."),
+                    ("`control_enabled`", "hold force 계산 자체를 허용할지 정합니다."),
+                    ("`force_deadband`", "작은 force를 제거하는 deadband 크기입니다."),
+                    ("`capture_initial_position_target`", "초기 유효 position을 target으로 자동 캡처할지 정합니다."),
+                ),
             ),
             ReviewItem(
                 heading="`manual_wrench_callback()`",
@@ -522,6 +643,16 @@ MODULES: tuple[ModuleConfig, ...] = (
                 review=(
                     "운용감은 좋지만 freshness timeout이 없어서 마지막 manual XY가 남으면 poshold 복귀가 안 될 수 있습니다. "
                     "현재 코드의 대표적인 개선 후보입니다."
+                ),
+                details=(
+                    "이 함수는 manual XY를 단순히 저장하는 것보다, 현재 자동 hold를 잠시 끊어야 하는지 판단하는 역할이 더 큽니다. "
+                    "threshold를 넘는 입력이 들어오면 `manual_xy_active`를 켜고, release edge에서 현재 위치를 새 target으로 캡처해 자연스럽게 poshold로 복귀하게 만듭니다.\n\n"
+                    "즉 사용자는 '직접 움직이다가 손을 놓으면 그 자리에서 다시 hold'되는 감각을 얻게 됩니다. "
+                    "다만 freshness 관리가 없기 때문에, 입력 주기가 끊겼을 때 manual 상태가 오래 남을 수 있다는 점은 문서에서 분명히 짚어야 합니다."
+                ),
+                parameter_notes=(
+                    ("`manual_xy_override_threshold`", "manual XY가 auto hold를 끊는 기준입니다."),
+                    ("`capture_target_on_manual_release`", "pilot release 시 현재 위치를 새 hold target으로 잡을지 결정합니다."),
                 ),
             ),
             ReviewItem(
@@ -537,6 +668,18 @@ MODULES: tuple[ModuleConfig, ...] = (
                     "유연성이 높고 실제 운용에 유리합니다. "
                     "특히 `use_dvl_position=False` fallback 설계는 테스트 단계에서 큰 장점이 됩니다."
                 ),
+                details=(
+                    "이 계층은 position controller가 어떤 형태의 DVL 정보를 받아도 내부 world-frame position/velocity 상태로 변환해 주는 센서 적응 계층입니다. "
+                    "`dvl_position_callback()`은 absolute position이 있을 때 이를 직접 hold 기준으로 쓰고, `dvl_callback()`은 body-frame velocity를 IMU yaw를 이용해 world frame으로 돌린 뒤 적분 fallback까지 수행합니다.\n\n"
+                    "즉 센서가 완벽하지 않아도 position hold를 최대한 유지하려는 실무형 구조입니다. "
+                    "absolute 위치와 dead-reckoning 위치가 어떻게 전환되는지 이해하면, poshold drift의 원인이 센서인지 controller인지 구분하기 쉬워집니다."
+                ),
+                parameter_notes=(
+                    ("`use_dvl_position`", "absolute DVL position을 직접 사용할지 정합니다."),
+                    ("`integrate_dvl_velocity_when_position_unavailable`", "position이 없을 때 velocity 적분 fallback을 사용할지 정합니다."),
+                    ("`dvl_mount_roll_deg`, `dvl_mount_pitch_deg`, `dvl_mount_yaw_deg`", "DVL 축이 body frame과 어긋난 경우 보정합니다."),
+                    ("`valid_timeout_sec`", "최근 DVL 기준을 얼마나 오래 유효로 볼지 정합니다."),
+                ),
             ),
             ReviewItem(
                 heading="`publish_position_estimate()`",
@@ -550,6 +693,12 @@ MODULES: tuple[ModuleConfig, ...] = (
                 review=(
                     "작은 함수지만 디버깅 가치가 큽니다. "
                     "이런 상태 출력이 없으면 position hold 문제를 센서 문제와 구분하기 어렵습니다."
+                ),
+                details=(
+                    "이 함수는 controller 내부가 현재 어떤 위치를 믿고 있는지 외부로 드러내는 관찰 창입니다. "
+                    "사용자는 이 publish를 통해 hold target과 현재 estimate 사이의 차이를 시각화하거나 로그로 비교할 수 있습니다.\n\n"
+                    "실제 제어 문제는 '힘이 이상하다'보다 '컨트롤러가 잘못된 위치를 믿고 있다'에서 시작되는 경우가 많습니다. "
+                    "그래서 이런 상태 publish 함수는 작아도 리뷰에서 반드시 의미를 설명해 줘야 합니다."
                 ),
             ),
             ReviewItem(
@@ -593,6 +742,11 @@ MODULES: tuple[ModuleConfig, ...] = (
                 review=(
                     "runtime tuning은 강점이지만, 어떤 파라미터가 어떤 함수를 통해 결과에 연결되는지 문서가 꼭 필요합니다. "
                     "이번 리뷰 문서가 그 연결을 설명하는 역할을 합니다."
+                ),
+                details=(
+                    "position hold는 gain뿐 아니라 sensor strategy, manual override policy, yaw damping 정책을 함께 튜닝해야 합니다. "
+                    "즉 이 함수는 단순 PD gain 조정기가 아니라, 제어 law와 센서 해석 정책을 함께 바꾸는 관리 포인트입니다.\n\n"
+                    "그래서 문서에서도 각 파라미터를 단독 설명하는 수준을 넘어, 어떤 함수에서 사용되고 어떤 동작 분기를 바꾸는지까지 함께 설명하는 것이 중요합니다."
                 ),
             ),
         ),
@@ -671,6 +825,12 @@ MODULES: tuple[ModuleConfig, ...] = (
                     "timer 기반 merge 구조와 잘 맞습니다. "
                     "다만 manual 이외 auto 입력에 freshness timestamp가 없어 마지막 자동 출력이 오래 남을 수 있습니다."
                 ),
+                details=(
+                    "이 함수들의 공통점은 직접 출력 계산을 하지 않고, timer 루프가 읽을 마지막 상태만 저장한다는 점입니다. "
+                    "이 구조 덕분에 depth/position/attitude controller들의 publish 주기가 서로 달라도 merger는 일정한 주기로 최종 wrench를 재구성할 수 있습니다.\n\n"
+                    "즉 입력 callback과 최종 arbitration을 분리해 temporal decoupling을 만든 설계입니다. "
+                    "다만 manual 외 자동 입력 freshness가 없기 때문에, 상위 노드가 멈췄을 때 마지막 값이 남을 수 있다는 점은 꼭 문서에 드러나야 합니다."
+                ),
             ),
             ReviewItem(
                 heading="`manual_wrench_is_fresh()`",
@@ -684,6 +844,14 @@ MODULES: tuple[ModuleConfig, ...] = (
                 review=(
                     "현재 코드베이스에서 freshness 처리가 가장 깔끔하게 들어간 부분입니다. "
                     "같은 아이디어가 auto inputs에도 확장되면 훨씬 견고해집니다."
+                ),
+                details=(
+                    "이 함수는 merger가 manual input을 '값'이 아니라 '최근성 있는 사건'으로 해석하게 만들어 줍니다. "
+                    "`publish_zero_wrench()`와 함께 사용되면서 조종기 데이터가 사라졌을 때 마지막 manual 명령을 계속 재사용하지 않도록 방지합니다.\n\n"
+                    "supervisory layer에서는 이런 freshness가 특히 중요합니다. 이 노드는 최종 명령을 내보내기 때문에, 오래된 manual 값 하나가 전체 시스템 출력을 계속 왜곡할 수 있기 때문입니다."
+                ),
+                parameter_notes=(
+                    ("`manual_wrench_timeout_sec`", "manual 입력을 더 이상 믿지 않는 시간 기준입니다."),
                 ),
             ),
             ReviewItem(
@@ -726,6 +894,11 @@ MODULES: tuple[ModuleConfig, ...] = (
                 ),
                 review=(
                     "supervisory node답게 runtime tuning이 단순하고 이해하기 쉽습니다."
+                ),
+                details=(
+                    "이 함수는 merge 주기와 manual override 감도를 운영 중에도 바꿀 수 있게 해 줍니다. "
+                    "supervisory node에서는 작은 threshold 변화만으로도 manual/auto 우선순위가 달라지므로, 이런 갱신 함수는 생각보다 시스템 거동에 큰 영향을 미칩니다.\n\n"
+                    "따라서 리뷰 문서에서도 단순히 '업데이트 가능'이라고 끝내지 않고, 어떤 threshold가 어떤 축의 arbitration을 바꾸는지 연결해서 설명하는 것이 중요합니다."
                 ),
             ),
         ),
@@ -779,6 +952,11 @@ MODULES: tuple[ModuleConfig, ...] = (
                 review=(
                     "작은 함수지만 allocator가 단순 mixer가 아니라 IMU-aware allocation이라는 점을 보여줍니다."
                 ),
+                details=(
+                    "allocator에서 이 유틸리티들은 단순 계산 편의 함수가 아니라, 뒤쪽 보상 로직과 allocation geometry가 모두 기대고 있는 수학 기반입니다. "
+                    "`normalize_group_unit()`은 한 그룹 출력이 saturation을 넘지 않도록 정규화하고, `quat_to_rotation_z_row()`는 현재 기체의 기울기 정보를 보상 항 계산에 사용할 수 있게 해 줍니다.\n\n"
+                    "즉 allocator가 고정된 행렬 곱셈기를 넘어, 현재 자세를 아는 분배기처럼 동작하게 만드는 첫 계층입니다."
+                ),
             ),
             ReviewItem(
                 heading="`__init__()`",
@@ -828,6 +1006,16 @@ MODULES: tuple[ModuleConfig, ...] = (
                 review=(
                     "상위 controller와 allocator가 느슨하지만 의미 있게 연결되어 있습니다."
                 ),
+                details=(
+                    "이 계층은 allocator가 독립적인 하위 노드이면서도 상위 자세 제어 의도와 조종 상태를 읽을 수 있게 해 줍니다. "
+                    "`imu_callback()`은 현재 pitch/roll을 보상 함수들에 제공하고, `cmd_attitude_callback()` 및 `cmd_attitude_trim_callback()`은 목표 자세 기준을 allocator 보상에 연결합니다. "
+                    "`output_scale_callback()`과 `joy_speed_scale_callback()`은 전체 추진 크기를 런타임에 조절하는 운영 인터페이스입니다.\n\n"
+                    "즉 allocator는 단순 수동 mixer가 아니라, 상위 제어 의도와 현재 기체 자세를 함께 반영하는 output shaping layer입니다."
+                ),
+                parameter_notes=(
+                    ("`cmd_attitude_topic`, `cmd_attitude_trim_topic`", "목표 pitch/trim 기준을 allocator 보상에 전달합니다."),
+                    ("`output_scale_topic`, `joy_speed_scale_topic`, `use_joy_speed_scale_for_output`", "최종 thruster 출력의 전체 크기를 외부에서 조정합니다."),
+                ),
             ),
             ReviewItem(
                 heading="Compensation 함수들",
@@ -841,6 +1029,20 @@ MODULES: tuple[ModuleConfig, ...] = (
                 review=(
                     "이 부분이 가장 실험적이면서도 고급스럽습니다. "
                     "동시에 gain 의존성이 큰 영역이므로 기능별 로그와 문서가 꼭 있어야 합니다."
+                ),
+                details=(
+                    "이 묶음은 allocator를 단순한 TAM 분배기에서 실제 운용형 shaping node로 바꿔 주는 핵심입니다. "
+                    "`level_horizontal_heave_compensation()`은 기체가 기울어진 상태에서 수평 추력이 수직 성분을 만드는 문제를 완화하고, "
+                    "`attitude_priority_horizontal_scale()`은 자세 토크 요구가 클 때 수평 이동을 일부 희생하게 만듭니다. "
+                    "`surge_pitch_moment_compensation()`과 `imu_pitch_hold_compensation()`은 전진 thrust와 현재 pitch 상태를 반영해 추가적인 수직 보상을 생성합니다.\n\n"
+                    "즉 이 계층은 '요구 wrench'와 '실제 기체가 체감하는 거동' 사이의 간극을 메우는 경험적 보상층입니다. "
+                    "튜닝 난이도는 있지만, 제대로 맞으면 상위 제어기가 덜 힘들어집니다."
+                ),
+                parameter_notes=(
+                    ("`level_horizontal_compensation_*`", "수평 추진에 따라 생기는 heave leak 보상 정책입니다."),
+                    ("`attitude_priority_horizontal_slowdown_*`", "자세 토크가 커질수록 horizontal 출력을 얼마나 줄일지 정합니다."),
+                    ("`surge_pitch_moment_*`", "전진 추력이 만드는 pitch moment 보상 강도와 활성 조건입니다."),
+                    ("`imu_pitch_hold_*`", "현재/목표 pitch 차이에 따라 추가 보상을 넣는 allocator 내부 hold 파라미터입니다."),
                 ),
             ),
             ReviewItem(
@@ -857,6 +1059,14 @@ MODULES: tuple[ModuleConfig, ...] = (
                     "allocator 해석의 핵심입니다. "
                     "실제 모델과 이 함수의 thruster geometry가 맞는지 항상 함께 검증해야 합니다."
                 ),
+                details=(
+                    "이 함수는 기체의 thruster 위치와 방향을 수학 모델로 고정하는 구간입니다. "
+                    "수평 4기와 수직 4기의 각 레버암과 thrust 방향이 여기서 TAM과 pseudo-inverse 행렬로 변환됩니다.\n\n"
+                    "따라서 allocator 문제의 상당수는 사실 이 함수에서 시작됩니다. yaw만 줬는데 sway가 섞이거나 heave만 줬는데 pitch가 생긴다면, 게인보다 먼저 이 geometry와 부호 정의가 실제 하드웨어와 일치하는지 검증해야 합니다."
+                ),
+                parameter_notes=(
+                    ("`rear_vertical_bias`, `pitch_torque_gain`", "수직 thruster 분배 행렬이 실제로 어떤 성향을 띨지에 간접적으로 영향을 줍니다."),
+                ),
             ),
             ReviewItem(
                 heading="Allocation / Shaping 보조 함수",
@@ -871,6 +1081,17 @@ MODULES: tuple[ModuleConfig, ...] = (
                 review=(
                     "현재 allocator가 heuristic allocator라는 점이 가장 잘 드러나는 구간입니다. "
                     "이 계층 덕분에 practical하지만, 최적화 기반 allocator와는 성격이 다릅니다."
+                ),
+                details=(
+                    "이 함수들은 이상적인 연속 wrench를 실제 actuator가 낼 수 있는 명령열로 다듬는 후처리 계층입니다. "
+                    "`add_component_with_headroom()`과 `allocate_priority_components()`는 saturation 가까이에서 어떤 성분을 먼저 살릴지 결정하고, "
+                    "`apply_deadband()`는 너무 작은 명령을 없애 chatter를 줄이며, `apply_slew_rate()`는 한 번에 급격히 바뀌는 thrust를 막습니다.\n\n"
+                    "즉 allocator 품질은 행렬 해석만으로 끝나지 않습니다. 같은 wrench라도 이런 shaping 계층이 다르면 실제 모터 체감, 발열, 응답성, 자세 안정성이 크게 달라집니다."
+                ),
+                parameter_notes=(
+                    ("`slew_rate`", "출력이 시간적으로 얼마나 빨리 변할 수 있는지 제한합니다."),
+                    ("`output_deadband`", "아주 작은 thrust 명령을 제거합니다."),
+                    ("`max_output`, `output_scale`", "최종 thrust의 절대 크기와 전체 배율을 정합니다."),
                 ),
             ),
             ReviewItem(
@@ -913,6 +1134,11 @@ MODULES: tuple[ModuleConfig, ...] = (
                 review=(
                     "실험 속도를 크게 올리는 좋은 구조입니다. "
                     "이번 리뷰 문서에서 함수-파라미터 연결을 설명하는 이유도 이 함수 때문입니다."
+                ),
+                details=(
+                    "allocator는 실제로 현장 튜닝 비중이 매우 높은 모듈입니다. thrust geometry는 고정되어 있어도, gain과 compensation만으로도 체감 조종감이 크게 달라집니다. "
+                    "이 함수는 그 조정을 런타임에 가능하게 만들어 테스트 반복 속도를 높여 줍니다.\n\n"
+                    "대신 문서가 부족하면 위험합니다. 어떤 파라미터가 allocation 행렬 이전에 적용되는지, 어떤 것은 compensation이고 어떤 것은 최종 shaping인지 구분되지 않으면 잘못된 축을 튜닝할 수 있기 때문입니다."
                 ),
             ),
         ),
