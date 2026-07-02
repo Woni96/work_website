@@ -25,11 +25,16 @@
         <div>
           <p class="eyebrow">Review Hub</p>
           <h2>코드를 누르면 실제 코드와 함께 함수 중심 리뷰 페이지로 이동합니다</h2>
-          <p>이 디렉토리의 리뷰는 이제 <strong>실제 코드 기준의 함수 중심 리뷰</strong>로 재구성됩니다.</p>
+          <h3>전체 제어 흐름</h3>
+<p>이 코드 구조는 여러 제어기가 각자 필요한 힘 또는 토크를 계산하고, <code>WrenchMerger</code>가 이를 하나의 <code>Wrench</code>로 병합한 뒤, <code>Allocator</code>가 8개 스러스터 명령으로 변환하는 방식입니다.</p>
+<h3>단계 설명</h3>
 <ul class="summary-list">
-  <li>각 모듈 페이지는 실제 코드 스니펫과 함께 <code>이 함수가 무슨 의미인지</code>, <code>시스템에 어떤 영향을 주는지</code>, <code>리뷰 관점에서 왜 중요한지</code>를 설명합니다.</li>
-  <li>메인 페이지에서는 모듈별 코드 리뷰 페이지로 이동할 수 있습니다.</li>
-  <li>각 상세 페이지 하단에는 <strong>전체 코드</strong>도 같이 넣어, 문맥과 리뷰를 동시에 볼 수 있게 합니다.</li>
+  <li>수동 입력: 조종기 또는 상위 제어 입력이 <code>/rov/wrench_manual</code> 형태로 들어옵니다.</li>
+  <li>자세 제어: <code>attitude_controller.py</code>가 IMU 기반 <code>roll</code>, <code>pitch</code>, <code>yaw</code> 토크를 계산합니다.</li>
+  <li>수심 제어: <code>depth_controller.py</code>가 목표 수심과 현재 수심 차이로 heave 명령을 계산합니다.</li>
+  <li>위치 제어: <code>position_controller.py</code>가 DVL 기반 위치/속도 정보를 이용해 XY force를 계산합니다.</li>
+  <li>병합: <code>wrench_merger.py</code>가 수동 입력과 자동 제어 출력을 우선순위 규칙으로 합칩니다.</li>
+  <li>할당: <code>allocator_node.py</code>가 최종 wrench를 8개 스러스터 출력으로 변환합니다.</li>
 </ul>
         </div>
       </section>

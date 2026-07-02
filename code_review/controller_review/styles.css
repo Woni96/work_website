@@ -194,6 +194,12 @@ pre code {
   gap: 18px;
 }
 
+.doc-grid {
+  display: grid;
+  grid-template-columns: minmax(420px, 1.05fr) minmax(340px, 0.95fr);
+  gap: 18px;
+}
+
 .prose-card h3,
 .code-card h3 {
   margin-top: 0;
@@ -225,6 +231,38 @@ pre code {
   list-style: none;
   display: grid;
   gap: 14px;
+}
+
+.doc-meta {
+  margin: 0;
+  display: grid;
+  gap: 14px;
+}
+
+.doc-meta div {
+  padding: 14px 16px;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.doc-meta dt {
+  margin: 0 0 6px;
+  color: var(--text);
+  font-weight: 700;
+}
+
+.doc-meta dd {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.8;
+}
+
+.flow-list {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--muted);
+  line-height: 1.8;
 }
 
 .parameter-list li {
@@ -280,7 +318,8 @@ pre code {
   }
 
   .module-grid,
-  .review-grid {
+  .review-grid,
+  .doc-grid {
     grid-template-columns: 1fr;
   }
 

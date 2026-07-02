@@ -1147,21 +1147,173 @@ MODULES: tuple[ModuleConfig, ...] = (
 
 
 SUMMARY_TEXT = """
-이 디렉토리의 리뷰는 이제 **실제 코드 기준의 함수 중심 리뷰**로 재구성됩니다.
+전체 제어 흐름
 
-- 각 모듈 페이지는 실제 코드 스니펫과 함께 `이 함수가 무슨 의미인지`, `시스템에 어떤 영향을 주는지`, `리뷰 관점에서 왜 중요한지`를 설명합니다.
-- 메인 페이지에서는 모듈별 코드 리뷰 페이지로 이동할 수 있습니다.
-- 각 상세 페이지 하단에는 **전체 코드**도 같이 넣어, 문맥과 리뷰를 동시에 볼 수 있게 합니다.
+이 코드 구조는 여러 제어기가 각자 필요한 힘 또는 토크를 계산하고, `WrenchMerger`가 이를 하나의 `Wrench`로 병합한 뒤,
+`Allocator`가 8개 스러스터 명령으로 변환하는 방식입니다.
+
+단계 설명
+
+- 수동 입력: 조종기 또는 상위 제어 입력이 `/rov/wrench_manual` 형태로 들어옵니다.
+- 자세 제어: `attitude_controller.py`가 IMU 기반 `roll`, `pitch`, `yaw` 토크를 계산합니다.
+- 수심 제어: `depth_controller.py`가 목표 수심과 현재 수심 차이로 heave 명령을 계산합니다.
+- 위치 제어: `position_controller.py`가 DVL 기반 위치/속도 정보를 이용해 XY force를 계산합니다.
+- 병합: `wrench_merger.py`가 수동 입력과 자동 제어 출력을 우선순위 규칙으로 합칩니다.
+- 할당: `allocator_node.py`가 최종 wrench를 8개 스러스터 출력으로 변환합니다.
 """.strip()
 
 SUMMARY_HTML = """
-<p>이 디렉토리의 리뷰는 이제 <strong>실제 코드 기준의 함수 중심 리뷰</strong>로 재구성됩니다.</p>
+<h3>전체 제어 흐름</h3>
+<p>이 코드 구조는 여러 제어기가 각자 필요한 힘 또는 토크를 계산하고, <code>WrenchMerger</code>가 이를 하나의 <code>Wrench</code>로 병합한 뒤, <code>Allocator</code>가 8개 스러스터 명령으로 변환하는 방식입니다.</p>
+<h3>단계 설명</h3>
 <ul class="summary-list">
-  <li>각 모듈 페이지는 실제 코드 스니펫과 함께 <code>이 함수가 무슨 의미인지</code>, <code>시스템에 어떤 영향을 주는지</code>, <code>리뷰 관점에서 왜 중요한지</code>를 설명합니다.</li>
-  <li>메인 페이지에서는 모듈별 코드 리뷰 페이지로 이동할 수 있습니다.</li>
-  <li>각 상세 페이지 하단에는 <strong>전체 코드</strong>도 같이 넣어, 문맥과 리뷰를 동시에 볼 수 있게 합니다.</li>
+  <li>수동 입력: 조종기 또는 상위 제어 입력이 <code>/rov/wrench_manual</code> 형태로 들어옵니다.</li>
+  <li>자세 제어: <code>attitude_controller.py</code>가 IMU 기반 <code>roll</code>, <code>pitch</code>, <code>yaw</code> 토크를 계산합니다.</li>
+  <li>수심 제어: <code>depth_controller.py</code>가 목표 수심과 현재 수심 차이로 heave 명령을 계산합니다.</li>
+  <li>위치 제어: <code>position_controller.py</code>가 DVL 기반 위치/속도 정보를 이용해 XY force를 계산합니다.</li>
+  <li>병합: <code>wrench_merger.py</code>가 수동 입력과 자동 제어 출력을 우선순위 규칙으로 합칩니다.</li>
+  <li>할당: <code>allocator_node.py</code>가 최종 wrench를 8개 스러스터 출력으로 변환합니다.</li>
 </ul>
 """.strip()
+
+MODULE_CHAPTERS = {
+    "allocator": 2,
+}
+
+ALLOCATOR_FUNCTION_DOCS = {
+    "normalize": {
+        "role": "입력 벡터를 단위 벡터로 정규화합니다. 스러스터 방향 벡터가 정확한 힘 방향만 표현하도록 만들기 위해 사용됩니다.",
+        "why": "복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.",
+        "impact": "이 함수의 결과는 같은 노드의 다음 계산 단계 또는 다른 제어 노드의 입력으로 사용됩니다. 따라서 값의 단위, 부호, 좌표계가 전체 ROV 움직임에 직접 영향을 줍니다.",
+        "flow": ("입력 벡터를 `numpy array`로 변환합니다.", "노름이 너무 작으면 0 나눗셈을 피하기 위해 원래 벡터를 그대로 사용합니다.", "그 외에는 노름으로 나누어 단위 벡터를 반환합니다."),
+    },
+    "normalize_group_unit": {
+        "role": "스러스터 그룹 출력의 최대 절댓값이 1을 넘으면 같은 비율로 전체를 축소합니다. 출력 포화 범위를 유지하면서 방향성은 보존합니다.",
+        "why": "복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.",
+        "impact": "스러스터 출력 분배에 직접 영향을 줍니다. 계산 결과는 최종 thruster command의 크기와 방향을 결정합니다.",
+        "flow": ("입력 그룹 출력을 배열로 변환합니다.", "가장 큰 절댓값을 찾습니다.", "1보다 크면 전체를 같은 비율로 축소하고, 아니면 그대로 반환합니다."),
+    },
+    "quat_to_rotation_z_row": {
+        "role": "IMU quaternion에서 body z축이 world 좌표계에서 향하는 방향 성분을 계산합니다. 기체가 기울어진 상태의 heave 보상 계산에 사용됩니다.",
+        "why": "ROV 제어에서는 자세 표현과 좌표계 변환이 계속 필요하므로, 반복되는 수학 연산을 함수로 분리한 것입니다.",
+        "impact": "이 함수의 결과는 같은 노드의 다음 계산 단계 또는 다른 제어 노드의 입력으로 사용됩니다. 따라서 값의 단위, 부호, 좌표계가 전체 ROV 움직임에 직접 영향을 줍니다.",
+        "flow": ("입력 quaternion을 정규화합니다.", "정규화가 불가능할 정도로 작으면 기본 z축 `(0, 0, 1)`을 반환합니다.", "정규화된 quaternion으로 world 기준 body z축 방향 성분을 계산합니다."),
+    },
+    "quat_to_rpy": {
+        "role": "quaternion 자세 표현을 roll, pitch, yaw 각도로 변환합니다. 사람이 이해하기 쉬운 자세 오차 및 보상 계산에 사용됩니다.",
+        "why": "ROV 제어에서는 자세 표현과 좌표계 변환이 계속 필요하므로, 반복되는 수학 연산을 함수로 분리한 것입니다.",
+        "impact": "이 함수의 결과는 같은 노드의 다음 계산 단계 또는 다른 제어 노드의 입력으로 사용됩니다. 따라서 값의 단위, 부호, 좌표계가 전체 ROV 움직임에 직접 영향을 줍니다.",
+        "flow": ("입력 quaternion을 정규화합니다.", "roll, pitch, yaw를 순서대로 계산합니다.", "pitch는 asin 범위를 넘지 않도록 안전하게 처리합니다."),
+    },
+    "__init__": {
+        "role": "ROS2 노드의 파라미터, 상태 변수, subscriber, publisher, timer를 초기화합니다. 해당 제어 노드가 시스템에 연결되는 시작점입니다.",
+        "why": "노드가 실행되기 전에 필요한 파라미터, 통신 인터페이스, 상태 변수를 모두 준비해야 하기 때문에 사용됩니다.",
+        "impact": "이 함수의 결과는 같은 노드의 다음 계산 단계 또는 다른 제어 노드의 입력으로 사용됩니다. 따라서 값의 단위, 부호, 좌표계가 전체 ROV 움직임에 직접 영향을 줍니다.",
+        "flow": ("노드 이름을 설정합니다.", "ROS parameter를 선언하고 현재 값을 읽습니다.", "제어에 필요한 내부 상태 변수를 초기화합니다.", "subscriber와 publisher를 생성합니다.", "parameter callback을 등록하고 초기 설정값을 로그에 남깁니다."),
+    },
+    "imu_callback": {
+        "role": "IMU 메시지를 수신하여 현재 자세, 각속도, 또는 z축 방향 정보를 내부 상태에 저장합니다.",
+        "why": "ROS2 topic 기반 시스템에서 비동기 메시지를 받아 제어 상태를 최신 값으로 유지하기 위해 사용됩니다.",
+        "impact": "이 함수의 결과는 같은 노드의 다음 계산 단계 또는 다른 제어 노드의 입력으로 사용됩니다. 따라서 값의 단위, 부호, 좌표계가 전체 ROV 움직임에 직접 영향을 줍니다.",
+        "flow": ("ROS2 IMU 메시지를 수신합니다.", "orientation에서 현재 world z축 방향과 roll/pitch/yaw를 계산합니다.", "내부 자세 상태와 `have_imu` 플래그를 갱신합니다."),
+    },
+    "cmd_attitude_callback": {
+        "role": "외부에서 들어오는 목표 자세 명령을 내부 목표 roll/pitch 값으로 반영합니다.",
+        "why": "ROS2 topic 기반 시스템에서 비동기 메시지를 받아 제어 상태를 최신 값으로 유지하기 위해 사용됩니다.",
+        "impact": "roll, pitch 자세 유지 토크와 allocator 내부 보상 기준에 영향을 줍니다.",
+        "flow": ("ROS2 메시지를 수신합니다.", "NaN이 아닌 x/y 값을 읽습니다.", "목표 roll/pitch 내부 상태를 갱신합니다."),
+    },
+    "cmd_attitude_trim_callback": {
+        "role": "trim 형태의 목표 자세를 수신하여 roll/pitch 보정 기준으로 사용합니다.",
+        "why": "ROS2 topic 기반 시스템에서 비동기 메시지를 받아 제어 상태를 최신 값으로 유지하기 위해 사용됩니다.",
+        "impact": "roll, pitch 자세 유지 토크와 allocator 내부 보상 기준에 영향을 줍니다.",
+        "flow": ("ROS2 메시지를 수신합니다.", "NaN이 아닌 x/y 값을 읽습니다.", "trim 기준으로 사용할 목표 roll/pitch를 갱신합니다."),
+    },
+    "output_scale_callback": {
+        "role": "전체 스러스터 출력 스케일을 실시간으로 갱신합니다.",
+        "why": "ROS2 topic 기반 시스템에서 비동기 메시지를 받아 제어 상태를 최신 값으로 유지하기 위해 사용됩니다.",
+        "impact": "최종 thruster command 전체 크기에 직접 영향을 줍니다.",
+        "flow": ("ROS2 메시지를 수신합니다.", "입력 값을 0~1 범위로 clamp합니다.", "내부 `output_scale` 상태를 갱신합니다."),
+    },
+    "joy_speed_scale_callback": {
+        "role": "조이스틱 속도 스케일을 전체 출력 스케일로 연결할지 결정합니다.",
+        "why": "조종기 속도 모드와 allocator 출력 크기를 연동하기 위해 사용됩니다.",
+        "impact": "조이스틱 기반 운용 시 최종 출력 감도와 최대 추력 수준에 직접 영향을 줍니다.",
+        "flow": ("ROS2 메시지를 수신합니다.", "`use_joy_speed_scale_for_output`가 켜져 있는지 확인합니다.", "활성 상태면 `output_scale_callback()`을 재사용해 출력 스케일을 갱신합니다."),
+    },
+    "level_horizontal_heave_compensation": {
+        "role": "기체가 roll/pitch로 기울어진 상태에서 수평 힘이 수직 방향으로 새는 효과를 보상하기 위한 heave 값을 계산합니다.",
+        "why": "복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.",
+        "impact": "수평 이동 중 기체가 의도치 않게 뜨거나 가라앉는 현상에 직접 영향을 줍니다.",
+        "flow": ("보상 기능이 켜져 있고 IMU가 유효한지 확인합니다.", "현재 body z축의 world 성분을 읽습니다.", "기울기 때문에 생기는 heave leak를 계산하고 제한값 안으로 clamp합니다."),
+    },
+    "attitude_priority_horizontal_scale": {
+        "role": "roll/pitch 토크 요구가 큰 상황에서 수평 이동 명령을 줄여 자세 제어 우선권을 확보합니다.",
+        "why": "수평 이동과 자세 복원이 동시에 포화될 때, 어떤 축을 우선할지 분명히 하기 위해 사용됩니다.",
+        "impact": "roll, pitch 복원이 급한 상황에서 surge/sway 응답이 얼마나 희생될지 결정합니다.",
+        "flow": ("slowdown 기능 활성 여부를 확인합니다.", "현재 자세 토크 요구 크기를 계산합니다.", "start/full 구간에 따라 1.0에서 `min_scale`까지 scale을 계산합니다."),
+    },
+    "surge_pitch_moment_compensation": {
+        "role": "전진/후진 힘이 pitch 모멘트를 만드는 상황을 feed-forward 방식으로 보상합니다.",
+        "why": "기체 구조상 surge 추력이 nose-up 또는 nose-down 성향을 만들 수 있어, 이를 allocator 단계에서 미리 상쇄하기 위해 사용됩니다.",
+        "impact": "전진 시 pitch 흔들림과 수직 스러스터 부담 분배에 직접 영향을 줍니다.",
+        "flow": ("보상 기능 활성 여부와 최소 surge 조건을 확인합니다.", "필요하면 목표 pitch 크기에 따른 gating을 적용합니다.", "설정 gain과 한계값을 사용해 추가 pitch 보상량을 계산합니다."),
+    },
+    "imu_pitch_hold_compensation": {
+        "role": "현재 pitch와 목표 pitch의 차이를 이용해 surge 중 pitch 유지 보상량을 계산합니다.",
+        "why": "전진 중 실제 pitch가 목표에서 벗어날 때 상위 controller 이전에 allocator 차원에서 추가 보정을 넣기 위해 사용됩니다.",
+        "impact": "surge 상황에서 pitch hold가 얼마나 단단하게 유지될지에 영향을 줍니다.",
+        "flow": ("보상 기능과 IMU 유효성을 확인합니다.", "최소 surge 조건과 pitch deadband를 검사합니다.", "pitch error에 gain을 곱하고 한계값 안으로 clamp합니다."),
+    },
+    "init_matrices": {
+        "role": "스러스터 위치와 방향으로부터 TAM, 수평 allocation 행렬, 수직 allocation 행렬, pseudo-inverse를 생성합니다.",
+        "why": "복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.",
+        "impact": "스러스터 출력 분배에 직접 영향을 줍니다. 계산 결과는 최종 thruster command의 크기와 방향을 결정합니다.",
+        "flow": ("각 스러스터의 위치와 방향을 정의합니다.", "전체 TAM과 수평/수직 그룹 행렬을 만듭니다.", "pseudo-inverse를 계산해 이후 allocation 단계에서 재사용할 수 있게 저장합니다."),
+    },
+    "apply_deadband": {
+        "role": "작은 출력값을 0으로 만들어 스러스터 미세 떨림이나 불필요한 명령을 줄입니다.",
+        "why": "복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.",
+        "impact": "아주 작은 thruster command를 제거하여 actuator chatter와 불필요한 소비전력을 줄입니다.",
+        "flow": ("입력을 배열로 변환합니다.", "`output_deadband`보다 작은 값을 0으로 만듭니다.", "deadband가 적용된 결과를 반환합니다."),
+    },
+    "add_component_with_headroom": {
+        "role": "기존 출력에 추가 제어 성분을 더할 때 -1~1 범위를 넘지 않도록 남은 headroom만큼만 추가합니다.",
+        "why": "여러 제어 성분을 단순 합산하면 saturation으로 우선순위가 무너질 수 있어, 남은 출력 공간을 계산해 안전하게 합치기 위해 사용됩니다.",
+        "impact": "어떤 제어 성분이 saturation 상황에서 살아남는지에 직접 영향을 줍니다.",
+        "flow": ("기존 출력과 추가 성분을 배열로 변환합니다.", "추가 성분이 매우 작으면 기존 출력을 그대로 사용합니다.", "합산 결과가 한계를 넘으면 scale을 줄여 headroom 안에서만 더합니다."),
+    },
+    "allocate_priority_components": {
+        "role": "여러 제어 성분을 우선순위 순서대로 합성합니다. 먼저 들어온 성분이 출력 공간을 우선 사용합니다.",
+        "why": "복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.",
+        "impact": "heave, roll, pitch 같은 성분 중 어떤 항이 saturation 시 우선권을 갖는지 결정합니다.",
+        "flow": ("초기 출력을 0으로 시작합니다.", "components를 순서대로 순회합니다.", "`add_component_with_headroom()`으로 우선순위를 유지하며 합성합니다."),
+    },
+    "apply_slew_rate": {
+        "role": "이전 출력과 목표 출력 사이의 변화량을 시간 기준으로 제한합니다. 스러스터 명령의 급격한 변화를 줄입니다.",
+        "why": "스러스터와 전원 계통에 갑작스러운 명령 변화가 가해지는 것을 줄이기 위해 사용됩니다.",
+        "impact": "최종 thruster command의 응답 속도와 부드러움에 직접 영향을 줍니다.",
+        "flow": ("현재 시각과 이전 시각으로 `dt`를 계산합니다.", "목표 출력과 이전 출력 차이를 구합니다.", "축별 최대 변화량을 제한한 뒤 새 출력을 저장하고 반환합니다."),
+    },
+    "callback": {
+        "role": "최종 Wrench 명령을 받아 수평/수직 allocation, 보상, normalization, scaling, slew-rate를 거쳐 thruster command를 발행합니다.",
+        "why": "ROS2 topic 기반 시스템에서 비동기 메시지를 받아 제어 상태를 최신 값으로 유지하기 위해 사용됩니다.",
+        "impact": "스러스터 출력 분배에 직접 영향을 줍니다. 계산 결과는 최종 thruster command의 크기와 방향을 결정합니다.",
+        "flow": ("`/rov/wrench_cmd`에서 force와 torque를 읽습니다.", "surge, sway, heave, roll, pitch, yaw 성분을 분리합니다.", "기울어진 자세에서 수평 이동 시 필요한 heave 보상량을 계산합니다.", "수평 스러스터 그룹과 수직 스러스터 그룹으로 나누어 pseudo-inverse allocation을 수행합니다.", "토크 우선 또는 heave 우선 정책에 따라 vertical 출력을 합성합니다.", "출력 normalization, sign, output_scale, max_output, slew-rate, deadband를 적용합니다.", "`Float64MultiArray`로 8개 thruster command를 발행합니다."),
+    },
+    "on_parameter_update": {
+        "role": "ROS2 runtime parameter 변경을 노드 내부 변수에 반영합니다.",
+        "why": "실제 로봇 테스트 중 gain과 제한값을 노드를 재시작하지 않고 바꾸기 위해 사용됩니다.",
+        "impact": "이 함수의 결과는 같은 노드의 다음 계산 단계 또는 다른 제어 노드의 입력으로 사용됩니다. 따라서 값의 단위, 부호, 좌표계가 전체 ROV 움직임에 직접 영향을 줍니다.",
+        "flow": ("변경 요청된 parameter 목록을 순회합니다.", "parameter 이름에 맞는 내부 변수를 갱신합니다.", "각도 단위 parameter는 필요한 경우 radian으로 변환합니다.", "갱신 결과를 log로 남기고 `SetParametersResult`를 반환합니다."),
+    },
+    "main": {
+        "role": "rclpy를 초기화하고 노드를 생성한 뒤 spin을 수행합니다.",
+        "why": "ROS2 노드 생명주기를 시작하고 종료 처리를 안정적으로 수행하기 위해 사용됩니다.",
+        "impact": "이 함수는 allocator 노드가 실제 ROS graph 안에서 동작하기 시작하는 진입점입니다.",
+        "flow": ("`rclpy.init()`으로 ROS2를 초기화합니다.", "노드 객체를 생성합니다.", "`rclpy.spin()`으로 callback 처리를 시작합니다.", "종료 시 노드를 정리하고 `rclpy.shutdown()`을 호출합니다."),
+    },
+}
 
 
 DEF_RE = re.compile(r"^(\s*)def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(")
@@ -1227,6 +1379,70 @@ def extract_snippet(source: str, names: Iterable[str]) -> str:
     return "\n\n".join(snippets).strip()
 
 
+def get_def_map(source: str) -> dict[str, dict[str, int | str]]:
+    return {str(item["name"]): item for item in extract_def_ranges(source.splitlines())}
+
+
+def get_signature(snippet: str) -> str:
+    first_line = snippet.splitlines()[0].strip() if snippet.strip() else ""
+    return first_line.removesuffix(":")
+
+
+def get_parameter_names_from_signature(signature: str) -> list[str]:
+    match = re.search(r"\((.*)\)", signature)
+    if not match:
+        return []
+    raw = match.group(1).strip()
+    if not raw:
+        return []
+    names: list[str] = []
+    for part in raw.split(","):
+        item = part.strip()
+        if not item:
+            continue
+        item = item.split("=")[0].strip()
+        item = item.split(":")[0].strip()
+        names.append(item)
+    return names
+
+
+def format_input_description(name: str, signature: str) -> str:
+    params = get_parameter_names_from_signature(signature)
+    if not params:
+        return "없음"
+    return ", ".join(params)
+
+
+def format_output_description(name: str, snippet: str) -> str:
+    if name == "__init__":
+        return "직접적인 return 값보다는 내부 상태 갱신 또는 ROS topic 발행이 핵심 출력입니다."
+    if name == "main":
+        return "직접적인 return 값보다는 노드 실행과 종료 처리가 핵심 출력입니다."
+    if name.endswith("_callback"):
+        return "직접적인 return 값보다는 내부 상태 갱신 또는 ROS topic 발행이 핵심 출력입니다."
+    if name == "on_parameter_update":
+        return "파라미터 갱신 결과를 `SetParametersResult`로 반환하면서 내부 상태를 함께 갱신합니다."
+    if "return " in snippet:
+        return "계산 결과를 return하며, 호출한 제어 로직에서 다음 계산의 입력으로 사용됩니다."
+    return "내부 상태 갱신이 중심이며, 필요 시 계산 결과를 return합니다."
+
+
+def format_allocator_function_title(name: str) -> str:
+    if name == "main":
+        return "전역 함수.main()"
+    if name in {"normalize", "normalize_group_unit", "quat_to_rotation_z_row", "quat_to_rpy"}:
+        return f"전역 함수.{name}()"
+    return f"AllocatorNode.{name}()"
+
+
+def render_flow_steps_markdown(steps: tuple[str, ...]) -> list[str]:
+    return [f"  - {step}" for step in steps]
+
+
+def render_flow_steps_html(steps: tuple[str, ...]) -> str:
+    return "<ul class=\"flow-list\">" + "".join(f"<li>{inline_code(step)}</li>" for step in steps) + "</ul>"
+
+
 def inline_code(text: str) -> str:
     parts = re.split(r"(`[^`]+`)", text)
     rendered: list[str] = []
@@ -1265,7 +1481,178 @@ def build_function_map(source: str) -> list[str]:
     return names
 
 
+def render_markdown_allocator_module(config: ModuleConfig, source: str) -> str:
+    function_map = build_function_map(source)
+    def_map = get_def_map(source)
+    chapter_no = MODULE_CHAPTERS.get(config.key, 2)
+    lines: list[str] = [
+        "# ROV Control Code Review - 함수별 설명 문서",
+        "",
+        f"{chapter_no}장. `{config.source_filename}`",
+        "",
+        config.role_summary,
+        "",
+        "이 파일은 제어기가 계산한 6축 wrench를 실제 8개 스러스터 명령으로 바꾸는 마지막 단계입니다. 제어 성능뿐 아니라 실제 로봇 안전에도 직접 연결됩니다.",
+        "",
+        f"- 파일: `{config.source_filename}`",
+        f"- 함수 개수: {len(function_map)}",
+        f"- 주요 역할: {config.role_summary}",
+        "",
+    ]
+
+    for index, name in enumerate(function_map, start=1):
+        meta = ALLOCATOR_FUNCTION_DOCS.get(name)
+        if meta is None:
+            continue
+        snippet = extract_snippet(source, (name,))
+        signature = get_signature(snippet)
+        params = format_input_description(name, signature)
+        output = format_output_description(name, snippet)
+        def_info = def_map.get(name)
+        start = int(def_info["start"]) + 1 if def_info else 1
+        end = int(def_info["end"]) if def_info else start
+        lines.extend(
+            [
+                f"{chapter_no}장.{index} {format_allocator_function_title(name)}",
+                "",
+                f"- 위치: `{config.source_filename}:{start}-{end}`",
+                f"- 입력: {params}",
+                f"- 출력: {output}",
+                f"- 역할: {meta['role']}",
+                f"- 왜 사용했는가: {meta['why']}",
+                f"- 제어 영향: {meta['impact']}",
+                "- 내부 동작 흐름:",
+                *render_flow_steps_markdown(tuple(meta["flow"])),
+                "- 코드 일부:",
+                "",
+                "```python",
+                snippet,
+                "```",
+                "",
+            ]
+        )
+
+    lines.extend(
+        [
+            "## 전체 코드",
+            "",
+            "```python",
+            source.rstrip(),
+            "```",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def render_html_allocator_module(config: ModuleConfig, source: str) -> str:
+    function_map = build_function_map(source)
+    def_map = get_def_map(source)
+    chapter_no = MODULE_CHAPTERS.get(config.key, 2)
+    nav_links = "\n".join(
+        f'<a href="#fn-{html.escape(name)}">{html.escape(name)}()</a>' for name in function_map if name in ALLOCATOR_FUNCTION_DOCS
+    )
+    sections: list[str] = []
+    for index, name in enumerate(function_map, start=1):
+        meta = ALLOCATOR_FUNCTION_DOCS.get(name)
+        if meta is None:
+            continue
+        snippet = extract_snippet(source, (name,))
+        signature = get_signature(snippet)
+        params = format_input_description(name, signature)
+        output = format_output_description(name, snippet)
+        def_info = def_map.get(name)
+        start = int(def_info["start"]) + 1 if def_info else 1
+        end = int(def_info["end"]) if def_info else start
+        sections.append(
+            f"""
+      <section id="fn-{html.escape(name)}" class="review-section">
+        <div class="panel-heading">
+          <div>
+            <p class="section-kicker">Chapter {chapter_no}.{index}</p>
+            <h2>{html.escape(format_allocator_function_title(name))}</h2>
+          </div>
+        </div>
+        <div class="doc-grid">
+          <article class="review-card code-card">
+            <h3>코드 일부</h3>
+            <pre><code>{html.escape(snippet)}</code></pre>
+          </article>
+          <article class="review-card prose-card">
+            <dl class="doc-meta">
+              <div><dt>위치</dt><dd><code>{html.escape(config.source_filename)}:{start}-{end}</code></dd></div>
+              <div><dt>입력</dt><dd>{inline_code(params)}</dd></div>
+              <div><dt>출력</dt><dd>{inline_code(output)}</dd></div>
+              <div><dt>역할</dt><dd>{inline_code(meta["role"])}</dd></div>
+              <div><dt>왜 사용했는가</dt><dd>{inline_code(meta["why"])}</dd></div>
+              <div><dt>제어 영향</dt><dd>{inline_code(meta["impact"])}</dd></div>
+              <div><dt>내부 동작 흐름</dt><dd>{render_flow_steps_html(tuple(meta["flow"]))}</dd></div>
+            </dl>
+          </article>
+        </div>
+      </section>
+            """.strip()
+        )
+
+    return f"""<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{html.escape(config.title)}</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body class="detail-body">
+  <div class="detail-shell">
+    <aside class="detail-sidebar">
+      <a class="back-link" href="index.html">← 리뷰 홈으로</a>
+      <p class="eyebrow">ROV Control Code Review</p>
+      <h1>{chapter_no}장. {html.escape(config.source_filename)}</h1>
+      <p class="meta">{inline_code(config.role_summary)}</p>
+      <nav class="toc">
+        <a href="#chapter">장 개요</a>
+        {nav_links}
+        <a href="#full-source">전체 코드</a>
+      </nav>
+    </aside>
+    <main class="detail-content">
+      <section id="chapter" class="hero">
+        <div>
+          <p class="eyebrow">Module Chapter</p>
+          <h2>최종 Wrench 명령을 8개 스러스터 명령으로 변환하는 Control Allocation 노드</h2>
+          <p>{inline_code(config.role_summary)}</p>
+          <p>이 파일은 제어기가 계산한 6축 wrench를 실제 8개 스러스터 명령으로 바꾸는 마지막 단계입니다. 제어 성능뿐 아니라 실제 로봇 안전에도 직접 연결됩니다.</p>
+          <ul class="summary-list">
+            <li>파일: <code>{html.escape(config.source_filename)}</code></li>
+            <li>함수 개수: {len(function_map)}</li>
+            <li>주요 역할: {inline_code(config.role_summary)}</li>
+          </ul>
+        </div>
+      </section>
+      {' '.join(sections)}
+      <section id="full-source" class="panel">
+        <div class="panel-heading">
+          <div>
+            <p class="section-kicker">Full Source</p>
+            <h2>전체 코드</h2>
+          </div>
+        </div>
+        <details class="source-details" open>
+          <summary>전체 파일 펼치기 / 접기</summary>
+          <pre><code>{html.escape(source.rstrip())}</code></pre>
+        </details>
+      </section>
+    </main>
+  </div>
+</body>
+</html>
+"""
+
+
 def render_markdown_module(config: ModuleConfig, source: str) -> str:
+    if config.key == "allocator":
+        return render_markdown_allocator_module(config, source)
+
     function_map = build_function_map(source)
     lines: list[str] = [
         f"# {config.title}",
@@ -1357,6 +1744,9 @@ def render_markdown_module(config: ModuleConfig, source: str) -> str:
 
 
 def render_html_module(config: ModuleConfig, source: str) -> str:
+    if config.key == "allocator":
+        return render_html_allocator_module(config, source)
+
     function_map = build_function_map(source)
     nav_links = "\n".join(
         f'<a href="#{slugify(item.heading)}">{html.escape(item.heading)}</a>' for item in config.items
@@ -1762,6 +2152,12 @@ pre code {
   gap: 18px;
 }
 
+.doc-grid {
+  display: grid;
+  grid-template-columns: minmax(420px, 1.05fr) minmax(340px, 0.95fr);
+  gap: 18px;
+}
+
 .prose-card h3,
 .code-card h3 {
   margin-top: 0;
@@ -1793,6 +2189,38 @@ pre code {
   list-style: none;
   display: grid;
   gap: 14px;
+}
+
+.doc-meta {
+  margin: 0;
+  display: grid;
+  gap: 14px;
+}
+
+.doc-meta div {
+  padding: 14px 16px;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.doc-meta dt {
+  margin: 0 0 6px;
+  color: var(--text);
+  font-weight: 700;
+}
+
+.doc-meta dd {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.8;
+}
+
+.flow-list {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--muted);
+  line-height: 1.8;
 }
 
 .parameter-list li {
@@ -1848,7 +2276,8 @@ pre code {
   }
 
   .module-grid,
-  .review-grid {
+  .review-grid,
+  .doc-grid {
     grid-template-columns: 1fr;
   }
 
