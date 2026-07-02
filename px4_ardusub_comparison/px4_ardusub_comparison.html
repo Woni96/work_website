@@ -26,6 +26,7 @@
         <a href="#mapping">실무 대응표</a>
         <a href="#appendix">별첨</a>
         <a href="#gaps">ArduSub에 있고 현재 없는 항목</a>
+        <a href="#bluerobotics-compare">Blue Robotics 비교</a>
       </nav>
 
       <div class="sidebar-card">
@@ -712,6 +713,129 @@
         </div>
       </section>
 
+      <section id="bluerobotics-compare" class="panel" data-category="operations architecture">
+        <div class="panel-heading">
+          <div>
+            <p class="section-kicker">11. Blue Robotics vs 현재 ROV</p>
+            <h2>센서 / 조명 / 출력 / 운용 기능 비교</h2>
+          </div>
+          <span class="badge">Ecosystem</span>
+        </div>
+
+        <div class="highlight-callout">
+          <strong>핵심:</strong> 현재 ROV는 제어기 커스터마이징이 강하고, Blue Robotics는 카메라·조명·그리퍼·소나·failsafe까지 포함한 완성형 운용 생태계가 강합니다.
+        </div>
+
+        <div class="three-up">
+          <article class="summary-card">
+            <h3>현재 ROV</h3>
+            <p>ROS 2 제어기 중심 구조로, DVL / IMU / depth 센서를 직접 제어 노드에 연결해 실험과 튜닝을 빠르게 반복하기 좋습니다.</p>
+          </article>
+          <article class="summary-card">
+            <h3>BlueROV2 / Navigator</h3>
+            <p>완성형 하드웨어 플랫폼에 가깝고, 카메라·조명·센서·액세서리를 바로 선택하거나 확장하기 쉬운 구성이 강점입니다.</p>
+          </article>
+          <article class="summary-card">
+            <h3>실무 해석</h3>
+            <p>제어 알고리즘 개발은 현재 구조가 유리하고, 현장 운용과 주변장치 확장은 Blue Robotics 쪽이 더 정리되어 있습니다.</p>
+          </article>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>항목</th>
+                <th>Blue Robotics / ArduSub</th>
+                <th>현재 ROV</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td>기본 IMU</td><td>있음</td><td>있음</td></tr>
+              <tr><td>depth hold</td><td>있음</td><td>있음</td></tr>
+              <tr><td>DVL 기반 XY hold</td><td>확장/통합 가능</td><td>있음</td></tr>
+              <tr><td>magnetometer / heading 센서</td><td>있음</td><td>현재 자료상 없음</td></tr>
+              <tr><td>leak sensor</td><td>있음</td><td>현재 자료상 없음</td></tr>
+              <tr><td>battery failsafe</td><td>있음</td><td>현재 자료상 없음</td></tr>
+              <tr><td>camera 기본 제공</td><td>있음</td><td>현재 자료상 없음</td></tr>
+              <tr><td>camera tilt</td><td>있음</td><td>현재 자료상 없음</td></tr>
+              <tr><td>gripper 확장</td><td>있음</td><td>현재 자료상 없음</td></tr>
+              <tr><td>sonar 확장</td><td>있음</td><td>현재 자료상 없음</td></tr>
+              <tr><td>lights 옵션</td><td>2개 또는 4개</td><td>현재 자료상 확인 안 됨</td></tr>
+              <tr><td>lights 밝기</td><td>최대 6,000 lumens</td><td>현재 자료상 확인 안 됨</td></tr>
+              <tr><td>accessory outputs</td><td>16 outputs</td><td>현재 자료상 명시 없음</td></tr>
+              <tr><td>thruster 구성</td><td>6기본 / 8확장</td><td>8출력 전제</td></tr>
+              <tr><td>mission mode</td><td>있음</td><td>없음</td></tr>
+              <tr><td>surface / failsafe 체계</td><td>강함</td><td>약함</td></tr>
+              <tr><td>제어기 커스터마이징</td><td>중간</td><td>매우 강함</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="two-column">
+          <div class="subpanel">
+            <h3>센서 관점</h3>
+            <ul class="check-list">
+              <li>현재 ROV는 `IMU`, `depth sensor`, `DVL`이 제어 목적 중심으로 직접 연결됩니다.</li>
+              <li>Blue Robotics는 `IMU`, `magnetometer`, `leak sensor`가 기본 축이고 소나·온도·카메라 계열 확장이 쉽습니다.</li>
+              <li>현재 구조는 제어 성능 실험에 유리하고, Blue Robotics는 센서 다양화와 통합 운용에 유리합니다.</li>
+            </ul>
+          </div>
+          <div class="subpanel">
+            <h3>LED / 조명 관점</h3>
+            <ul class="check-list">
+              <li>BlueROV2 공식 옵션은 2-light 또는 4-light 구성입니다.</li>
+              <li>최대 밝기는 최대 6,000 lumens로 안내됩니다.</li>
+              <li>현재 워크스페이스 문서/코드에는 LED 제어 노드, dimming, 출력 개수 정의가 보이지 않습니다.</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="two-column">
+          <div class="subpanel">
+            <h3>출력 / 액세서리 관점</h3>
+            <ul>
+              <li>Blue Robotics는 Navigator 기준으로 thrusters, lights, grippers 등을 연결할 수 있는 `16 outputs`를 강조합니다.</li>
+              <li>현재 ROV는 allocator 기준으로 `8개 thruster` 출력은 명확하지만, 액세서리 출력 체계는 문서상 드러나지 않습니다.</li>
+              <li>즉 현재는 추력 제어 중심, Blue Robotics는 추력 + 액세서리 전체 플랫폼 중심입니다.</li>
+            </ul>
+          </div>
+          <div class="subpanel">
+            <h3>카메라 / 소나 / 그리퍼 관점</h3>
+            <ul>
+              <li>BlueROV2는 전방 저조도 HD 카메라와 틸트 메커니즘, 외부 카메라 / 그리퍼 / 스캐닝 소나 확장성을 제공합니다.</li>
+              <li>현재 워크스페이스 기준으로는 카메라 처리, 그리퍼 제어, 소나 연동 파이프라인이 문서화되어 있지 않습니다.</li>
+              <li>따라서 현재 구조는 제어기 바깥 장비를 붙이려면 별도 드라이버와 출력 매핑 작업이 필요할 가능성이 큽니다.</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="references">
+          <div class="subpanel">
+            <h3>현재 ROV 강점</h3>
+            <ul>
+              <li>축별 제어기 분리</li>
+              <li>DVL / depth / attitude 세밀 튜닝</li>
+              <li>기체 맞춤형 allocator</li>
+              <li>제어 로직 실험 자유도</li>
+            </ul>
+          </div>
+          <div class="subpanel">
+            <h3>Blue Robotics 강점</h3>
+            <ul>
+              <li>카메라 / LED / 그리퍼 / 소나 생태계</li>
+              <li>ArduSub / BlueOS 기반 운용 모드</li>
+              <li>leak / battery / comm failsafe</li>
+              <li>출력 / 포트 / 확장 계획 수립 용이</li>
+            </ul>
+          </div>
+          <div class="subpanel">
+            <h3>한 줄 결론</h3>
+            <p>현재 ROV는 제어 개발 플랫폼으로 좋고, BlueROV2 / ArduSub는 완성형 운용 플랫폼으로 더 강합니다.</p>
+          </div>
+        </div>
+      </section>
+
       <section class="panel" data-category="operations">
         <div class="panel-heading">
           <div>
@@ -747,6 +871,13 @@
             <ul>
               <li><a href="https://ardupilot.org/sub/docs/modes.html" target="_blank" rel="noreferrer">Modes</a></li>
               <li><a href="https://ardupilot.org/sub/docs/parameters-Sub-stable-V4.5.7.html" target="_blank" rel="noreferrer">Parameters</a></li>
+              <li><a href="https://ardupilot.org/sub/docs/common-optional-hardware.html" target="_blank" rel="noreferrer">Peripheral Hardware</a></li>
+            </ul>
+          </div>
+          <div class="subpanel">
+            <h3>Blue Robotics 공식 문서</h3>
+            <ul>
+              <li><a href="https://bluerobotics.com/store/rov/bluerov2/" target="_blank" rel="noreferrer">BlueROV2 Product Page</a></li>
             </ul>
           </div>
         </div>
