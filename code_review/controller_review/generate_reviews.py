@@ -1179,6 +1179,7 @@ SUMMARY_HTML = """
 MODULE_CHAPTERS = {
     "allocator": 2,
     "attitude": 3,
+    "depth": 4,
 }
 
 ALLOCATOR_FUNCTION_DOCS = {
@@ -1345,9 +1346,30 @@ ATTITUDE_FUNCTION_DOCS = {
     "main": {"role": "rclpy를 초기화하고 노드를 생성한 뒤 spin을 수행합니다.", "why": "ROS2 노드 생명주기를 시작하고 종료 처리를 안정적으로 수행하기 위해 사용됩니다.", "impact": "이 함수는 attitude controller 노드가 실제 ROS graph 안에서 동작하기 시작하는 진입점입니다.", "flow": ("`rclpy.init()`으로 ROS2를 초기화합니다.", "노드 객체를 생성합니다.", "`rclpy.spin()`으로 callback 처리를 시작합니다.", "종료 시 노드를 정리하고 `rclpy.shutdown()`을 호출합니다.")},
 }
 
+DEPTH_FUNCTION_DOCS = {
+    "quat_to_rotation_z_row": {"role": "IMU quaternion에서 body z축이 world 좌표계에서 향하는 방향 성분을 계산합니다. 기체가 기울어진 상태의 heave 보상 계산에 사용됩니다.", "why": "ROV 제어에서는 자세 표현과 좌표계 변환이 계속 필요하므로, 반복되는 수학 연산을 함수로 분리한 것입니다.", "impact": "수심 목표 추종, 상승/하강 속도, 수동 heave 조작 이후의 depth hold 동작에 영향을 줍니다.", "flow": ("입력 quaternion의 노름을 계산합니다.", "노름이 너무 작으면 기본 z축 `(0, 0, 1)`을 반환합니다.", "정규화된 quaternion으로 world 기준 body z축 방향 성분을 계산합니다.")},
+    "__init__": {"role": "ROS2 노드의 파라미터, 상태 변수, subscriber, publisher, timer를 초기화합니다. 해당 제어 노드가 시스템에 연결되는 시작점입니다.", "why": "노드가 실행되기 전에 필요한 파라미터, 통신 인터페이스, 상태 변수를 모두 준비해야 하기 때문에 사용됩니다.", "impact": "수심 목표 추종, 상승/하강 속도, 수동 heave 조작 이후의 depth hold 동작에 영향을 줍니다.", "flow": ("노드 이름을 설정합니다.", "ROS parameter를 선언하고 현재 값을 읽습니다.", "제어에 필요한 내부 상태 변수를 초기화합니다.", "subscriber와 publisher를 생성합니다.", "timer 또는 parameter callback을 등록합니다.", "초기 설정값을 log로 출력합니다.")},
+    "armed_callback": {"role": "armed/disarmed 상태 변화를 받아 제어 목표 및 출력을 안전하게 초기화합니다.", "why": "ROS2 topic 기반 시스템에서 비동기 메시지를 받아 제어 상태를 최신 값으로 유지하기 위해 사용됩니다.", "impact": "수심 목표 추종, 상승/하강 속도, 수동 heave 조작 이후의 depth hold 동작에 영향을 줍니다.", "flow": ("ROS2 메시지를 수신합니다.", "armed 상태와 이전 상태를 갱신합니다.", "arm/disarm edge에 따라 target, 적분항, 출력 상태를 초기화하고 필요시 publish합니다.")},
+    "publish_depth_active": {"role": "수심 제어가 실제 활성 상태인지 Bool topic으로 발행합니다.", "why": "복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.", "impact": "수심 목표 추종, 상승/하강 속도, 수동 heave 조작 이후의 depth hold 동작에 영향을 줍니다.", "flow": ("입력 active 상태를 Bool 메시지로 변환합니다.", "메시지 필드를 채웁니다.", "depth active topic으로 발행합니다.")},
+    "depth_control_is_active": {"role": "armed, enable, target, sensor 조건을 확인해 depth control 활성 여부를 판단합니다.", "why": "복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.", "impact": "수심 목표 추종, 상승/하강 속도, 수동 heave 조작 이후의 depth hold 동작에 영향을 줍니다.", "flow": ("armed 수신 여부를 확인합니다.", "armed/control enabled/target initialized/current depth 조건을 차례로 확인합니다.", "모든 조건이 만족되면 활성 상태를 반환합니다.")},
+    "clamp_target_depth": {"role": "목표 수심을 허용 범위 안으로 제한합니다.", "why": "복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.", "impact": "수심 목표 추종, 상승/하강 속도, 수동 heave 조작 이후의 depth hold 동작에 영향을 줍니다.", "flow": ("최소/최대 target depth 한계를 읽습니다.", "하한과 상한을 정렬합니다.", "현재 target depth를 허용 범위 안으로 clamp합니다.")},
+    "capture_manual_release_target": {"role": "수동 heave 조작이 끝났을 때 현재 수심 근처를 새 목표로 잡습니다.", "why": "복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.", "impact": "수심 목표 추종, 상승/하강 속도, 수동 heave 조작 이후의 depth hold 동작에 영향을 줍니다.", "flow": ("현재 수심에 release offset을 더해 새 target depth를 계산합니다.", "target depth를 허용 범위로 제한합니다.", "target initialized와 적분항을 갱신하고 로그를 남깁니다.")},
+    "_set_control_enabled": {"role": "제어 enable 상태 변경 시 목표값, 적분항, 출력 상태를 초기화하거나 0 출력합니다.", "why": "복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.", "impact": "수심 목표 추종, 상승/하강 속도, 수동 heave 조작 이후의 depth hold 동작에 영향을 줍니다.", "flow": ("이전 enable 상태와 새 상태를 비교합니다.", "enable 시 현재 수심 기반으로 target을 준비하고 적분항을 초기화합니다.", "disable 시 0 heave publish와 상태 정리를 수행합니다.")},
+    "cmd_depth_callback": {"role": "외부 목표 수심 명령을 수신해 target_depth에 반영합니다.", "why": "ROS2 topic 기반 시스템에서 비동기 메시지를 받아 제어 상태를 최신 값으로 유지하기 위해 사용됩니다.", "impact": "수심 목표 추종, 상승/하강 속도, 수동 heave 조작 이후의 depth hold 동작에 영향을 줍니다.", "flow": ("ROS2 메시지를 수신합니다.", "입력 수심값을 target depth로 저장합니다.", "target을 clamp하고 initialized 상태 및 로그를 갱신합니다.")},
+    "imu_callback": {"role": "IMU 메시지를 수신하여 현재 자세, 각속도, 또는 z축 방향 정보를 내부 상태에 저장합니다.", "why": "ROS2 topic 기반 시스템에서 비동기 메시지를 받아 제어 상태를 최신 값으로 유지하기 위해 사용됩니다.", "impact": "수심 목표 추종, 상승/하강 속도, 수동 heave 조작 이후의 depth hold 동작에 영향을 줍니다.", "flow": ("ROS2 메시지를 수신합니다.", "orientation에서 body z축의 world 방향 성분을 계산합니다.", "내부 IMU 상태와 `have_imu` 플래그를 갱신합니다.")},
+    "compensate_depth_sensor_offset": {"role": "depth 센서가 로봇 중심에서 떨어진 위치에 있을 때 자세에 따른 측정 오차를 보정합니다.", "why": "복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.", "impact": "수심 목표 추종, 상승/하강 속도, 수동 heave 조작 이후의 depth hold 동작에 영향을 줍니다.", "flow": ("보상 기능과 IMU 유효성을 확인합니다.", "현재 z축 방향과 센서 오프셋으로 센서의 world z 위치를 계산합니다.", "raw sensor depth에서 자세 유래 오차를 보정한 depth를 반환합니다.")},
+    "manual_wrench_callback": {"role": "조종기 또는 상위 입력에서 들어오는 수동 Wrench 명령을 저장합니다.", "why": "ROS2 topic 기반 시스템에서 비동기 메시지를 받아 제어 상태를 최신 값으로 유지하기 위해 사용됩니다.", "impact": "수심 목표 추종, 상승/하강 속도, 수동 heave 조작 이후의 depth hold 동작에 영향을 줍니다.", "flow": ("ROS2 메시지를 수신합니다.", "manual heave와 수신 시각을 저장합니다.", "manual active edge를 감지하고 release 시 새 target 캡처를 수행합니다.")},
+    "manual_wrench_is_fresh": {"role": "최근 수동 wrench 입력이 timeout 이내인지 판단합니다.", "why": "복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.", "impact": "수심 목표 추종, 상승/하강 속도, 수동 heave 조작 이후의 depth hold 동작에 영향을 줍니다.", "flow": ("timeout 설정이 비활성인지 확인합니다.", "마지막 manual 입력 시각이 있는지 확인합니다.", "현재 시각과의 차이를 계산해 freshness 여부를 반환합니다.")},
+    "clear_stale_manual_heave": {"role": "수동 heave 입력이 오래되면 0으로 정리하고 release target 처리를 수행합니다.", "why": "복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.", "impact": "수심 목표 추종, 상승/하강 속도, 수동 heave 조작 이후의 depth hold 동작에 영향을 줍니다.", "flow": ("manual 입력이 아직 fresh한지 확인합니다.", "stale인데 manual active였다면 release target을 캡처합니다.", "manual heave와 active 상태를 0/False로 정리합니다.")},
+    "depth_callback": {"role": "수심 센서 데이터를 받을 때마다 PID 기반 heave 명령을 계산하고 상태 topic을 발행합니다.", "why": "ROS2 topic 기반 시스템에서 비동기 메시지를 받아 제어 상태를 최신 값으로 유지하기 위해 사용됩니다.", "impact": "수심 목표 추종, 상승/하강 속도, 수동 heave 조작 이후의 depth hold 동작에 영향을 줍니다.", "flow": ("depth 센서값을 읽고 센서 offset 보상을 적용합니다.", "수동 heave 입력 timeout을 확인합니다.", "초기 target depth가 없으면 현재 수심을 목표로 캡처합니다.", "이전 depth와 시간 차이로 depth rate를 계산하고 low-pass filter를 적용합니다.", "armed, enable, target 조건을 확인하여 depth control 활성 상태를 판단합니다.", "수동 heave가 active이면 target depth를 pilot rate 방식으로 이동시킵니다.", "PID 식으로 raw heave command를 계산하고 sign, limit, upward limit, delta limit를 적용합니다.", "heave command, target depth, depth error, depth rate를 발행합니다.")},
+    "on_parameter_update": {"role": "ROS2 runtime parameter 변경을 노드 내부 변수에 반영합니다.", "why": "실제 로봇 테스트 중 gain과 제한값을 노드를 재시작하지 않고 바꾸기 위해 사용됩니다.", "impact": "수심 목표 추종, 상승/하강 속도, 수동 heave 조작 이후의 depth hold 동작에 영향을 줍니다.", "flow": ("변경 요청된 parameter 목록을 순회합니다.", "parameter 이름에 맞는 내부 변수를 갱신합니다.", "각도 단위 parameter는 필요한 경우 radian으로 변환합니다.", "갱신 결과를 log로 남깁니다.", "성공 또는 실패 결과를 `SetParametersResult`로 반환합니다.")},
+    "main": {"role": "rclpy를 초기화하고 노드를 생성한 뒤 spin을 수행합니다.", "why": "ROS2 노드 생명주기를 시작하고 종료 처리를 안정적으로 수행하기 위해 사용됩니다.", "impact": "수심 목표 추종, 상승/하강 속도, 수동 heave 조작 이후의 depth hold 동작에 영향을 줍니다.", "flow": ("`rclpy.init()`으로 ROS2를 초기화합니다.", "노드 객체를 생성합니다.", "`rclpy.spin()`으로 callback 처리를 시작합니다.", "종료 시 노드를 destroy하고 `rclpy.shutdown()`을 호출합니다.")},
+}
+
 CHAPTER_FUNCTION_DOCS = {
     "allocator": ALLOCATOR_FUNCTION_DOCS,
     "attitude": ATTITUDE_FUNCTION_DOCS,
+    "depth": DEPTH_FUNCTION_DOCS,
 }
 
 
@@ -1494,6 +1516,12 @@ def format_chapter_function_title(module_key: str, name: str) -> str:
         if name in {"clamp", "vec_norm", "quat_normalize", "quat_conj", "quat_mul", "quat_to_rpy", "rpy_to_quat", "wrap_to_pi"}:
             return f"전역 함수.{name}()"
         return f"AttitudeController.{name}()"
+    if module_key == "depth":
+        if name == "main":
+            return "전역 함수.main()"
+        if name in {"quat_to_rotation_z_row"}:
+            return f"전역 함수.{name}()"
+        return f"DepthController.{name}()"
     return name
 
 
@@ -1551,10 +1579,12 @@ def render_markdown_chapter_module(config: ModuleConfig, source: str) -> str:
     chapter_title = {
         "allocator": "최종 Wrench 명령을 8개 스러스터 명령으로 변환하는 Control Allocation 노드",
         "attitude": "IMU 기반 Roll/Pitch/Yaw 자세 유지 토크를 생성하는 자세 제어 노드",
+        "depth": "수심 센서와 IMU 보정을 이용해 Heave 명령을 생성하는 수심 제어 노드",
     }.get(config.key, config.role_summary)
     chapter_description = {
         "allocator": "이 파일은 제어기가 계산한 6축 wrench를 실제 8개 스러스터 명령으로 바꾸는 마지막 단계입니다. 제어 성능뿐 아니라 실제 로봇 안전에도 직접 연결됩니다.",
         "attitude": "이 파일은 IMU로 현재 자세를 읽고 목표 자세와 비교하여 roll/pitch/yaw 토크를 만듭니다. 수심, 위치 유지 중에도 기체 자세가 무너지지 않도록 하는 기반 제어기입니다.",
+        "depth": "이 파일은 목표 수심과 현재 수심의 차이를 이용해 상승/하강 명령을 만듭니다. 수동 heave 조작과 자동 depth hold를 자연스럽게 연결합니다.",
     }.get(config.key, config.role_summary)
     lines: list[str] = [
         "# ROV Control Code Review - 함수별 설명 문서",
@@ -1624,10 +1654,12 @@ def render_html_chapter_module(config: ModuleConfig, source: str) -> str:
     chapter_title = {
         "allocator": "최종 Wrench 명령을 8개 스러스터 명령으로 변환하는 Control Allocation 노드",
         "attitude": "IMU 기반 Roll/Pitch/Yaw 자세 유지 토크를 생성하는 자세 제어 노드",
+        "depth": "수심 센서와 IMU 보정을 이용해 Heave 명령을 생성하는 수심 제어 노드",
     }.get(config.key, config.role_summary)
     chapter_description = {
         "allocator": "이 파일은 제어기가 계산한 6축 wrench를 실제 8개 스러스터 명령으로 바꾸는 마지막 단계입니다. 제어 성능뿐 아니라 실제 로봇 안전에도 직접 연결됩니다.",
         "attitude": "이 파일은 IMU로 현재 자세를 읽고 목표 자세와 비교하여 roll/pitch/yaw 토크를 만듭니다. 수심, 위치 유지 중에도 기체 자세가 무너지지 않도록 하는 기반 제어기입니다.",
+        "depth": "이 파일은 목표 수심과 현재 수심의 차이를 이용해 상승/하강 명령을 만듭니다. 수동 heave 조작과 자동 depth hold를 자연스럽게 연결합니다.",
     }.get(config.key, config.role_summary)
     nav_links = "\n".join(
         f'<a href="#fn-{html.escape(name)}">{html.escape(name)}()</a>' for name in function_map if name in function_docs

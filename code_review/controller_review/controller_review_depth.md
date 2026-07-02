@@ -1,71 +1,28 @@
-# Depth Controller Review
+# ROV Control Code Review - 함수별 설명 문서
 
-대상 파일: `code_review/code/depth_controller.py`
+4장. `depth_controller.py`
 
-## 역할
-이 코드는 depth sensor와 IMU, manual heave 입력을 받아 최종 `Fz` 명령을 만드는 수심 유지 제어기입니다.
+수심 센서와 IMU 보정을 이용해 Heave 명령을 생성하는 수심 제어 노드
 
-## 설계 해석
-설계의 핵심은 `depth hold + pilot depth-rate`입니다. 즉 stick을 위아래로 움직이면 즉시 추진기 출력만 주는 것이 아니라, 목표 수심을 움직이는 방식으로 조종감을 만듭니다.
+이 파일은 목표 수심과 현재 수심의 차이를 이용해 상승/하강 명령을 만듭니다. 수동 heave 조작과 자동 depth hold를 자연스럽게 연결합니다.
 
-## 리뷰 초점
-리뷰 포인트는 `target depth를 언제 어떻게 캡처하는지`, `manual heave freshness를 어떻게 지우는지`, `depth sensor offset을 IMU로 어떻게 보정하는지`, `최종 heave shaping이 actuator-friendly한지`입니다.
+- 파일: `depth_controller.py`
+- 함수 개수: 17
+- 주요 역할: 수심 센서와 IMU 보정을 이용해 Heave 명령을 생성하는 수심 제어 노드
 
-## 런타임 동작 해설
-런타임에서는 `depth_callback()`가 depth sample을 받을 때마다 현재 depth, depth rate, manual heave 상태를 갱신하고 필요하면 target depth를 다시 잡습니다. 이후 PID, pilot depth-rate, saturation, upward limit, slew-rate 제한을 거쳐 최종 `Fz` 명령이 만들어집니다. 즉 이 모듈은 단순 PID가 아니라 상태 전이와 출력 shaping이 함께 들어간 depth hold 시스템입니다.
+4장.1 전역 함수.quat_to_rotation_z_row()
 
-## 핵심 파라미터
-- `kp_depth`, `ki_depth`, `kd_depth`: 수심 오차를 heave 명령으로 바꾸는 핵심 PID 게인입니다.
-- `manual_heave_override_threshold`: 이 값보다 큰 manual heave는 조종자가 depth hold를 직접 흔드는 입력으로 해석됩니다.
-- `manual_wrench_timeout_sec`: manual heave 입력이 이 시간 이상 갱신되지 않으면 stale로 보고 0으로 복구합니다.
-- `pilot_depth_rate_enabled`: manual heave를 직접 추력 명령으로 볼지, 목표 수심의 변화율로 볼지 정합니다.
-- `max_pilot_depth_rate`, `pilot_depth_rate_sign`: pilot depth-rate 모드에서 stick 입력이 target depth를 얼마나 빠르게 움직일지 정합니다.
-- `manual_heave_release_target_offset`: manual heave를 놓았을 때 현재 depth에 더해 새 target으로 삼는 오프셋입니다.
-- `max_heave`, `max_upward_heave`: 최종 heave 출력의 절대 한계와 상승 방향 한계를 정합니다.
-- `max_heave_delta_per_cycle`: 한 제어 주기에서 heave가 얼마나 급하게 바뀔 수 있는지 제한합니다.
-- `depth_rate_alpha`: depth 미분값에 low-pass filter를 얼마나 강하게 적용할지 정합니다.
-- `depth_sensor_offset_x/y/z`, `depth_sensor_offset_compensation_enabled`: 센서 장착 위치 보정과 IMU 기반 compensation 사용 여부를 정합니다.
-
-## 함수 맵
-- `quat_to_rotation_z_row()`
-- `__init__()`
-- `armed_callback()`
-- `publish_depth_active()`
-- `depth_control_is_active()`
-- `clamp_target_depth()`
-- `capture_manual_release_target()`
-- `_set_control_enabled()`
-- `cmd_depth_callback()`
-- `imu_callback()`
-- `compensate_depth_sensor_offset()`
-- `manual_wrench_callback()`
-- `manual_wrench_is_fresh()`
-- `clear_stale_manual_heave()`
-- `depth_callback()`
-- `on_parameter_update()`
-- `main()`
-
-## 함수 리뷰
-
-### `quat_to_rotation_z_row()`
-
-**의미**
-
-IMU quaternion에서 body z축이 world에서 어디를 보는지 계산하는 보조 함수입니다.
-
-**영향**
-
-depth sensor가 기체 중심에서 떨어져 있을 때, pitch/roll에 의해 측정 depth가 흔들리는 문제를 보정할 수 있게 해줍니다.
-
-**리뷰 메모**
-
-작은 함수지만 depth sensor offset compensation의 핵심 기반입니다. 이 함수가 없으면 IMU를 depth controller가 활용할 방법이 사라집니다.
-
-**상세 해설**
-
-depth sensor가 기체 중심이 아니라 다른 위치에 달려 있으면, 같은 수심에서도 pitch/roll에 따라 센서의 world z 좌표가 달라집니다. 이 함수는 바로 그 보정을 위해 body z축이 world에서 어떻게 놓여 있는지를 계산합니다.
-
-즉 depth controller가 '수심'만 보는 것 같아도 실제로는 자세 정보를 함께 써서 센서 물리 위치를 보정하는 구조이고, 이 함수가 그 수학적 출발점입니다.
+- 위치: `depth_controller.py:27-42`
+- 입력: x, y, z, w
+- 출력: 계산 결과를 return하며, 호출한 제어 로직에서 다음 계산의 입력으로 사용됩니다.
+- 역할: IMU quaternion에서 body z축이 world 좌표계에서 향하는 방향 성분을 계산합니다. 기체가 기울어진 상태의 heave 보상 계산에 사용됩니다.
+- 왜 사용했는가: ROV 제어에서는 자세 표현과 좌표계 변환이 계속 필요하므로, 반복되는 수학 연산을 함수로 분리한 것입니다.
+- 제어 영향: 수심 목표 추종, 상승/하강 속도, 수동 heave 조작 이후의 depth hold 동작에 영향을 줍니다.
+- 내부 동작 흐름:
+  - 입력 quaternion의 노름을 계산합니다.
+  - 노름이 너무 작으면 기본 z축 `(0, 0, 1)`을 반환합니다.
+  - 정규화된 quaternion으로 world 기준 body z축 방향 성분을 계산합니다.
+- 코드 일부:
 
 ```python
 def quat_to_rotation_z_row(x: float, y: float, z: float, w: float):
@@ -84,35 +41,22 @@ def quat_to_rotation_z_row(x: float, y: float, z: float, w: float):
     )
 ```
 
-### `__init__()`
+4장.2 DepthController.__init__()
 
-**의미**
-
-depth PID, manual override, pilot depth-rate, sensor offset compensation, output shaping 파라미터를 한 번에 선언합니다. 즉 depth controller가 단순한 `error -> heave` 계산기인지, 실제 운용형 hold 시스템인지가 여기서 갈립니다.
-
-**영향**
-
-이 함수가 depth hold의 운용 정책 전체를 결정합니다. 즉 단순 PID가 아니라 실제 조종기, arming, offset compensation, target clamp까지 모두 여기서 준비됩니다.
-
-**리뷰 메모**
-
-구성이 잘 되어 있고 실제 운용형 controller에 가깝습니다. 특히 `manual_wrench_timeout_sec`가 있는 점은 attitude/position보다 안전 측면에서 낫습니다.
-
-**상세 해설**
-
-이 함수는 depth controller를 읽을 때 가장 먼저 봐야 하는 구간입니다. 왜냐하면 depth hold의 감각은 `kp/ki/kd`보다도 `pilot_depth_rate_enabled`, `manual_heave_release_target_offset`, `max_upward_heave`, `depth_rate_alpha` 같은 정책 파라미터들에 크게 좌우되기 때문입니다.
-
-또한 이 함수는 sensor offset compensation 관련 파라미터도 함께 준비합니다. 즉 이 모듈은 단순 PID가 아니라 센서 물리 배치, arm/disarm 동작, manual release 감각, actuator 친화성까지 같이 품고 있는 시스템입니다.
-
-**이 함수와 관련된 파라미터**
-
-- `depth_topic`, `imu_topic`, `cmd_depth_topic`, `manual_wrench_topic`: depth hold에 들어오는 주요 센서/명령 입력입니다.
-- `kp_depth`, `ki_depth`, `kd_depth`: 수심 오차를 heave 출력으로 바꾸는 핵심 PID 게인입니다.
-- `pilot_depth_rate_enabled`, `max_pilot_depth_rate`, `pilot_depth_rate_sign`: manual heave를 direct thrust가 아니라 target depth rate로 해석할지 결정합니다.
-- `manual_heave_override_threshold`, `manual_wrench_timeout_sec`: manual heave 활성 조건과 stale input 해제 정책을 정합니다.
-- `manual_heave_release_target_offset`: pilot이 stick을 놓은 뒤 hold target을 현재 depth 기준 어디에 둘지 정합니다.
-- `max_heave`, `max_upward_heave`, `max_heave_delta_per_cycle`: 출력 saturation과 actuator-friendly shaping을 담당합니다.
-- `depth_sensor_offset_*`, `depth_sensor_offset_compensation_enabled`: 센서 장착 위치 보상에 필요한 파라미터입니다.
+- 위치: `depth_controller.py:45-287`
+- 입력: self
+- 출력: 직접적인 return 값보다는 내부 상태 갱신 또는 ROS topic 발행이 핵심 출력입니다.
+- 역할: ROS2 노드의 파라미터, 상태 변수, subscriber, publisher, timer를 초기화합니다. 해당 제어 노드가 시스템에 연결되는 시작점입니다.
+- 왜 사용했는가: 노드가 실행되기 전에 필요한 파라미터, 통신 인터페이스, 상태 변수를 모두 준비해야 하기 때문에 사용됩니다.
+- 제어 영향: 수심 목표 추종, 상승/하강 속도, 수동 heave 조작 이후의 depth hold 동작에 영향을 줍니다.
+- 내부 동작 흐름:
+  - 노드 이름을 설정합니다.
+  - ROS parameter를 선언하고 현재 값을 읽습니다.
+  - 제어에 필요한 내부 상태 변수를 초기화합니다.
+  - subscriber와 publisher를 생성합니다.
+  - timer 또는 parameter callback을 등록합니다.
+  - 초기 설정값을 log로 출력합니다.
+- 코드 일부:
 
 ```python
 def __init__(self):
@@ -359,30 +303,19 @@ def __init__(self):
     )
 ```
 
-### Arming / Active 상태 함수
+4장.3 DepthController.armed_callback()
 
-**의미**
-
-이 함수들은 controller가 언제 활성인지, target depth를 허용 범위 안에 둘지, arm/disarm에서 어떤 초기화를 할지 정의합니다.
-
-**영향**
-
-ROV가 arm 될 때 current depth를 target으로 잡고, disarm 시 integrator와 출력 상태를 초기화합니다. 즉 이 계층은 안전성과 target 일관성을 담당합니다.
-
-**리뷰 메모**
-
-상태 전이가 비교적 명확합니다. 실무에서는 `depth_control_is_active()` 같은 함수가 있어야 상위 시스템에서 상태를 해석하기 쉬워집니다.
-
-**상세 해설**
-
-이 계층은 depth controller가 '언제 계산할 수 있는가'보다 '언제 계산해야 하는가'를 정의합니다. `armed_callback()`은 arm/disarm 전이에서 integrator와 last output 같은 내부 상태를 정리하고, `publish_depth_active()`는 상위 merger나 UI가 depth hold 상태를 명시적으로 알 수 있게 합니다. `clamp_target_depth()`는 target이 물리적으로 지나치게 벗어나지 않도록 제한하는 방어 계층입니다.
-
-즉 PID 수식은 depth를 맞추는 역할이고, 이 계층은 그 PID가 잘못된 상태에서 과하게 일하지 않도록 경계를 세우는 역할입니다.
-
-**이 함수와 관련된 파라미터**
-
-- `control_enabled`: depth hold 계산 자체를 허용할지 정합니다.
-- `max_depth`, `min_depth`: 있다면 target clamp에 직접 연결되는 안전 한계입니다.
+- 위치: `depth_controller.py:288-311`
+- 입력: self, msg
+- 출력: 직접적인 return 값보다는 내부 상태 갱신 또는 ROS topic 발행이 핵심 출력입니다.
+- 역할: armed/disarmed 상태 변화를 받아 제어 목표 및 출력을 안전하게 초기화합니다.
+- 왜 사용했는가: ROS2 topic 기반 시스템에서 비동기 메시지를 받아 제어 상태를 최신 값으로 유지하기 위해 사용됩니다.
+- 제어 영향: 수심 목표 추종, 상승/하강 속도, 수동 heave 조작 이후의 depth hold 동작에 영향을 줍니다.
+- 내부 동작 흐름:
+  - ROS2 메시지를 수신합니다.
+  - armed 상태와 이전 상태를 갱신합니다.
+  - arm/disarm edge에 따라 target, 적분항, 출력 상태를 초기화하고 필요시 publish합니다.
+- 코드 일부:
 
 ```python
 def armed_callback(self, msg: Bool):
@@ -408,12 +341,44 @@ def armed_callback(self, msg: Bool):
         self.depth_integral = 0.0
         self.get_logger().info('DISARM -> depth controller output reset to zero')
         self.publish_depth_active(False)
+```
 
+4장.4 DepthController.publish_depth_active()
+
+- 위치: `depth_controller.py:312-316`
+- 입력: self, active
+- 출력: 내부 상태 갱신이 중심이며, 필요 시 계산 결과를 return합니다.
+- 역할: 수심 제어가 실제 활성 상태인지 Bool topic으로 발행합니다.
+- 왜 사용했는가: 복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.
+- 제어 영향: 수심 목표 추종, 상승/하강 속도, 수동 heave 조작 이후의 depth hold 동작에 영향을 줍니다.
+- 내부 동작 흐름:
+  - 입력 active 상태를 Bool 메시지로 변환합니다.
+  - 메시지 필드를 채웁니다.
+  - depth active topic으로 발행합니다.
+- 코드 일부:
+
+```python
 def publish_depth_active(self, active: bool):
     msg = Bool()
     msg.data = bool(active)
     self.depth_active_pub.publish(msg)
+```
 
+4장.5 DepthController.depth_control_is_active()
+
+- 위치: `depth_controller.py:317-325`
+- 입력: self
+- 출력: 계산 결과를 return하며, 호출한 제어 로직에서 다음 계산의 입력으로 사용됩니다.
+- 역할: armed, enable, target, sensor 조건을 확인해 depth control 활성 여부를 판단합니다.
+- 왜 사용했는가: 복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.
+- 제어 영향: 수심 목표 추종, 상승/하강 속도, 수동 heave 조작 이후의 depth hold 동작에 영향을 줍니다.
+- 내부 동작 흐름:
+  - armed 수신 여부를 확인합니다.
+  - armed/control enabled/target initialized/current depth 조건을 차례로 확인합니다.
+  - 모든 조건이 만족되면 활성 상태를 반환합니다.
+- 코드 일부:
+
+```python
 def depth_control_is_active(self) -> bool:
     return (
         self.armed_received and
@@ -422,7 +387,23 @@ def depth_control_is_active(self) -> bool:
         self.target_initialized and
         self.current_depth is not None
     )
+```
 
+4장.6 DepthController.clamp_target_depth()
+
+- 위치: `depth_controller.py:326-333`
+- 입력: self
+- 출력: 내부 상태 갱신이 중심이며, 필요 시 계산 결과를 return합니다.
+- 역할: 목표 수심을 허용 범위 안으로 제한합니다.
+- 왜 사용했는가: 복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.
+- 제어 영향: 수심 목표 추종, 상승/하강 속도, 수동 heave 조작 이후의 depth hold 동작에 영향을 줍니다.
+- 내부 동작 흐름:
+  - 최소/최대 target depth 한계를 읽습니다.
+  - 하한과 상한을 정렬합니다.
+  - 현재 target depth를 허용 범위 안으로 clamp합니다.
+- 코드 일부:
+
+```python
 def clamp_target_depth(self):
     lo = min(float(self.min_target_depth), float(self.max_target_depth))
     hi = max(float(self.min_target_depth), float(self.max_target_depth))
@@ -432,29 +413,19 @@ def clamp_target_depth(self):
         self.target_depth = hi
 ```
 
-### `capture_manual_release_target()`
+4장.7 DepthController.capture_manual_release_target()
 
-**의미**
-
-manual heave를 놓았을 때 현재 depth에 release offset을 더해 새 target depth를 잡는 함수입니다.
-
-**영향**
-
-이 함수가 조종자가 stick을 놓은 뒤 depth hold가 어디에서 다시 잠길지를 결정합니다.
-
-**리뷰 메모**
-
-운용 철학은 분명하지만 `current_depth + offset`은 직관과 다를 수 있습니다. 오프셋이 항상 들어가면 '놓은 자리 유지'보다 '조금 이동한 자리 유지'가 되어 사용자 혼란을 줄 수 있습니다.
-
-**상세 해설**
-
-이 함수는 manual heave 조작이 끝났을 때 depth hold가 다시 어느 수심을 목표로 삼을지 결정합니다. 현재 구현은 단순히 마지막 stick 명령을 끄는 것이 아니라, 현재 depth를 기준으로 새 target을 다시 잡는 철학을 갖고 있습니다.
-
-따라서 이 함수의 존재는 depth controller가 '추력 hold'가 아니라 '목표 수심 hold'라는 점을 분명히 보여줍니다. 사용자가 stick을 놓은 순간 즉시 안정적으로 잠기는 감각을 좌우하는 핵심 함수입니다.
-
-**이 함수와 관련된 파라미터**
-
-- `manual_heave_release_target_offset`: release 시 현재 depth에서 얼마나 이동한 위치를 새 target으로 삼을지 정합니다.
+- 위치: `depth_controller.py:334-345`
+- 입력: self, reason
+- 출력: 내부 상태 갱신이 중심이며, 필요 시 계산 결과를 return합니다.
+- 역할: 수동 heave 조작이 끝났을 때 현재 수심 근처를 새 목표로 잡습니다.
+- 왜 사용했는가: 복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.
+- 제어 영향: 수심 목표 추종, 상승/하강 속도, 수동 heave 조작 이후의 depth hold 동작에 영향을 줍니다.
+- 내부 동작 흐름:
+  - 현재 수심에 release offset을 더해 새 target depth를 계산합니다.
+  - target depth를 허용 범위로 제한합니다.
+  - target initialized와 적분항을 갱신하고 로그를 남깁니다.
+- 코드 일부:
 
 ```python
 def capture_manual_release_target(self, reason: str):
@@ -470,30 +441,85 @@ def capture_manual_release_target(self, reason: str):
     )
 ```
 
-### `compensate_depth_sensor_offset()`
+4장.8 DepthController._set_control_enabled()
 
-**의미**
+- 위치: `depth_controller.py:346-373`
+- 입력: self, enabled
+- 출력: 내부 상태 갱신이 중심이며, 필요 시 계산 결과를 return합니다.
+- 역할: 제어 enable 상태 변경 시 목표값, 적분항, 출력 상태를 초기화하거나 0 출력합니다.
+- 왜 사용했는가: 복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.
+- 제어 영향: 수심 목표 추종, 상승/하강 속도, 수동 heave 조작 이후의 depth hold 동작에 영향을 줍니다.
+- 내부 동작 흐름:
+  - 이전 enable 상태와 새 상태를 비교합니다.
+  - enable 시 현재 수심 기반으로 target을 준비하고 적분항을 초기화합니다.
+  - disable 시 0 heave publish와 상태 정리를 수행합니다.
+- 코드 일부:
 
-IMU로 센서의 world z 위치 변화를 계산해, pitch/roll 때문에 생기는 depth sensor 오차를 보정합니다.
+```python
+def _set_control_enabled(self, enabled: bool):
+    prev = self.control_enabled
+    self.control_enabled = bool(enabled)
 
-**영향**
+    if self.control_enabled:
+        if self.current_depth is not None:
+            self.target_depth = self.current_depth
+            self.clamp_target_depth()
+            self.target_initialized = True
+            self.get_logger().info(
+                f'Depth control enabled; captured current depth as target: '
+                f'{self.target_depth:.3f} m'
+            )
+        else:
+            self.get_logger().warn(
+                'Depth control enabled, but no depth sample has been received yet'
+            )
+        self.prev_heave_cmd = 0.0
+        self.depth_integral = 0.0
+    elif (not self.control_enabled) and prev:
+        self.prev_heave_cmd = 0.0
+        self.depth_integral = 0.0
+        out = Float64()
+        out.data = 0.0
+        self.heave_pub.publish(out)
+        self.publish_depth_active(False)
+        self.get_logger().info('Depth control disabled; publishing zero heave command')
+```
 
-기체가 기울어져도 가짜 depth 변화에 과민 반응하지 않게 해 줍니다. 즉 depth hold가 실제 수심 변화를 더 정확히 보게 됩니다.
+4장.9 DepthController.cmd_depth_callback()
 
-**리뷰 메모**
+- 위치: `depth_controller.py:374-379`
+- 입력: self, msg
+- 출력: 직접적인 return 값보다는 내부 상태 갱신 또는 ROS topic 발행이 핵심 출력입니다.
+- 역할: 외부 목표 수심 명령을 수신해 target_depth에 반영합니다.
+- 왜 사용했는가: ROS2 topic 기반 시스템에서 비동기 메시지를 받아 제어 상태를 최신 값으로 유지하기 위해 사용됩니다.
+- 제어 영향: 수심 목표 추종, 상승/하강 속도, 수동 heave 조작 이후의 depth hold 동작에 영향을 줍니다.
+- 내부 동작 흐름:
+  - ROS2 메시지를 수신합니다.
+  - 입력 수심값을 target depth로 저장합니다.
+  - target을 clamp하고 initialized 상태 및 로그를 갱신합니다.
+- 코드 일부:
 
-이 함수는 실전적인 품질을 크게 올리는 부분입니다. 센서 장착 위치가 중심에서 벗어난 수중체에서는 특히 의미가 큽니다.
+```python
+def cmd_depth_callback(self, msg: Float64):
+    self.target_depth = msg.data
+    self.clamp_target_depth()
+    self.target_initialized = True
+    self.get_logger().info(f'Updated target depth from /cmd_depth: {self.target_depth:.3f} m')
+```
 
-**상세 해설**
+4장.10 DepthController.imu_callback()
 
-이 함수는 센서가 측정한 raw depth를 그대로 믿지 않고, 현재 자세와 센서 오프셋을 이용해 기체 기준점 depth로 다시 환산합니다. 즉 pitch를 크게 주는 순간 센서가 위아래로 움직여 생기는 가짜 depth 변화에 controller가 속지 않도록 합니다.
-
-실제 운용에서는 이 차이가 큽니다. 보정이 없으면 전진/상승 동작과 자세 변화가 섞일 때 depth hold가 필요 이상으로 heave를 흔들 수 있는데, 이 함수가 그 coupling을 줄여 줍니다.
-
-**이 함수와 관련된 파라미터**
-
-- `depth_sensor_offset_x/y/z`: 센서가 기체 기준점에서 얼마나 떨어져 있는지 나타냅니다.
-- `depth_sensor_offset_compensation_enabled`: 자세 기반 위치 보정을 사용할지 정합니다.
+- 위치: `depth_controller.py:380-388`
+- 입력: self, msg
+- 출력: 직접적인 return 값보다는 내부 상태 갱신 또는 ROS topic 발행이 핵심 출력입니다.
+- 역할: IMU 메시지를 수신하여 현재 자세, 각속도, 또는 z축 방향 정보를 내부 상태에 저장합니다.
+- 왜 사용했는가: ROS2 topic 기반 시스템에서 비동기 메시지를 받아 제어 상태를 최신 값으로 유지하기 위해 사용됩니다.
+- 제어 영향: 수심 목표 추종, 상승/하강 속도, 수동 heave 조작 이후의 depth hold 동작에 영향을 줍니다.
+- 내부 동작 흐름:
+  - ROS2 메시지를 수신합니다.
+  - orientation에서 body z축의 world 방향 성분을 계산합니다.
+  - 내부 IMU 상태와 `have_imu` 플래그를 갱신합니다.
+- 코드 일부:
 
 ```python
 def imu_callback(self, msg: Imu):
@@ -504,7 +530,23 @@ def imu_callback(self, msg: Imu):
         msg.orientation.w,
     )
     self.have_imu = True
+```
 
+4장.11 DepthController.compensate_depth_sensor_offset()
+
+- 위치: `depth_controller.py:389-402`
+- 입력: self, sensor_depth
+- 출력: 계산 결과를 return하며, 호출한 제어 로직에서 다음 계산의 입력으로 사용됩니다.
+- 역할: depth 센서가 로봇 중심에서 떨어진 위치에 있을 때 자세에 따른 측정 오차를 보정합니다.
+- 왜 사용했는가: 복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.
+- 제어 영향: 수심 목표 추종, 상승/하강 속도, 수동 heave 조작 이후의 depth hold 동작에 영향을 줍니다.
+- 내부 동작 흐름:
+  - 보상 기능과 IMU 유효성을 확인합니다.
+  - 현재 z축 방향과 센서 오프셋으로 센서의 world z 위치를 계산합니다.
+  - raw sensor depth에서 자세 유래 오차를 보정한 depth를 반환합니다.
+- 코드 일부:
+
+```python
 def compensate_depth_sensor_offset(self, sensor_depth: float) -> float:
     if not self.depth_sensor_offset_compensation_enabled:
         return sensor_depth
@@ -520,30 +562,19 @@ def compensate_depth_sensor_offset(self, sensor_depth: float) -> float:
     return sensor_depth + sensor_z_in_world
 ```
 
-### Manual 입력 freshness 계열
+4장.12 DepthController.manual_wrench_callback()
 
-**의미**
-
-manual heave 입력이 최근 입력인지 판정하고, stale이면 안전하게 0으로 되돌리며 필요하면 새 target depth를 다시 잡습니다.
-
-**영향**
-
-조종기 신호가 끊겼을 때 controller가 마지막 nonzero heave를 계속 믿는 문제를 막습니다.
-
-**리뷰 메모**
-
-이 계층은 현재 코드베이스에서 가장 좋은 패턴 중 하나입니다. attitude/position도 이 freshness 전략을 가져오면 전체 일관성이 더 좋아집니다.
-
-**상세 해설**
-
-이 묶음은 manual input을 단순한 값이 아니라 시간축이 있는 상태로 다룬다는 점에서 중요합니다. `manual_wrench_callback()`이 마지막 입력과 시각을 저장하고, `manual_wrench_is_fresh()`가 그것이 아직 유효한지 판단하며, `clear_stale_manual_heave()`가 오래된 입력을 안전하게 0으로 복구합니다.
-
-즉 이 계층은 통신 끊김이나 joystick 정지 상황에서 마지막 nonzero 입력이 controller 안에 유령처럼 남아 있는 문제를 막습니다. 실전 제어 소프트웨어에서는 이런 freshness 처리가 PID 게인만큼 중요합니다.
-
-**이 함수와 관련된 파라미터**
-
-- `manual_heave_override_threshold`: manual heave가 실제 override로 간주되는 최소 크기입니다.
-- `manual_wrench_timeout_sec`: 이 시간이 지나면 마지막 manual 입력을 stale로 보고 지웁니다.
+- 위치: `depth_controller.py:403-414`
+- 입력: self, msg
+- 출력: 직접적인 return 값보다는 내부 상태 갱신 또는 ROS topic 발행이 핵심 출력입니다.
+- 역할: 조종기 또는 상위 입력에서 들어오는 수동 Wrench 명령을 저장합니다.
+- 왜 사용했는가: ROS2 topic 기반 시스템에서 비동기 메시지를 받아 제어 상태를 최신 값으로 유지하기 위해 사용됩니다.
+- 제어 영향: 수심 목표 추종, 상승/하강 속도, 수동 heave 조작 이후의 depth hold 동작에 영향을 줍니다.
+- 내부 동작 흐름:
+  - ROS2 메시지를 수신합니다.
+  - manual heave와 수신 시각을 저장합니다.
+  - manual active edge를 감지하고 release 시 새 target 캡처를 수행합니다.
+- 코드 일부:
 
 ```python
 def manual_wrench_callback(self, msg: Wrench):
@@ -557,7 +588,23 @@ def manual_wrench_callback(self, msg: Wrench):
     if self.prev_manual_heave_active and not self.manual_heave_active:
         if self.current_depth is not None and self.armed:
             self.capture_manual_release_target('Manual heave released')
+```
 
+4장.13 DepthController.manual_wrench_is_fresh()
+
+- 위치: `depth_controller.py:415-423`
+- 입력: self, now
+- 출력: 계산 결과를 return하며, 호출한 제어 로직에서 다음 계산의 입력으로 사용됩니다.
+- 역할: 최근 수동 wrench 입력이 timeout 이내인지 판단합니다.
+- 왜 사용했는가: 복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.
+- 제어 영향: 수심 목표 추종, 상승/하강 속도, 수동 heave 조작 이후의 depth hold 동작에 영향을 줍니다.
+- 내부 동작 흐름:
+  - timeout 설정이 비활성인지 확인합니다.
+  - 마지막 manual 입력 시각이 있는지 확인합니다.
+  - 현재 시각과의 차이를 계산해 freshness 여부를 반환합니다.
+- 코드 일부:
+
+```python
 def manual_wrench_is_fresh(self, now) -> bool:
     if self.manual_wrench_timeout_sec <= 0.0:
         return True
@@ -566,7 +613,23 @@ def manual_wrench_is_fresh(self, now) -> bool:
 
     age = (now - self.last_manual_wrench_time).nanoseconds * 1e-9
     return age <= self.manual_wrench_timeout_sec
+```
 
+4장.14 DepthController.clear_stale_manual_heave()
+
+- 위치: `depth_controller.py:424-434`
+- 입력: self, now
+- 출력: 내부 상태 갱신이 중심이며, 필요 시 계산 결과를 return합니다.
+- 역할: 수동 heave 입력이 오래되면 0으로 정리하고 release target 처리를 수행합니다.
+- 왜 사용했는가: 복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.
+- 제어 영향: 수심 목표 추종, 상승/하강 속도, 수동 heave 조작 이후의 depth hold 동작에 영향을 줍니다.
+- 내부 동작 흐름:
+  - manual 입력이 아직 fresh한지 확인합니다.
+  - stale인데 manual active였다면 release target을 캡처합니다.
+  - manual heave와 active 상태를 0/False로 정리합니다.
+- 코드 일부:
+
+```python
 def clear_stale_manual_heave(self, now):
     if self.manual_wrench_is_fresh(now):
         return
@@ -579,25 +642,24 @@ def clear_stale_manual_heave(self, now):
     self.manual_heave_active = False
 ```
 
-### `depth_callback()`
+4장.15 DepthController.depth_callback()
 
-**의미**
-
-depth sample이 들어올 때마다 target capture, depth rate 추정, PID 계산, pilot depth-rate, saturation, slew-rate, status publish를 수행합니다.
-
-**영향**
-
-이 함수가 곧 depth controller의 본체입니다. PID와 운용 상태 머신이 모두 여기에서 만납니다.
-
-**리뷰 메모**
-
-구조가 좋고 actuator-friendly합니다. 특히 `depth_rate_alpha`, `max_heave_delta_per_cycle`, `max_upward_heave`가 실제 시스템을 거칠지 않게 만들어 줍니다.
-
-**상세 해설**
-
-이 함수 안에는 사실상 depth controller의 모든 핵심이 들어 있습니다. 먼저 현재 depth를 보정하고, manual heave stale 여부를 해제하고, 필요하면 초기 target을 캡처합니다. 그 다음 depth rate를 샘플 차분으로 계산한 뒤 low-pass filtering을 적용하고, 그 결과를 PID의 derivative 입력으로 사용합니다.
-
-그 이후에는 상황에 따라 분기합니다. disarm이면 무조건 0, control disabled면 0, manual heave + pilot depth-rate 모드면 target depth를 움직이고, 그렇지 않으면 정적인 target depth를 향해 PID를 수행합니다. 마지막으로 saturation, upward limit, slew-rate를 차례로 적용해 heave 명령을 publish합니다. 즉 이 함수는 제어 law와 output shaping이 하나의 파이프라인으로 묶인 구조입니다.
+- 위치: `depth_controller.py:435-551`
+- 입력: self, msg
+- 출력: 직접적인 return 값보다는 내부 상태 갱신 또는 ROS topic 발행이 핵심 출력입니다.
+- 역할: 수심 센서 데이터를 받을 때마다 PID 기반 heave 명령을 계산하고 상태 topic을 발행합니다.
+- 왜 사용했는가: ROS2 topic 기반 시스템에서 비동기 메시지를 받아 제어 상태를 최신 값으로 유지하기 위해 사용됩니다.
+- 제어 영향: 수심 목표 추종, 상승/하강 속도, 수동 heave 조작 이후의 depth hold 동작에 영향을 줍니다.
+- 내부 동작 흐름:
+  - depth 센서값을 읽고 센서 offset 보상을 적용합니다.
+  - 수동 heave 입력 timeout을 확인합니다.
+  - 초기 target depth가 없으면 현재 수심을 목표로 캡처합니다.
+  - 이전 depth와 시간 차이로 depth rate를 계산하고 low-pass filter를 적용합니다.
+  - armed, enable, target 조건을 확인하여 depth control 활성 상태를 판단합니다.
+  - 수동 heave가 active이면 target depth를 pilot rate 방식으로 이동시킵니다.
+  - PID 식으로 raw heave command를 계산하고 sign, limit, upward limit, delta limit를 적용합니다.
+  - heave command, target depth, depth error, depth rate를 발행합니다.
+- 코드 일부:
 
 ```python
 def depth_callback(self, msg: Float64):
@@ -718,25 +780,21 @@ def depth_callback(self, msg: Float64):
     # )
 ```
 
-### `on_parameter_update()`
+4장.16 DepthController.on_parameter_update()
 
-**의미**
-
-depth controller의 gain, limit, manual policy, compensation 설정을 런타임에 바꿉니다.
-
-**영향**
-
-실험 중 depth 감각과 안전 정책을 바로 수정할 수 있게 해줍니다.
-
-**리뷰 메모**
-
-runtime tuning 친화적이지만, 파라미터가 많을수록 문서가 중요합니다. 이번 리뷰 사이트에서 이 함수가 중요한 이유도 바로 그 때문입니다.
-
-**상세 해설**
-
-depth hold는 겉보기보다 정책 파라미터가 많습니다. direct heave처럼 느껴질지, target depth rate처럼 느껴질지, release 후 즉시 잠길지, 상승 방향을 얼마나 제한할지 모두 런타임에 바뀔 수 있습니다.
-
-따라서 이 함수는 단순 관리 루틴이 아니라 현장 튜닝 인터페이스입니다. 리뷰 문서가 파라미터-동작 연결을 자세히 설명해야 하는 이유가 여기 있습니다.
+- 위치: `depth_controller.py:552-616`
+- 입력: self, params
+- 출력: 파라미터 갱신 결과를 `SetParametersResult`로 반환하면서 내부 상태를 함께 갱신합니다.
+- 역할: ROS2 runtime parameter 변경을 노드 내부 변수에 반영합니다.
+- 왜 사용했는가: 실제 로봇 테스트 중 gain과 제한값을 노드를 재시작하지 않고 바꾸기 위해 사용됩니다.
+- 제어 영향: 수심 목표 추종, 상승/하강 속도, 수동 heave 조작 이후의 depth hold 동작에 영향을 줍니다.
+- 내부 동작 흐름:
+  - 변경 요청된 parameter 목록을 순회합니다.
+  - parameter 이름에 맞는 내부 변수를 갱신합니다.
+  - 각도 단위 parameter는 필요한 경우 radian으로 변환합니다.
+  - 갱신 결과를 log로 남깁니다.
+  - 성공 또는 실패 결과를 `SetParametersResult`로 반환합니다.
+- 코드 일부:
 
 ```python
 def on_parameter_update(self, params):
@@ -802,6 +860,38 @@ def on_parameter_update(self, params):
         return SetParametersResult(successful=True)
     except Exception as e:
         return SetParametersResult(successful=False, reason=str(e))
+```
+
+4장.17 전역 함수.main()
+
+- 위치: `depth_controller.py:617-630`
+- 입력: args
+- 출력: 직접적인 return 값보다는 노드 실행과 종료 처리가 핵심 출력입니다.
+- 역할: rclpy를 초기화하고 노드를 생성한 뒤 spin을 수행합니다.
+- 왜 사용했는가: ROS2 노드 생명주기를 시작하고 종료 처리를 안정적으로 수행하기 위해 사용됩니다.
+- 제어 영향: 수심 목표 추종, 상승/하강 속도, 수동 heave 조작 이후의 depth hold 동작에 영향을 줍니다.
+- 내부 동작 흐름:
+  - `rclpy.init()`으로 ROS2를 초기화합니다.
+  - 노드 객체를 생성합니다.
+  - `rclpy.spin()`으로 callback 처리를 시작합니다.
+  - 종료 시 노드를 destroy하고 `rclpy.shutdown()`을 호출합니다.
+- 코드 일부:
+
+```python
+def main(args=None):
+    rclpy.init(args=args)
+    node = DepthController()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()
 ```
 
 ## 전체 코드
