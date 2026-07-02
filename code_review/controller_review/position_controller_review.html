@@ -10,104 +10,114 @@
   <div class="detail-shell">
     <aside class="detail-sidebar">
       <a class="back-link" href="index.html">← 리뷰 홈으로</a>
-      <p class="eyebrow">Controller Code Review</p>
-      <h1>Position Controller Review</h1>
-      <p class="meta"><code>code_review/code/position_controller.py</code></p>
+      <p class="eyebrow">ROV Control Code Review</p>
+      <h1>5장. position_controller.py</h1>
+      <p class="meta">DVL 위치/속도와 IMU 자세를 이용해 XY 위치 유지 힘을 생성하는 위치 제어 노드</p>
       <nav class="toc">
-        <a href="#role">역할</a>
-        <a href="#parameters">핵심 파라미터</a>
-        <a href="#map">함수 맵</a>
-        <a href="#quaternion">Quaternion 유틸리티</a>
-<a href="#init">`__init__()`</a>
-<a href="#section">상태/보조 함수</a>
-<a href="#manual-wrench-callback">`manual_wrench_callback()`</a>
-<a href="#dvl">DVL 입력 처리</a>
-<a href="#publish-position-estimate">`publish_position_estimate()`</a>
-<a href="#publish-control-output">`publish_control_output()`</a>
-<a href="#on-parameter-update">`on_parameter_update()`</a>
+        <a href="#chapter">장 개요</a>
+        <a href="#fn-clamp">clamp()</a>
+<a href="#fn-quat_normalize">quat_normalize()</a>
+<a href="#fn-quat_multiply">quat_multiply()</a>
+<a href="#fn-quat_conjugate">quat_conjugate()</a>
+<a href="#fn-quat_from_rpy">quat_from_rpy()</a>
+<a href="#fn-quat_rotate_vector">quat_rotate_vector()</a>
+<a href="#fn-__init__">__init__()</a>
+<a href="#fn-_publish_zero_force">_publish_zero_force()</a>
+<a href="#fn-_has_valid_position_reference">_has_valid_position_reference()</a>
+<a href="#fn-_set_control_enabled">_set_control_enabled()</a>
+<a href="#fn-_capture_current_position_as_target">_capture_current_position_as_target()</a>
+<a href="#fn-_apply_deadband">_apply_deadband()</a>
+<a href="#fn-_dvl_position_is_finite">_dvl_position_is_finite()</a>
+<a href="#fn-imu_callback">imu_callback()</a>
+<a href="#fn-manual_wrench_callback">manual_wrench_callback()</a>
+<a href="#fn-armed_callback">armed_callback()</a>
+<a href="#fn-dvl_position_callback">dvl_position_callback()</a>
+<a href="#fn-dvl_callback">dvl_callback()</a>
+<a href="#fn-publish_position_estimate">publish_position_estimate()</a>
+<a href="#fn-publish_control_output">publish_control_output()</a>
+<a href="#fn-on_parameter_update">on_parameter_update()</a>
+<a href="#fn-main">main()</a>
         <a href="#full-source">전체 코드</a>
       </nav>
     </aside>
-
     <main class="detail-content">
-      <section id="role" class="hero">
+      <section id="chapter" class="hero">
         <div>
-          <p class="eyebrow">Module Overview</p>
-          <h2>Position Controller Review</h2>
-          <p>이 코드는 DVL와 IMU, manual input을 이용해 planar hold용 <code>Fx</code>, <code>Fy</code>, 그리고 경우에 따라 <code>Fz</code> 보정까지 만드는 위치 제어기입니다.</p>
-          <p>핵심 구조는 <code>world frame에서 위치 오차 계산 → body frame 힘으로 회전</code>입니다. 즉 기체가 yaw되어 있어도 지구 기준 위치를 유지하려는 설계입니다.</p>
-          <p>리뷰 포인트는 <code>DVL position과 velocity fallback이 어떻게 연결되는지</code>, <code>manual XY override가 hold target과 어떻게 상호작용하는지</code>, <code>yaw motion-aware damping이 어떤 안정화 효과를 만드는지</code>, <code>body-frame 변환 후 force.z를 왜 출력하는지</code>입니다.</p>
-          <p>이 모듈은 <code>dvl_position_callback()</code> 또는 <code>dvl_callback()</code>에서 위치/속도 참조를 최신 상태로 유지하고, <code>publish_control_output()</code>에서 target과 현재 위치의 오차를 world frame에서 계산합니다. 그 다음 yaw 상태를 반영한 damping을 더하고 결과 힘을 body frame으로 회전해 최종 force command로 publish합니다. 즉 frame 해석과 DVL validity 관리가 control law만큼 중요한 모듈입니다.</p>
-        </div>
-      </section>
-
-      <section id="parameters" class="panel">
-        <div class="panel-heading">
-          <div>
-            <p class="section-kicker">Parameters</p>
-            <h2>핵심 파라미터 설명</h2>
-          </div>
-        </div>
-        <div class="review-card">
-          <ul class="parameter-list"><li><strong><code>kp_x</code>, <code>kd_x</code>, <code>kp_y</code>, <code>kd_y</code></strong><span>XY 위치 오차를 force로 바꾸는 기본 PD 게인입니다.</span></li><li><strong><code>max_force_x</code>, <code>max_force_y</code>, <code>max_force_z</code></strong><span>각 축별 force saturation 한계를 정합니다.</span></li><li><strong><code>manual_xy_override_threshold</code></strong><span>이 값보다 큰 manual XY 입력이 들어오면 position hold보다 pilot input을 우선합니다.</span></li><li><strong><code>capture_target_on_manual_release</code></strong><span>pilot이 XY stick을 놓았을 때 현재 위치를 새 hold target으로 다시 잡을지 결정합니다.</span></li><li><strong><code>valid_timeout_sec</code></strong><span>DVL position/velocity reference를 얼마 동안 유효하다고 볼지 정합니다.</span></li><li><strong><code>yaw_rate_damping_gain</code></strong><span>yaw 회전이 클수록 XY damping을 얼마나 더 강하게 만들지 정합니다.</span></li><li><strong><code>manual_yaw_damping_boost</code></strong><span>manual yaw 조작 중 XY hold를 더 안정적으로 만들기 위해 추가되는 damping입니다.</span></li><li><strong><code>use_dvl_position</code></strong><span>DVL absolute position을 직접 쓸지, velocity integration 중심으로 갈지 결정합니다.</span></li><li><strong><code>integrate_dvl_velocity_when_position_unavailable</code></strong><span>absolute position이 없을 때 velocity를 적분해 hold reference를 유지할지 정합니다.</span></li><li><strong><code>dvl_mount_roll_deg</code>, <code>dvl_mount_pitch_deg</code>, <code>dvl_mount_yaw_deg</code></strong><span>DVL 장착 각도 보정 파라미터입니다.</span></li></ul>
-        </div>
-      </section>
-
-      <section id="map" class="panel">
-        <div class="panel-heading">
-          <div>
-            <p class="section-kicker">Function Map</p>
-            <h2>이 파일에 있는 함수들</h2>
-          </div>
-        </div>
-        <div class="review-card">
-          <ul class="function-map">
-            <li><code>clamp()</code></li>
-<li><code>quat_normalize()</code></li>
-<li><code>quat_multiply()</code></li>
-<li><code>quat_conjugate()</code></li>
-<li><code>quat_from_rpy()</code></li>
-<li><code>quat_rotate_vector()</code></li>
-<li><code>__init__()</code></li>
-<li><code>_publish_zero_force()</code></li>
-<li><code>_has_valid_position_reference()</code></li>
-<li><code>_set_control_enabled()</code></li>
-<li><code>_capture_current_position_as_target()</code></li>
-<li><code>_apply_deadband()</code></li>
-<li><code>_dvl_position_is_finite()</code></li>
-<li><code>imu_callback()</code></li>
-<li><code>manual_wrench_callback()</code></li>
-<li><code>armed_callback()</code></li>
-<li><code>dvl_position_callback()</code></li>
-<li><code>dvl_callback()</code></li>
-<li><code>publish_position_estimate()</code></li>
-<li><code>publish_control_output()</code></li>
-<li><code>on_parameter_update()</code></li>
-<li><code>main()</code></li>
+          <p class="eyebrow">Module Chapter</p>
+          <h2>DVL 위치/속도와 IMU 자세를 이용해 XY 위치 유지 힘을 생성하는 위치 제어 노드</h2>
+          <p>DVL 위치/속도와 IMU 자세를 이용해 XY 위치 유지 힘을 생성하는 위치 제어 노드</p>
+          <p>이 파일은 DVL 위치 또는 속도를 이용해 XY 방향 위치 유지 힘을 만듭니다. 현재 위치를 hold target으로 잡고 위치 오차에 따라 수평 force를 만듭니다.</p>
+          <ul class="summary-list">
+            <li>파일: <code>position_controller.py</code></li>
+            <li>함수 개수: 22</li>
+            <li>주요 역할: DVL 위치/속도와 IMU 자세를 이용해 XY 위치 유지 힘을 생성하는 위치 제어 노드</li>
           </ul>
         </div>
       </section>
-
-      <section id="quaternion" class="review-section">
-        <div class="section-heading">
+      <section id="fn-clamp" class="review-section">
+        <div class="panel-heading">
           <div>
-            <p class="section-kicker">Function Review</p>
-            <h2>Quaternion 유틸리티</h2>
+            <p class="section-kicker">Chapter 5.1</p>
+            <h2>전역 함수.clamp()</h2>
           </div>
         </div>
-        <div class="review-grid">
+        <div class="doc-grid">
           <article class="review-card code-card">
-            <h3>실제 코드</h3>
+            <h3>코드 일부</h3>
             <pre><code>def clamp(value: float, lo: float, hi: float) -&gt; float:
-    return max(lo, min(hi, value))
-
-def quat_normalize(x: float, y: float, z: float, w: float):
+    return max(lo, min(hi, value))</code></pre>
+          </article>
+          <article class="review-card prose-card">
+            <dl class="doc-meta">
+              <div><dt>위치</dt><dd><code>position_controller.py:16-19</code></dd></div>
+              <div><dt>입력</dt><dd>value, lo, hi</dd></div>
+              <div><dt>출력</dt><dd>계산 결과를 return하며, 호출한 제어 로직에서 다음 계산의 입력으로 사용됩니다.</dd></div>
+              <div><dt>역할</dt><dd>값을 지정된 최소/최대 범위 안으로 제한합니다.</dd></div>
+              <div><dt>왜 사용했는가</dt><dd>복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.</dd></div>
+              <div><dt>제어 영향</dt><dd>DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.</dd></div>
+              <div><dt>내부 동작 흐름</dt><dd><ul class="flow-list"><li>입력값과 최소/최대 한계를 받습니다.</li><li>최솟값보다 작으면 최솟값으로 제한합니다.</li><li>최댓값보다 크면 최댓값으로 제한하고, 범위 안이면 그대로 반환합니다.</li></ul></dd></div>
+            </dl>
+          </article>
+        </div>
+      </section> <section id="fn-quat_normalize" class="review-section">
+        <div class="panel-heading">
+          <div>
+            <p class="section-kicker">Chapter 5.2</p>
+            <h2>전역 함수.quat_normalize()</h2>
+          </div>
+        </div>
+        <div class="doc-grid">
+          <article class="review-card code-card">
+            <h3>코드 일부</h3>
+            <pre><code>def quat_normalize(x: float, y: float, z: float, w: float):
     norm = math.sqrt(x * x + y * y + z * z + w * w)
     if norm &lt; 1e-12:
         return (0.0, 0.0, 0.0, 1.0)
-    return (x / norm, y / norm, z / norm, w / norm)
-
-def quat_multiply(a, b):
+    return (x / norm, y / norm, z / norm, w / norm)</code></pre>
+          </article>
+          <article class="review-card prose-card">
+            <dl class="doc-meta">
+              <div><dt>위치</dt><dd><code>position_controller.py:20-26</code></dd></div>
+              <div><dt>입력</dt><dd>x, y, z, w</dd></div>
+              <div><dt>출력</dt><dd>계산 결과를 return하며, 호출한 제어 로직에서 다음 계산의 입력으로 사용됩니다.</dd></div>
+              <div><dt>역할</dt><dd>quaternion을 단위 quaternion으로 정규화합니다.</dd></div>
+              <div><dt>왜 사용했는가</dt><dd>ROV 제어에서는 자세 표현과 좌표계 변환이 계속 필요하므로, 반복되는 수학 연산을 함수로 분리한 것입니다.</dd></div>
+              <div><dt>제어 영향</dt><dd>DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.</dd></div>
+              <div><dt>내부 동작 흐름</dt><dd><ul class="flow-list"><li>입력 quaternion 노름을 계산합니다.</li><li>노름이 너무 작으면 기본 단위 quaternion을 반환합니다.</li><li>정규화된 quaternion 성분을 반환합니다.</li></ul></dd></div>
+            </dl>
+          </article>
+        </div>
+      </section> <section id="fn-quat_multiply" class="review-section">
+        <div class="panel-heading">
+          <div>
+            <p class="section-kicker">Chapter 5.3</p>
+            <h2>전역 함수.quat_multiply()</h2>
+          </div>
+        </div>
+        <div class="doc-grid">
+          <article class="review-card code-card">
+            <h3>코드 일부</h3>
+            <pre><code>def quat_multiply(a, b):
     ax, ay, az, aw = a
     bx, by, bz, bw = b
     return (
@@ -115,13 +125,57 @@ def quat_multiply(a, b):
         aw * by - ax * bz + ay * bw + az * bx,
         aw * bz + ax * by - ay * bx + az * bw,
         aw * bw - ax * bx - ay * by - az * bz,
-    )
-
-def quat_conjugate(q):
+    )</code></pre>
+          </article>
+          <article class="review-card prose-card">
+            <dl class="doc-meta">
+              <div><dt>위치</dt><dd><code>position_controller.py:27-37</code></dd></div>
+              <div><dt>입력</dt><dd>a, b</dd></div>
+              <div><dt>출력</dt><dd>계산 결과를 return하며, 호출한 제어 로직에서 다음 계산의 입력으로 사용됩니다.</dd></div>
+              <div><dt>역할</dt><dd>두 quaternion의 곱을 계산합니다. DVL 벡터 회전 변환에 사용됩니다.</dd></div>
+              <div><dt>왜 사용했는가</dt><dd>ROV 제어에서는 자세 표현과 좌표계 변환이 계속 필요하므로, 반복되는 수학 연산을 함수로 분리한 것입니다.</dd></div>
+              <div><dt>제어 영향</dt><dd>DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.</dd></div>
+              <div><dt>내부 동작 흐름</dt><dd><ul class="flow-list"><li>두 quaternion 성분을 각각 분리합니다.</li><li>Hamilton product 공식을 적용합니다.</li><li>곱셈 결과 quaternion을 반환합니다.</li></ul></dd></div>
+            </dl>
+          </article>
+        </div>
+      </section> <section id="fn-quat_conjugate" class="review-section">
+        <div class="panel-heading">
+          <div>
+            <p class="section-kicker">Chapter 5.4</p>
+            <h2>전역 함수.quat_conjugate()</h2>
+          </div>
+        </div>
+        <div class="doc-grid">
+          <article class="review-card code-card">
+            <h3>코드 일부</h3>
+            <pre><code>def quat_conjugate(q):
     x, y, z, w = q
-    return (-x, -y, -z, w)
-
-def quat_from_rpy(roll: float, pitch: float, yaw: float):
+    return (-x, -y, -z, w)</code></pre>
+          </article>
+          <article class="review-card prose-card">
+            <dl class="doc-meta">
+              <div><dt>위치</dt><dd><code>position_controller.py:38-42</code></dd></div>
+              <div><dt>입력</dt><dd>q</dd></div>
+              <div><dt>출력</dt><dd>계산 결과를 return하며, 호출한 제어 로직에서 다음 계산의 입력으로 사용됩니다.</dd></div>
+              <div><dt>역할</dt><dd>quaternion 역회전에 필요한 켤레를 계산합니다.</dd></div>
+              <div><dt>왜 사용했는가</dt><dd>ROV 제어에서는 자세 표현과 좌표계 변환이 계속 필요하므로, 반복되는 수학 연산을 함수로 분리한 것입니다.</dd></div>
+              <div><dt>제어 영향</dt><dd>DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.</dd></div>
+              <div><dt>내부 동작 흐름</dt><dd><ul class="flow-list"><li>입력 quaternion 성분을 분리합니다.</li><li>벡터부 부호를 반전합니다.</li><li>스칼라부는 유지한 채 켤레 quaternion을 반환합니다.</li></ul></dd></div>
+            </dl>
+          </article>
+        </div>
+      </section> <section id="fn-quat_from_rpy" class="review-section">
+        <div class="panel-heading">
+          <div>
+            <p class="section-kicker">Chapter 5.5</p>
+            <h2>전역 함수.quat_from_rpy()</h2>
+          </div>
+        </div>
+        <div class="doc-grid">
+          <article class="review-card code-card">
+            <h3>코드 일부</h3>
+            <pre><code>def quat_from_rpy(roll: float, pitch: float, yaw: float):
     cr = math.cos(roll * 0.5)
     sr = math.sin(roll * 0.5)
     cp = math.cos(pitch * 0.5)
@@ -133,35 +187,57 @@ def quat_from_rpy(roll: float, pitch: float, yaw: float):
         cr * sp * cy + sr * cp * sy,
         cr * cp * sy - sr * sp * cy,
         cr * cp * cy + sr * sp * sy,
-    )
-
-def quat_rotate_vector(q, v):
+    )</code></pre>
+          </article>
+          <article class="review-card prose-card">
+            <dl class="doc-meta">
+              <div><dt>위치</dt><dd><code>position_controller.py:43-57</code></dd></div>
+              <div><dt>입력</dt><dd>roll, pitch, yaw</dd></div>
+              <div><dt>출력</dt><dd>계산 결과를 return하며, 호출한 제어 로직에서 다음 계산의 입력으로 사용됩니다.</dd></div>
+              <div><dt>역할</dt><dd>DVL 장착 각도를 quaternion으로 변환합니다.</dd></div>
+              <div><dt>왜 사용했는가</dt><dd>ROV 제어에서는 자세 표현과 좌표계 변환이 계속 필요하므로, 반복되는 수학 연산을 함수로 분리한 것입니다.</dd></div>
+              <div><dt>제어 영향</dt><dd>DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.</dd></div>
+              <div><dt>내부 동작 흐름</dt><dd><ul class="flow-list"><li>roll, pitch, yaw의 half-angle 삼각함수를 계산합니다.</li><li>quaternion 성분을 조합합니다.</li><li>정규화된 quaternion을 반환합니다.</li></ul></dd></div>
+            </dl>
+          </article>
+        </div>
+      </section> <section id="fn-quat_rotate_vector" class="review-section">
+        <div class="panel-heading">
+          <div>
+            <p class="section-kicker">Chapter 5.6</p>
+            <h2>전역 함수.quat_rotate_vector()</h2>
+          </div>
+        </div>
+        <div class="doc-grid">
+          <article class="review-card code-card">
+            <h3>코드 일부</h3>
+            <pre><code>def quat_rotate_vector(q, v):
     qv = (v[0], v[1], v[2], 0.0)
     rotated = quat_multiply(quat_multiply(q, qv), quat_conjugate(q))
     return (rotated[0], rotated[1], rotated[2])</code></pre>
           </article>
           <article class="review-card prose-card">
-            <h3>의미</h3>
-            <p>이 함수들은 DVL 속도와 위치제어 출력을 body/world frame 사이에서 변환하기 위한 기본 수학 도구입니다.</p>
-            <h3>영향</h3>
-            <p>이 계층이 있어야 yaw가 바뀌어도 같은 world 위치를 유지할 수 있습니다. 즉 이 controller의 존재 이유 자체가 여기서 시작됩니다.</p>
-            <h3>리뷰 메모</h3>
-            <p>수학 유틸리티는 단순하지만 매우 중요합니다. 좌표계가 꼬이면 controller tuning 문제가 아니라 frame mismatch 문제가 됩니다.</p>
-            <h3>상세 해설</h3><p>position hold에서 가장 중요한 것은 오차 자체보다 오차가 어느 좌표계에서 정의되는가입니다. 이 유틸리티 묶음은 DVL 속도, hold target, 최종 force를 world/body frame 사이에서 일관되게 회전시키는 기반을 제공합니다.</p>
-<p>즉 이 코드가 단순 planar PD가 아니라 yaw가 변해도 같은 world 위치를 붙잡을 수 있는 이유가 바로 이 계층에 있습니다. 문제가 생기면 게인을 의심하기 전에 frame rotation이 올바른지 먼저 확인해야 합니다.</p>
-            
+            <dl class="doc-meta">
+              <div><dt>위치</dt><dd><code>position_controller.py:58-63</code></dd></div>
+              <div><dt>입력</dt><dd>q, v</dd></div>
+              <div><dt>출력</dt><dd>계산 결과를 return하며, 호출한 제어 로직에서 다음 계산의 입력으로 사용됩니다.</dd></div>
+              <div><dt>역할</dt><dd>quaternion으로 3차원 벡터를 회전시킵니다.</dd></div>
+              <div><dt>왜 사용했는가</dt><dd>ROV 제어에서는 자세 표현과 좌표계 변환이 계속 필요하므로, 반복되는 수학 연산을 함수로 분리한 것입니다.</dd></div>
+              <div><dt>제어 영향</dt><dd>DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.</dd></div>
+              <div><dt>내부 동작 흐름</dt><dd><ul class="flow-list"><li>벡터를 quaternion 형태로 확장합니다.</li><li>회전 quaternion과 켤레 quaternion으로 양쪽에서 곱합니다.</li><li>회전된 벡터 성분을 반환합니다.</li></ul></dd></div>
+            </dl>
           </article>
         </div>
-      </section> <section id="init" class="review-section">
-        <div class="section-heading">
+      </section> <section id="fn-__init__" class="review-section">
+        <div class="panel-heading">
           <div>
-            <p class="section-kicker">Function Review</p>
-            <h2>`__init__()`</h2>
+            <p class="section-kicker">Chapter 5.7</p>
+            <h2>PositionController.__init__()</h2>
           </div>
         </div>
-        <div class="review-grid">
+        <div class="doc-grid">
           <article class="review-card code-card">
-            <h3>실제 코드</h3>
+            <h3>코드 일부</h3>
             <pre><code>def __init__(self):
     super().__init__(&#x27;position_controller&#x27;)
 
@@ -314,39 +390,83 @@ def quat_rotate_vector(q, v):
     self.get_logger().info(f&#x27;  control_enabled                 = {self.control_enabled}&#x27;)</code></pre>
           </article>
           <article class="review-card prose-card">
-            <h3>의미</h3>
-            <p>DVL 입력 방식, gain, yaw damping, manual override, frame 정책, velocity integration fallback까지 초기화합니다. 즉 이 함수는 position hold가 어떤 센서 구성과 어떤 좌표계 해석을 전제로 돌아갈지를 정의합니다.</p>
-            <h3>영향</h3>
-            <p>position hold가 absolute position 기반인지 velocity integration 기반인지, manual release 시 target을 다시 잡을지, 어떤 frame으로 publish할지가 모두 여기서 결정됩니다.</p>
-            <h3>리뷰 메모</h3>
-            <p>실전 운용형 controller답게 파라미터 구성이 좋습니다. 다만 manual freshness timeout이 없어서 수동 입력이 stale일 때 hold 복귀가 늦어질 수 있습니다.</p>
-            <h3>상세 해설</h3><p>이 함수는 position controller를 단순 PD controller 이상으로 만들어 주는 핵심 구간입니다. 먼저 <code>dvl_topic</code>, <code>dvl_position_topic</code>, <code>imu_topic</code> 등으로 어떤 센서 조합을 사용할지 선언합니다. 그 다음 <code>kp_x/kd_x</code>, <code>kp_y/kd_y</code>로 기본 복원력과 감쇠를 정하고, <code>yaw_rate_damping_gain</code>, <code>manual_yaw_damping_boost</code>로 yaw 운동 중 position hold를 얼마나 보수적으로 할지 결정합니다.</p>
-<p>또 <code>use_dvl_position</code>, <code>integrate_dvl_velocity_when_position_unavailable</code>는 absolute position 기반인지 dead-reckoning fallback 기반인지 선택하게 해 줍니다. 즉 이 함수는 &#x27;위치제어기&#x27;를 초기화하는 것이 아니라, 실제 field condition에서 어떤 센서 가정과 어떤 hold 감각으로 운영할지 선언하는 함수라고 보는 편이 정확합니다.</p>
-            <h3>이 함수와 관련된 파라미터</h3><ul class="parameter-list"><li><strong><code>dvl_topic</code>, <code>dvl_position_topic</code>, <code>imu_topic</code>, <code>manual_wrench_topic</code></strong><span>position hold가 의존하는 센서와 pilot 입력 채널입니다.</span></li><li><strong><code>kp_x</code>, <code>kd_x</code>, <code>kp_y</code>, <code>kd_y</code></strong><span>XY 위치 오차를 planar force로 바꾸는 핵심 PD 게인입니다.</span></li><li><strong><code>yaw_rate_damping_gain</code>, <code>manual_yaw_damping_boost</code>, <code>manual_yaw_override_threshold</code></strong><span>yaw 운동/조작이 있을 때 XY hold를 얼마나 보수적으로 만들지 결정합니다.</span></li><li><strong><code>manual_xy_override_threshold</code>, <code>capture_target_on_manual_release</code></strong><span>manual XY 조작 중 auto hold를 끊고, release 후 hold target을 다시 잡는 정책입니다.</span></li><li><strong><code>valid_timeout_sec</code></strong><span>DVL 기반 reference가 stale인지 판단하는 유효 시간입니다.</span></li><li><strong><code>use_dvl_position</code>, <code>integrate_dvl_velocity_when_position_unavailable</code></strong><span>absolute position과 velocity fallback 중 어떤 전략을 쓸지 정합니다.</span></li><li><strong><code>dvl_mount_roll_deg</code>, <code>dvl_mount_pitch_deg</code>, <code>dvl_mount_yaw_deg</code></strong><span>DVL 장착 방향이 body frame과 어긋날 때 이를 보정합니다.</span></li></ul>
+            <dl class="doc-meta">
+              <div><dt>위치</dt><dd><code>position_controller.py:66-216</code></dd></div>
+              <div><dt>입력</dt><dd>self</dd></div>
+              <div><dt>출력</dt><dd>직접적인 return 값보다는 내부 상태 갱신 또는 ROS topic 발행이 핵심 출력입니다.</dd></div>
+              <div><dt>역할</dt><dd>ROS2 노드의 파라미터, 상태 변수, subscriber, publisher, timer를 초기화합니다. 해당 제어 노드가 시스템에 연결되는 시작점입니다.</dd></div>
+              <div><dt>왜 사용했는가</dt><dd>노드가 실행되기 전에 필요한 파라미터, 통신 인터페이스, 상태 변수를 모두 준비해야 하기 때문에 사용됩니다.</dd></div>
+              <div><dt>제어 영향</dt><dd>DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.</dd></div>
+              <div><dt>내부 동작 흐름</dt><dd><ul class="flow-list"><li>노드 이름을 설정합니다.</li><li>ROS parameter를 선언하고 현재 값을 읽습니다.</li><li>제어에 필요한 내부 상태 변수를 초기화합니다.</li><li>subscriber와 publisher를 생성합니다.</li><li>parameter callback을 등록합니다.</li><li>초기 설정값을 log로 출력합니다.</li></ul></dd></div>
+            </dl>
           </article>
         </div>
-      </section> <section id="section" class="review-section">
-        <div class="section-heading">
+      </section> <section id="fn-_publish_zero_force" class="review-section">
+        <div class="panel-heading">
           <div>
-            <p class="section-kicker">Function Review</p>
-            <h2>상태/보조 함수</h2>
+            <p class="section-kicker">Chapter 5.8</p>
+            <h2>PositionController._publish_zero_force()</h2>
           </div>
         </div>
-        <div class="review-grid">
+        <div class="doc-grid">
           <article class="review-card code-card">
-            <h3>실제 코드</h3>
+            <h3>코드 일부</h3>
             <pre><code>def _publish_zero_force(self):
-    self.pub_force.publish(Wrench())
-
-def _has_valid_position_reference(self, now) -&gt; bool:
+    self.pub_force.publish(Wrench())</code></pre>
+          </article>
+          <article class="review-card prose-card">
+            <dl class="doc-meta">
+              <div><dt>위치</dt><dd><code>position_controller.py:217-219</code></dd></div>
+              <div><dt>입력</dt><dd>self</dd></div>
+              <div><dt>출력</dt><dd>내부 상태 갱신이 중심이며, 필요 시 계산 결과를 return합니다.</dd></div>
+              <div><dt>역할</dt><dd>position controller 출력 Wrench를 0으로 발행합니다.</dd></div>
+              <div><dt>왜 사용했는가</dt><dd>복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.</dd></div>
+              <div><dt>제어 영향</dt><dd>DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.</dd></div>
+              <div><dt>내부 동작 흐름</dt><dd><ul class="flow-list"><li>빈 <code>Wrench()</code> 메시지를 준비합니다.</li><li>출력 publisher를 통해 0 force를 발행합니다.</li><li>자동 hold 출력을 즉시 정지시키는 역할을 수행합니다.</li></ul></dd></div>
+            </dl>
+          </article>
+        </div>
+      </section> <section id="fn-_has_valid_position_reference" class="review-section">
+        <div class="panel-heading">
+          <div>
+            <p class="section-kicker">Chapter 5.9</p>
+            <h2>PositionController._has_valid_position_reference()</h2>
+          </div>
+        </div>
+        <div class="doc-grid">
+          <article class="review-card code-card">
+            <h3>코드 일부</h3>
+            <pre><code>def _has_valid_position_reference(self, now) -&gt; bool:
     if not self.have_imu:
         return False
     if self.last_valid_dvl_time is None:
         return False
     age = (now - self.last_valid_dvl_time).nanoseconds * 1e-9
-    return age &lt;= self.valid_timeout_sec
-
-def _set_control_enabled(self, enabled: bool):
+    return age &lt;= self.valid_timeout_sec</code></pre>
+          </article>
+          <article class="review-card prose-card">
+            <dl class="doc-meta">
+              <div><dt>위치</dt><dd><code>position_controller.py:220-227</code></dd></div>
+              <div><dt>입력</dt><dd>self, now</dd></div>
+              <div><dt>출력</dt><dd>계산 결과를 return하며, 호출한 제어 로직에서 다음 계산의 입력으로 사용됩니다.</dd></div>
+              <div><dt>역할</dt><dd>IMU와 DVL 기준 정보가 유효 시간 안에 있는지 확인합니다.</dd></div>
+              <div><dt>왜 사용했는가</dt><dd>복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.</dd></div>
+              <div><dt>제어 영향</dt><dd>DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.</dd></div>
+              <div><dt>내부 동작 흐름</dt><dd><ul class="flow-list"><li>IMU가 유효한지 확인합니다.</li><li>마지막 유효 DVL 시각이 있는지 확인합니다.</li><li>현재 시각과의 차이가 <code>valid_timeout_sec</code> 안인지 판단합니다.</li></ul></dd></div>
+            </dl>
+          </article>
+        </div>
+      </section> <section id="fn-_set_control_enabled" class="review-section">
+        <div class="panel-heading">
+          <div>
+            <p class="section-kicker">Chapter 5.10</p>
+            <h2>PositionController._set_control_enabled()</h2>
+          </div>
+        </div>
+        <div class="doc-grid">
+          <article class="review-card code-card">
+            <h3>코드 일부</h3>
+            <pre><code>def _set_control_enabled(self, enabled: bool):
     prev = self.control_enabled
     self.control_enabled = bool(enabled)
     now = self.get_clock().now()
@@ -356,41 +476,139 @@ def _set_control_enabled(self, enabled: bool):
         self.get_logger().info(&#x27;Position control enabled; captured current hold position&#x27;)
     elif (not self.control_enabled) and prev:
         self._publish_zero_force()
-        self.get_logger().info(&#x27;Position control disabled; publishing zero planar force&#x27;)
-
-def _capture_current_position_as_target(self):
+        self.get_logger().info(&#x27;Position control disabled; publishing zero planar force&#x27;)</code></pre>
+          </article>
+          <article class="review-card prose-card">
+            <dl class="doc-meta">
+              <div><dt>위치</dt><dd><code>position_controller.py:228-239</code></dd></div>
+              <div><dt>입력</dt><dd>self, enabled</dd></div>
+              <div><dt>출력</dt><dd>내부 상태 갱신이 중심이며, 필요 시 계산 결과를 return합니다.</dd></div>
+              <div><dt>역할</dt><dd>제어 enable 상태 변경 시 목표값, 적분항, 출력 상태를 초기화하거나 0 출력합니다.</dd></div>
+              <div><dt>왜 사용했는가</dt><dd>복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.</dd></div>
+              <div><dt>제어 영향</dt><dd>DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.</dd></div>
+              <div><dt>내부 동작 흐름</dt><dd><ul class="flow-list"><li>이전 enable 상태와 새 상태를 비교합니다.</li><li>enable 전이 시 유효한 위치 참조가 있으면 현재 위치를 target으로 캡처합니다.</li><li>disable 전이 시 0 force를 발행합니다.</li></ul></dd></div>
+            </dl>
+          </article>
+        </div>
+      </section> <section id="fn-_capture_current_position_as_target" class="review-section">
+        <div class="panel-heading">
+          <div>
+            <p class="section-kicker">Chapter 5.11</p>
+            <h2>PositionController._capture_current_position_as_target()</h2>
+          </div>
+        </div>
+        <div class="doc-grid">
+          <article class="review-card code-card">
+            <h3>코드 일부</h3>
+            <pre><code>def _capture_current_position_as_target(self):
     self.target_x = self.position_x
     self.target_y = self.position_y
-    self.target_initialized = True
-
-def _apply_deadband(self, value: float) -&gt; float:
-    return 0.0 if abs(value) &lt; self.force_deadband else value
-
-def _dvl_position_is_finite(self, msg: PointStamped) -&gt; bool:
+    self.target_initialized = True</code></pre>
+          </article>
+          <article class="review-card prose-card">
+            <dl class="doc-meta">
+              <div><dt>위치</dt><dd><code>position_controller.py:240-244</code></dd></div>
+              <div><dt>입력</dt><dd>self</dd></div>
+              <div><dt>출력</dt><dd>내부 상태 갱신이 중심이며, 필요 시 계산 결과를 return합니다.</dd></div>
+              <div><dt>역할</dt><dd>현재 추정 위치를 position hold 목표로 저장합니다.</dd></div>
+              <div><dt>왜 사용했는가</dt><dd>복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.</dd></div>
+              <div><dt>제어 영향</dt><dd>DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.</dd></div>
+              <div><dt>내부 동작 흐름</dt><dd><ul class="flow-list"><li>현재 position x/y를 읽습니다.</li><li>target x/y에 저장합니다.</li><li>target initialized 상태를 참으로 갱신합니다.</li></ul></dd></div>
+            </dl>
+          </article>
+        </div>
+      </section> <section id="fn-_apply_deadband" class="review-section">
+        <div class="panel-heading">
+          <div>
+            <p class="section-kicker">Chapter 5.12</p>
+            <h2>PositionController._apply_deadband()</h2>
+          </div>
+        </div>
+        <div class="doc-grid">
+          <article class="review-card code-card">
+            <h3>코드 일부</h3>
+            <pre><code>def _apply_deadband(self, value: float) -&gt; float:
+    return 0.0 if abs(value) &lt; self.force_deadband else value</code></pre>
+          </article>
+          <article class="review-card prose-card">
+            <dl class="doc-meta">
+              <div><dt>위치</dt><dd><code>position_controller.py:245-247</code></dd></div>
+              <div><dt>입력</dt><dd>self, value</dd></div>
+              <div><dt>출력</dt><dd>계산 결과를 return하며, 호출한 제어 로직에서 다음 계산의 입력으로 사용됩니다.</dd></div>
+              <div><dt>역할</dt><dd>_apply_deadband 함수는 5장. position_controller.py 내부의 제어 흐름을 구성하는 보조 함수이며, 상태 갱신 또는 계산 단계를 분리하기 위해 사용됩니다.</dd></div>
+              <div><dt>왜 사용했는가</dt><dd>복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.</dd></div>
+              <div><dt>제어 영향</dt><dd>DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.</dd></div>
+              <div><dt>내부 동작 흐름</dt><dd><ul class="flow-list"><li>입력 force 크기를 확인합니다.</li><li><code>force_deadband</code>보다 작으면 0으로 만듭니다.</li><li>그 외에는 원래 값을 반환합니다.</li></ul></dd></div>
+            </dl>
+          </article>
+        </div>
+      </section> <section id="fn-_dvl_position_is_finite" class="review-section">
+        <div class="panel-heading">
+          <div>
+            <p class="section-kicker">Chapter 5.13</p>
+            <h2>PositionController._dvl_position_is_finite()</h2>
+          </div>
+        </div>
+        <div class="doc-grid">
+          <article class="review-card code-card">
+            <h3>코드 일부</h3>
+            <pre><code>def _dvl_position_is_finite(self, msg: PointStamped) -&gt; bool:
     return math.isfinite(float(msg.point.x)) and math.isfinite(float(msg.point.y))</code></pre>
           </article>
           <article class="review-card prose-card">
-            <h3>의미</h3>
-            <p>이 함수들은 제어 출력을 언제 0으로 만들지, target을 언제 갱신할지, DVL 데이터가 유효한지 판정하는 기반 계층입니다.</p>
-            <h3>영향</h3>
-            <p>센서가 유효하지 않으면 output을 0으로 내리고, enable edge에서 hold target을 다시 캡처할 수 있습니다.</p>
-            <h3>리뷰 메모</h3>
-            <p>이 보조 계층 덕분에 publish 조건이 깔끔합니다. 실제 control law보다 앞단의 상태 판정이 잘 분리된 점이 장점입니다.</p>
-            <h3>상세 해설</h3><p>이 함수들은 각각 작아 보여도 제어기 안정성의 기본 골격을 담당합니다. <code>_has_valid_position_reference()</code>는 DVL 기반 상태가 충분히 최신인지 검사하고, <code>_set_control_enabled()</code>는 enable edge에서 target 재캡처와 zero-force 출력을 관리합니다. <code>_capture_current_position_as_target()</code>은 pilot release나 enable 시점에서 hold 기준점을 다시 정합니다.</p>
-<p>즉 이 계층은 &#x27;position error를 계산하기 전에 무엇이 유효한 상태인가&#x27;를 먼저 정의합니다. 센서가 stale이거나 armed 상태가 아닌데도 force를 계속 내지 않도록 막는 방어 로직이 여기 모여 있습니다.</p>
-            <h3>이 함수와 관련된 파라미터</h3><ul class="parameter-list"><li><strong><code>valid_timeout_sec</code></strong><span>position reference가 stale인지 판단하는 기준 시간입니다.</span></li><li><strong><code>control_enabled</code></strong><span>hold force 계산 자체를 허용할지 정합니다.</span></li><li><strong><code>force_deadband</code></strong><span>작은 force를 제거하는 deadband 크기입니다.</span></li><li><strong><code>capture_initial_position_target</code></strong><span>초기 유효 position을 target으로 자동 캡처할지 정합니다.</span></li></ul>
+            <dl class="doc-meta">
+              <div><dt>위치</dt><dd><code>position_controller.py:248-250</code></dd></div>
+              <div><dt>입력</dt><dd>self, msg</dd></div>
+              <div><dt>출력</dt><dd>계산 결과를 return하며, 호출한 제어 로직에서 다음 계산의 입력으로 사용됩니다.</dd></div>
+              <div><dt>역할</dt><dd>DVL position 메시지의 x/y가 finite 값인지 검사합니다.</dd></div>
+              <div><dt>왜 사용했는가</dt><dd>복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.</dd></div>
+              <div><dt>제어 영향</dt><dd>DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.</dd></div>
+              <div><dt>내부 동작 흐름</dt><dd><ul class="flow-list"><li>position x 값을 finite인지 확인합니다.</li><li>position y 값을 finite인지 확인합니다.</li><li>두 값이 모두 finite일 때만 참을 반환합니다.</li></ul></dd></div>
+            </dl>
           </article>
         </div>
-      </section> <section id="manual-wrench-callback" class="review-section">
-        <div class="section-heading">
+      </section> <section id="fn-imu_callback" class="review-section">
+        <div class="panel-heading">
           <div>
-            <p class="section-kicker">Function Review</p>
-            <h2>`manual_wrench_callback()`</h2>
+            <p class="section-kicker">Chapter 5.14</p>
+            <h2>PositionController.imu_callback()</h2>
           </div>
         </div>
-        <div class="review-grid">
+        <div class="doc-grid">
           <article class="review-card code-card">
-            <h3>실제 코드</h3>
+            <h3>코드 일부</h3>
+            <pre><code>def imu_callback(self, msg: Imu):
+    self.q_world_body = quat_normalize(
+        msg.orientation.x,
+        msg.orientation.y,
+        msg.orientation.z,
+        msg.orientation.w,
+    )
+    self.current_yaw_rate = float(msg.angular_velocity.z)
+    self.have_imu = True</code></pre>
+          </article>
+          <article class="review-card prose-card">
+            <dl class="doc-meta">
+              <div><dt>위치</dt><dd><code>position_controller.py:251-260</code></dd></div>
+              <div><dt>입력</dt><dd>self, msg</dd></div>
+              <div><dt>출력</dt><dd>직접적인 return 값보다는 내부 상태 갱신 또는 ROS topic 발행이 핵심 출력입니다.</dd></div>
+              <div><dt>역할</dt><dd>IMU 메시지를 수신하여 현재 자세, 각속도, 또는 z축 방향 정보를 내부 상태에 저장합니다.</dd></div>
+              <div><dt>왜 사용했는가</dt><dd>ROS2 topic 기반 시스템에서 비동기 메시지를 받아 제어 상태를 최신 값으로 유지하기 위해 사용됩니다.</dd></div>
+              <div><dt>제어 영향</dt><dd>DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.</dd></div>
+              <div><dt>내부 동작 흐름</dt><dd><ul class="flow-list"><li>ROS2 메시지를 수신합니다.</li><li>orientation을 정규화해 world-body quaternion을 갱신합니다.</li><li>yaw rate와 IMU 유효 상태를 저장합니다.</li></ul></dd></div>
+            </dl>
+          </article>
+        </div>
+      </section> <section id="fn-manual_wrench_callback" class="review-section">
+        <div class="panel-heading">
+          <div>
+            <p class="section-kicker">Chapter 5.15</p>
+            <h2>PositionController.manual_wrench_callback()</h2>
+          </div>
+        </div>
+        <div class="doc-grid">
+          <article class="review-card code-card">
+            <h3>코드 일부</h3>
             <pre><code>def manual_wrench_callback(self, msg: Wrench):
     self.manual_wrench = msg
     self.prev_manual_xy_active = self.manual_xy_active
@@ -412,27 +630,69 @@ def _dvl_position_is_finite(self, msg: PointStamped) -&gt; bool:
         )</code></pre>
           </article>
           <article class="review-card prose-card">
-            <h3>의미</h3>
-            <p>manual XY 입력이 active인지 판정하고, release edge에서 현재 위치를 새 hold target으로 캡처합니다.</p>
-            <h3>영향</h3>
-            <p>조종자가 이동을 끝내고 stick을 놓았을 때 그 자리에서 poshold가 다시 잠기게 만드는 함수입니다.</p>
-            <h3>리뷰 메모</h3>
-            <p>운용감은 좋지만 freshness timeout이 없어서 마지막 manual XY가 남으면 poshold 복귀가 안 될 수 있습니다. 현재 코드의 대표적인 개선 후보입니다.</p>
-            <h3>상세 해설</h3><p>이 함수는 manual XY를 단순히 저장하는 것보다, 현재 자동 hold를 잠시 끊어야 하는지 판단하는 역할이 더 큽니다. threshold를 넘는 입력이 들어오면 <code>manual_xy_active</code>를 켜고, release edge에서 현재 위치를 새 target으로 캡처해 자연스럽게 poshold로 복귀하게 만듭니다.</p>
-<p>즉 사용자는 &#x27;직접 움직이다가 손을 놓으면 그 자리에서 다시 hold&#x27;되는 감각을 얻게 됩니다. 다만 freshness 관리가 없기 때문에, 입력 주기가 끊겼을 때 manual 상태가 오래 남을 수 있다는 점은 문서에서 분명히 짚어야 합니다.</p>
-            <h3>이 함수와 관련된 파라미터</h3><ul class="parameter-list"><li><strong><code>manual_xy_override_threshold</code></strong><span>manual XY가 auto hold를 끊는 기준입니다.</span></li><li><strong><code>capture_target_on_manual_release</code></strong><span>pilot release 시 현재 위치를 새 hold target으로 잡을지 결정합니다.</span></li></ul>
+            <dl class="doc-meta">
+              <div><dt>위치</dt><dd><code>position_controller.py:261-280</code></dd></div>
+              <div><dt>입력</dt><dd>self, msg</dd></div>
+              <div><dt>출력</dt><dd>직접적인 return 값보다는 내부 상태 갱신 또는 ROS topic 발행이 핵심 출력입니다.</dd></div>
+              <div><dt>역할</dt><dd>조종기 또는 상위 입력에서 들어오는 수동 Wrench 명령을 저장합니다.</dd></div>
+              <div><dt>왜 사용했는가</dt><dd>ROS2 topic 기반 시스템에서 비동기 메시지를 받아 제어 상태를 최신 값으로 유지하기 위해 사용됩니다.</dd></div>
+              <div><dt>제어 영향</dt><dd>DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.</dd></div>
+              <div><dt>내부 동작 흐름</dt><dd><ul class="flow-list"><li>ROS2 메시지를 수신합니다.</li><li>manual wrench와 이전 active 상태를 저장합니다.</li><li>manual XY override 상태를 계산하고 release edge면 현재 위치를 target으로 캡처합니다.</li></ul></dd></div>
+            </dl>
           </article>
         </div>
-      </section> <section id="dvl" class="review-section">
-        <div class="section-heading">
+      </section> <section id="fn-armed_callback" class="review-section">
+        <div class="panel-heading">
           <div>
-            <p class="section-kicker">Function Review</p>
-            <h2>DVL 입력 처리</h2>
+            <p class="section-kicker">Chapter 5.16</p>
+            <h2>PositionController.armed_callback()</h2>
           </div>
         </div>
-        <div class="review-grid">
+        <div class="doc-grid">
           <article class="review-card code-card">
-            <h3>실제 코드</h3>
+            <h3>코드 일부</h3>
+            <pre><code>def armed_callback(self, msg: Bool):
+    self.prev_armed = self.armed
+    self.armed = bool(msg.data)
+    self.armed_received = True
+
+    if (
+        (not self.prev_armed) and
+        self.armed and
+        self._has_valid_position_reference(self.get_clock().now())
+    ):
+        self._capture_current_position_as_target()
+        self.get_logger().info(
+            f&#x27;ARM rising edge -&gt; captured current hold position: &#x27;
+            f&#x27;x={self.target_x:.3f}, y={self.target_y:.3f}&#x27;
+        )
+
+    if self.prev_armed and (not self.armed):
+        self._publish_zero_force()
+        self.get_logger().info(&#x27;DISARM -&gt; position controller output reset to zero&#x27;)</code></pre>
+          </article>
+          <article class="review-card prose-card">
+            <dl class="doc-meta">
+              <div><dt>위치</dt><dd><code>position_controller.py:281-300</code></dd></div>
+              <div><dt>입력</dt><dd>self, msg</dd></div>
+              <div><dt>출력</dt><dd>직접적인 return 값보다는 내부 상태 갱신 또는 ROS topic 발행이 핵심 출력입니다.</dd></div>
+              <div><dt>역할</dt><dd>armed/disarmed 상태 변화를 받아 제어 목표 및 출력을 안전하게 초기화합니다.</dd></div>
+              <div><dt>왜 사용했는가</dt><dd>ROS2 topic 기반 시스템에서 비동기 메시지를 받아 제어 상태를 최신 값으로 유지하기 위해 사용됩니다.</dd></div>
+              <div><dt>제어 영향</dt><dd>DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.</dd></div>
+              <div><dt>내부 동작 흐름</dt><dd><ul class="flow-list"><li>ROS2 메시지를 수신합니다.</li><li>armed 상태와 이전 상태를 갱신합니다.</li><li>arm/disarm edge에 따라 현재 위치 target 캡처 또는 0 force publish를 수행합니다.</li></ul></dd></div>
+            </dl>
+          </article>
+        </div>
+      </section> <section id="fn-dvl_position_callback" class="review-section">
+        <div class="panel-heading">
+          <div>
+            <p class="section-kicker">Chapter 5.17</p>
+            <h2>PositionController.dvl_position_callback()</h2>
+          </div>
+        </div>
+        <div class="doc-grid">
+          <article class="review-card code-card">
+            <h3>코드 일부</h3>
             <pre><code>def dvl_position_callback(self, msg: PointStamped):
     now = self.get_clock().now()
     stamp = now
@@ -456,9 +716,31 @@ def _dvl_position_is_finite(self, msg: PointStamped) -&gt; bool:
             )
 
     self.publish_position_estimate(now)
-    self.publish_control_output(now)
-
-def dvl_callback(self, msg: DVLData):
+    self.publish_control_output(now)</code></pre>
+          </article>
+          <article class="review-card prose-card">
+            <dl class="doc-meta">
+              <div><dt>위치</dt><dd><code>position_controller.py:301-325</code></dd></div>
+              <div><dt>입력</dt><dd>self, msg</dd></div>
+              <div><dt>출력</dt><dd>직접적인 return 값보다는 내부 상태 갱신 또는 ROS topic 발행이 핵심 출력입니다.</dd></div>
+              <div><dt>역할</dt><dd>DVL이 제공하는 위치값을 직접 사용해 현재 위치를 갱신하고 position hold 출력을 계산합니다.</dd></div>
+              <div><dt>왜 사용했는가</dt><dd>ROS2 topic 기반 시스템에서 비동기 메시지를 받아 제어 상태를 최신 값으로 유지하기 위해 사용됩니다.</dd></div>
+              <div><dt>제어 영향</dt><dd>DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.</dd></div>
+              <div><dt>내부 동작 흐름</dt><dd><ul class="flow-list"><li>ROS2 메시지를 수신합니다.</li><li>메시지의 timestamp와 finite 여부를 확인합니다.</li><li>유효하면 현재 위치와 최근 DVL 상태를 갱신하고 필요 시 control output을 계산합니다.</li></ul></dd></div>
+            </dl>
+          </article>
+        </div>
+      </section> <section id="fn-dvl_callback" class="review-section">
+        <div class="panel-heading">
+          <div>
+            <p class="section-kicker">Chapter 5.18</p>
+            <h2>PositionController.dvl_callback()</h2>
+          </div>
+        </div>
+        <div class="doc-grid">
+          <article class="review-card code-card">
+            <h3>코드 일부</h3>
+            <pre><code>def dvl_callback(self, msg: DVLData):
     now = self.get_clock().now()
     stamp = now
 
@@ -508,27 +790,27 @@ def dvl_callback(self, msg: DVLData):
     self.publish_control_output(now)</code></pre>
           </article>
           <article class="review-card prose-card">
-            <h3>의미</h3>
-            <p>DVL position을 직접 쓰거나, 없으면 velocity를 body→world로 회전해 적분 위치를 만들고 속도 피드백을 갱신합니다.</p>
-            <h3>영향</h3>
-            <p>센서 구성에 따라 absolute hold와 dead-reckoning hold를 모두 지원하게 해줍니다.</p>
-            <h3>리뷰 메모</h3>
-            <p>유연성이 높고 실제 운용에 유리합니다. 특히 <code>use_dvl_position=False</code> fallback 설계는 테스트 단계에서 큰 장점이 됩니다.</p>
-            <h3>상세 해설</h3><p>이 계층은 position controller가 어떤 형태의 DVL 정보를 받아도 내부 world-frame position/velocity 상태로 변환해 주는 센서 적응 계층입니다. <code>dvl_position_callback()</code>은 absolute position이 있을 때 이를 직접 hold 기준으로 쓰고, <code>dvl_callback()</code>은 body-frame velocity를 IMU yaw를 이용해 world frame으로 돌린 뒤 적분 fallback까지 수행합니다.</p>
-<p>즉 센서가 완벽하지 않아도 position hold를 최대한 유지하려는 실무형 구조입니다. absolute 위치와 dead-reckoning 위치가 어떻게 전환되는지 이해하면, poshold drift의 원인이 센서인지 controller인지 구분하기 쉬워집니다.</p>
-            <h3>이 함수와 관련된 파라미터</h3><ul class="parameter-list"><li><strong><code>use_dvl_position</code></strong><span>absolute DVL position을 직접 사용할지 정합니다.</span></li><li><strong><code>integrate_dvl_velocity_when_position_unavailable</code></strong><span>position이 없을 때 velocity 적분 fallback을 사용할지 정합니다.</span></li><li><strong><code>dvl_mount_roll_deg</code>, <code>dvl_mount_pitch_deg</code>, <code>dvl_mount_yaw_deg</code></strong><span>DVL 축이 body frame과 어긋난 경우 보정합니다.</span></li><li><strong><code>valid_timeout_sec</code></strong><span>최근 DVL 기준을 얼마나 오래 유효로 볼지 정합니다.</span></li></ul>
+            <dl class="doc-meta">
+              <div><dt>위치</dt><dd><code>position_controller.py:326-374</code></dd></div>
+              <div><dt>입력</dt><dd>self, msg</dd></div>
+              <div><dt>출력</dt><dd>직접적인 return 값보다는 내부 상태 갱신 또는 ROS topic 발행이 핵심 출력입니다.</dd></div>
+              <div><dt>역할</dt><dd>DVL 속도 데이터를 body/world frame으로 변환하고 필요 시 적분하여 위치를 추정합니다.</dd></div>
+              <div><dt>왜 사용했는가</dt><dd>ROS2 topic 기반 시스템에서 비동기 메시지를 받아 제어 상태를 최신 값으로 유지하기 위해 사용됩니다.</dd></div>
+              <div><dt>제어 영향</dt><dd>DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.</dd></div>
+              <div><dt>내부 동작 흐름</dt><dd><ul class="flow-list"><li>ROS2 메시지를 수신합니다.</li><li>body frame DVL 속도를 장착 quaternion과 IMU 자세를 이용해 world frame으로 변환합니다.</li><li>필요 시 속도를 적분해 위치 추정을 갱신하고 control output을 계산합니다.</li></ul></dd></div>
+            </dl>
           </article>
         </div>
-      </section> <section id="publish-position-estimate" class="review-section">
-        <div class="section-heading">
+      </section> <section id="fn-publish_position_estimate" class="review-section">
+        <div class="panel-heading">
           <div>
-            <p class="section-kicker">Function Review</p>
-            <h2>`publish_position_estimate()`</h2>
+            <p class="section-kicker">Chapter 5.19</p>
+            <h2>PositionController.publish_position_estimate()</h2>
           </div>
         </div>
-        <div class="review-grid">
+        <div class="doc-grid">
           <article class="review-card code-card">
-            <h3>실제 코드</h3>
+            <h3>코드 일부</h3>
             <pre><code>def publish_position_estimate(self, stamp):
     msg = PointStamped()
     msg.header.stamp = stamp.to_msg()
@@ -539,27 +821,27 @@ def dvl_callback(self, msg: DVLData):
     self.pub_position.publish(msg)</code></pre>
           </article>
           <article class="review-card prose-card">
-            <h3>의미</h3>
-            <p>현재 controller가 보고 있는 position estimate를 외부에 publish합니다.</p>
-            <h3>영향</h3>
-            <p>상위 시각화, 디버깅, 로깅에서 controller 내부 상태를 그대로 볼 수 있게 해줍니다.</p>
-            <h3>리뷰 메모</h3>
-            <p>작은 함수지만 디버깅 가치가 큽니다. 이런 상태 출력이 없으면 position hold 문제를 센서 문제와 구분하기 어렵습니다.</p>
-            <h3>상세 해설</h3><p>이 함수는 controller 내부가 현재 어떤 위치를 믿고 있는지 외부로 드러내는 관찰 창입니다. 사용자는 이 publish를 통해 hold target과 현재 estimate 사이의 차이를 시각화하거나 로그로 비교할 수 있습니다.</p>
-<p>실제 제어 문제는 &#x27;힘이 이상하다&#x27;보다 &#x27;컨트롤러가 잘못된 위치를 믿고 있다&#x27;에서 시작되는 경우가 많습니다. 그래서 이런 상태 publish 함수는 작아도 리뷰에서 반드시 의미를 설명해 줘야 합니다.</p>
-            
+            <dl class="doc-meta">
+              <div><dt>위치</dt><dd><code>position_controller.py:375-383</code></dd></div>
+              <div><dt>입력</dt><dd>self, stamp</dd></div>
+              <div><dt>출력</dt><dd>내부 상태 갱신이 중심이며, 필요 시 계산 결과를 return합니다.</dd></div>
+              <div><dt>역할</dt><dd>현재 position estimate를 PointStamped로 발행합니다.</dd></div>
+              <div><dt>왜 사용했는가</dt><dd>복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.</dd></div>
+              <div><dt>제어 영향</dt><dd>DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.</dd></div>
+              <div><dt>내부 동작 흐름</dt><dd><ul class="flow-list"><li>PointStamped 메시지를 생성합니다.</li><li>현재 frame id와 position x/y를 채웁니다.</li><li>position estimate topic으로 발행합니다.</li></ul></dd></div>
+            </dl>
           </article>
         </div>
-      </section> <section id="publish-control-output" class="review-section">
-        <div class="section-heading">
+      </section> <section id="fn-publish_control_output" class="review-section">
+        <div class="panel-heading">
           <div>
-            <p class="section-kicker">Function Review</p>
-            <h2>`publish_control_output()`</h2>
+            <p class="section-kicker">Chapter 5.20</p>
+            <h2>PositionController.publish_control_output()</h2>
           </div>
         </div>
-        <div class="review-grid">
+        <div class="doc-grid">
           <article class="review-card code-card">
-            <h3>실제 코드</h3>
+            <h3>코드 일부</h3>
             <pre><code>def publish_control_output(self, now):
     out = Wrench()
 
@@ -608,27 +890,27 @@ def dvl_callback(self, msg: DVLData):
     self.pub_force.publish(out)</code></pre>
           </article>
           <article class="review-card prose-card">
-            <h3>의미</h3>
-            <p>validity check, target error 계산, yaw-rate aware damping, world→body 회전, manual override 적용, force clamp를 수행하는 본체입니다.</p>
-            <h3>영향</h3>
-            <p>이 함수가 실제 position hold의 감각을 결정합니다. 특히 yaw 회전 중 damping boost와 body-frame force 변환이 핵심입니다.</p>
-            <h3>리뷰 메모</h3>
-            <p>구조는 명확하고 PD hold로서 좋습니다. 다만 <code>force_body_z</code>를 최종 출력에 포함시키는 부분은 설계 의도를 명시하지 않으면 depth와의 coupling을 읽는 사람이 헷갈릴 수 있습니다.</p>
-            <h3>상세 해설</h3><p>이 함수는 실제 position hold의 중심입니다. 하지만 단순히 오차를 force로 바꾸기 전에 먼저 <code>target_initialized</code>, <code>valid reference</code>, <code>armed</code>, <code>control_enabled</code>를 확인합니다. 즉 이 코드는 좋은 출력을 만드는 것보다, 잘못된 상태에서 출력을 내지 않는 것을 먼저 중요하게 봅니다.</p>
-<p>그 다음 error를 world frame에서 계산하고 yaw 상태에 따라 damping을 강화합니다. 이후 world force를 body frame으로 회전해 기체가 실제로 낼 수 있는 축으로 바꾸고, manual XY가 active면 auto force를 0으로 눌러 pilot 우선 정책을 구현합니다. 마지막에는 saturation과 deadband를 적용해 actuator-friendly한 force로 publish합니다.</p>
-            <h3>이 함수와 관련된 파라미터</h3><ul class="parameter-list"><li><strong><code>kp_x</code>, <code>kd_x</code>, <code>kp_y</code>, <code>kd_y</code></strong><span>오차와 속도를 force로 바꾸는 식에 직접 들어갑니다.</span></li><li><strong><code>yaw_rate_damping_gain</code>, <code>manual_yaw_damping_boost</code></strong><span>yaw motion이 클수록 derivative 성분을 얼마나 더 키울지 정합니다.</span></li><li><strong><code>max_force_x</code>, <code>max_force_y</code>, <code>max_force_z</code></strong><span>최종 force clamp 상한입니다.</span></li><li><strong><code>force_deadband</code></strong><span>아주 작은 force를 0으로 눌러 actuator chatter를 줄입니다.</span></li></ul>
+            <dl class="doc-meta">
+              <div><dt>위치</dt><dd><code>position_controller.py:384-430</code></dd></div>
+              <div><dt>입력</dt><dd>self, now</dd></div>
+              <div><dt>출력</dt><dd>내부 상태 갱신이 중심이며, 필요 시 계산 결과를 return합니다.</dd></div>
+              <div><dt>역할</dt><dd>position target과 현재 위치/속도 차이로 body frame force 명령을 계산해 발행합니다.</dd></div>
+              <div><dt>왜 사용했는가</dt><dd>복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.</dd></div>
+              <div><dt>제어 영향</dt><dd>DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.</dd></div>
+              <div><dt>내부 동작 흐름</dt><dd><ul class="flow-list"><li>position reference와 armed/control 상태가 유효한지 확인합니다.</li><li>목표 위치와 현재 위치의 x/y 오차를 계산합니다.</li><li>yaw rate와 수동 yaw 입력에 따라 추가 damping을 계산합니다.</li><li>world frame force를 계산한 뒤 body frame으로 회전 변환합니다.</li><li>수동 XY 입력이 active이면 position hold force를 0으로 둡니다.</li><li>force limit와 deadband를 적용한 뒤 position_force topic으로 발행합니다.</li></ul></dd></div>
+            </dl>
           </article>
         </div>
-      </section> <section id="on-parameter-update" class="review-section">
-        <div class="section-heading">
+      </section> <section id="fn-on_parameter_update" class="review-section">
+        <div class="panel-heading">
           <div>
-            <p class="section-kicker">Function Review</p>
-            <h2>`on_parameter_update()`</h2>
+            <p class="section-kicker">Chapter 5.21</p>
+            <h2>PositionController.on_parameter_update()</h2>
           </div>
         </div>
-        <div class="review-grid">
+        <div class="doc-grid">
           <article class="review-card code-card">
-            <h3>실제 코드</h3>
+            <h3>코드 일부</h3>
             <pre><code>def on_parameter_update(self, params):
     try:
         for p in params:
@@ -702,19 +984,55 @@ def dvl_callback(self, msg: DVLData):
         return SetParametersResult(successful=False, reason=str(exc))</code></pre>
           </article>
           <article class="review-card prose-card">
-            <h3>의미</h3>
-            <p>gain, threshold, frame, DVL fallback 정책을 실시간으로 수정합니다.</p>
-            <h3>영향</h3>
-            <p>테스트 중 poshold의 stiffness와 damping을 바로 바꿀 수 있습니다.</p>
-            <h3>리뷰 메모</h3>
-            <p>runtime tuning은 강점이지만, 어떤 파라미터가 어떤 함수를 통해 결과에 연결되는지 문서가 꼭 필요합니다. 이번 리뷰 문서가 그 연결을 설명하는 역할을 합니다.</p>
-            <h3>상세 해설</h3><p>position hold는 gain뿐 아니라 sensor strategy, manual override policy, yaw damping 정책을 함께 튜닝해야 합니다. 즉 이 함수는 단순 PD gain 조정기가 아니라, 제어 law와 센서 해석 정책을 함께 바꾸는 관리 포인트입니다.</p>
-<p>그래서 문서에서도 각 파라미터를 단독 설명하는 수준을 넘어, 어떤 함수에서 사용되고 어떤 동작 분기를 바꾸는지까지 함께 설명하는 것이 중요합니다.</p>
-            
+            <dl class="doc-meta">
+              <div><dt>위치</dt><dd><code>position_controller.py:431-503</code></dd></div>
+              <div><dt>입력</dt><dd>self, params</dd></div>
+              <div><dt>출력</dt><dd>파라미터 갱신 결과를 <code>SetParametersResult</code>로 반환하면서 내부 상태를 함께 갱신합니다.</dd></div>
+              <div><dt>역할</dt><dd>ROS2 runtime parameter 변경을 노드 내부 변수에 반영합니다.</dd></div>
+              <div><dt>왜 사용했는가</dt><dd>실제 로봇 테스트 중 gain과 제한값을 노드를 재시작하지 않고 바꾸기 위해 사용됩니다.</dd></div>
+              <div><dt>제어 영향</dt><dd>DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.</dd></div>
+              <div><dt>내부 동작 흐름</dt><dd><ul class="flow-list"><li>변경 요청된 parameter 목록을 순회합니다.</li><li>parameter 이름에 맞는 내부 변수를 갱신합니다.</li><li>각도 단위 parameter는 필요한 경우 radian으로 변환합니다.</li><li>갱신 결과를 log로 남깁니다.</li><li>성공 또는 실패 결과를 <code>SetParametersResult</code>로 반환합니다.</li></ul></dd></div>
+            </dl>
+          </article>
+        </div>
+      </section> <section id="fn-main" class="review-section">
+        <div class="panel-heading">
+          <div>
+            <p class="section-kicker">Chapter 5.22</p>
+            <h2>전역 함수.main()</h2>
+          </div>
+        </div>
+        <div class="doc-grid">
+          <article class="review-card code-card">
+            <h3>코드 일부</h3>
+            <pre><code>def main(args=None):
+    rclpy.init(args=args)
+    node = PositionController()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == &#x27;__main__&#x27;:
+    main()</code></pre>
+          </article>
+          <article class="review-card prose-card">
+            <dl class="doc-meta">
+              <div><dt>위치</dt><dd><code>position_controller.py:504-517</code></dd></div>
+              <div><dt>입력</dt><dd>args</dd></div>
+              <div><dt>출력</dt><dd>직접적인 return 값보다는 노드 실행과 종료 처리가 핵심 출력입니다.</dd></div>
+              <div><dt>역할</dt><dd>rclpy를 초기화하고 노드를 생성한 뒤 spin을 수행합니다.</dd></div>
+              <div><dt>왜 사용했는가</dt><dd>ROS2 노드 생명주기를 시작하고 종료 처리를 안정적으로 수행하기 위해 사용됩니다.</dd></div>
+              <div><dt>제어 영향</dt><dd>DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.</dd></div>
+              <div><dt>내부 동작 흐름</dt><dd><ul class="flow-list"><li><code>rclpy.init()</code>으로 ROS2를 초기화합니다.</li><li>노드 객체를 생성합니다.</li><li><code>rclpy.spin()</code>으로 callback 처리를 시작합니다.</li><li>종료 시 노드를 destroy하고 <code>rclpy.shutdown()</code>을 호출합니다.</li></ul></dd></div>
+            </dl>
           </article>
         </div>
       </section>
-
       <section id="full-source" class="panel">
         <div class="panel-heading">
           <div>

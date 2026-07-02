@@ -1,87 +1,71 @@
-# Position Controller Review
+# ROV Control Code Review - 함수별 설명 문서
 
-대상 파일: `code_review/code/position_controller.py`
+5장. `position_controller.py`
 
-## 역할
-이 코드는 DVL와 IMU, manual input을 이용해 planar hold용 `Fx`, `Fy`, 그리고 경우에 따라 `Fz` 보정까지 만드는 위치 제어기입니다.
+DVL 위치/속도와 IMU 자세를 이용해 XY 위치 유지 힘을 생성하는 위치 제어 노드
 
-## 설계 해석
-핵심 구조는 `world frame에서 위치 오차 계산 → body frame 힘으로 회전`입니다. 즉 기체가 yaw되어 있어도 지구 기준 위치를 유지하려는 설계입니다.
+이 파일은 DVL 위치 또는 속도를 이용해 XY 방향 위치 유지 힘을 만듭니다. 현재 위치를 hold target으로 잡고 위치 오차에 따라 수평 force를 만듭니다.
 
-## 리뷰 초점
-리뷰 포인트는 `DVL position과 velocity fallback이 어떻게 연결되는지`, `manual XY override가 hold target과 어떻게 상호작용하는지`, `yaw motion-aware damping이 어떤 안정화 효과를 만드는지`, `body-frame 변환 후 force.z를 왜 출력하는지`입니다.
+- 파일: `position_controller.py`
+- 함수 개수: 22
+- 주요 역할: DVL 위치/속도와 IMU 자세를 이용해 XY 위치 유지 힘을 생성하는 위치 제어 노드
 
-## 런타임 동작 해설
-이 모듈은 `dvl_position_callback()` 또는 `dvl_callback()`에서 위치/속도 참조를 최신 상태로 유지하고, `publish_control_output()`에서 target과 현재 위치의 오차를 world frame에서 계산합니다. 그 다음 yaw 상태를 반영한 damping을 더하고 결과 힘을 body frame으로 회전해 최종 force command로 publish합니다. 즉 frame 해석과 DVL validity 관리가 control law만큼 중요한 모듈입니다.
+5장.1 전역 함수.clamp()
 
-## 핵심 파라미터
-- `kp_x`, `kd_x`, `kp_y`, `kd_y`: XY 위치 오차를 force로 바꾸는 기본 PD 게인입니다.
-- `max_force_x`, `max_force_y`, `max_force_z`: 각 축별 force saturation 한계를 정합니다.
-- `manual_xy_override_threshold`: 이 값보다 큰 manual XY 입력이 들어오면 position hold보다 pilot input을 우선합니다.
-- `capture_target_on_manual_release`: pilot이 XY stick을 놓았을 때 현재 위치를 새 hold target으로 다시 잡을지 결정합니다.
-- `valid_timeout_sec`: DVL position/velocity reference를 얼마 동안 유효하다고 볼지 정합니다.
-- `yaw_rate_damping_gain`: yaw 회전이 클수록 XY damping을 얼마나 더 강하게 만들지 정합니다.
-- `manual_yaw_damping_boost`: manual yaw 조작 중 XY hold를 더 안정적으로 만들기 위해 추가되는 damping입니다.
-- `use_dvl_position`: DVL absolute position을 직접 쓸지, velocity integration 중심으로 갈지 결정합니다.
-- `integrate_dvl_velocity_when_position_unavailable`: absolute position이 없을 때 velocity를 적분해 hold reference를 유지할지 정합니다.
-- `dvl_mount_roll_deg`, `dvl_mount_pitch_deg`, `dvl_mount_yaw_deg`: DVL 장착 각도 보정 파라미터입니다.
-
-## 함수 맵
-- `clamp()`
-- `quat_normalize()`
-- `quat_multiply()`
-- `quat_conjugate()`
-- `quat_from_rpy()`
-- `quat_rotate_vector()`
-- `__init__()`
-- `_publish_zero_force()`
-- `_has_valid_position_reference()`
-- `_set_control_enabled()`
-- `_capture_current_position_as_target()`
-- `_apply_deadband()`
-- `_dvl_position_is_finite()`
-- `imu_callback()`
-- `manual_wrench_callback()`
-- `armed_callback()`
-- `dvl_position_callback()`
-- `dvl_callback()`
-- `publish_position_estimate()`
-- `publish_control_output()`
-- `on_parameter_update()`
-- `main()`
-
-## 함수 리뷰
-
-### Quaternion 유틸리티
-
-**의미**
-
-이 함수들은 DVL 속도와 위치제어 출력을 body/world frame 사이에서 변환하기 위한 기본 수학 도구입니다.
-
-**영향**
-
-이 계층이 있어야 yaw가 바뀌어도 같은 world 위치를 유지할 수 있습니다. 즉 이 controller의 존재 이유 자체가 여기서 시작됩니다.
-
-**리뷰 메모**
-
-수학 유틸리티는 단순하지만 매우 중요합니다. 좌표계가 꼬이면 controller tuning 문제가 아니라 frame mismatch 문제가 됩니다.
-
-**상세 해설**
-
-position hold에서 가장 중요한 것은 오차 자체보다 오차가 어느 좌표계에서 정의되는가입니다. 이 유틸리티 묶음은 DVL 속도, hold target, 최종 force를 world/body frame 사이에서 일관되게 회전시키는 기반을 제공합니다.
-
-즉 이 코드가 단순 planar PD가 아니라 yaw가 변해도 같은 world 위치를 붙잡을 수 있는 이유가 바로 이 계층에 있습니다. 문제가 생기면 게인을 의심하기 전에 frame rotation이 올바른지 먼저 확인해야 합니다.
+- 위치: `position_controller.py:16-19`
+- 입력: value, lo, hi
+- 출력: 계산 결과를 return하며, 호출한 제어 로직에서 다음 계산의 입력으로 사용됩니다.
+- 역할: 값을 지정된 최소/최대 범위 안으로 제한합니다.
+- 왜 사용했는가: 복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.
+- 제어 영향: DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.
+- 내부 동작 흐름:
+  - 입력값과 최소/최대 한계를 받습니다.
+  - 최솟값보다 작으면 최솟값으로 제한합니다.
+  - 최댓값보다 크면 최댓값으로 제한하고, 범위 안이면 그대로 반환합니다.
+- 코드 일부:
 
 ```python
 def clamp(value: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, value))
+```
 
+5장.2 전역 함수.quat_normalize()
+
+- 위치: `position_controller.py:20-26`
+- 입력: x, y, z, w
+- 출력: 계산 결과를 return하며, 호출한 제어 로직에서 다음 계산의 입력으로 사용됩니다.
+- 역할: quaternion을 단위 quaternion으로 정규화합니다.
+- 왜 사용했는가: ROV 제어에서는 자세 표현과 좌표계 변환이 계속 필요하므로, 반복되는 수학 연산을 함수로 분리한 것입니다.
+- 제어 영향: DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.
+- 내부 동작 흐름:
+  - 입력 quaternion 노름을 계산합니다.
+  - 노름이 너무 작으면 기본 단위 quaternion을 반환합니다.
+  - 정규화된 quaternion 성분을 반환합니다.
+- 코드 일부:
+
+```python
 def quat_normalize(x: float, y: float, z: float, w: float):
     norm = math.sqrt(x * x + y * y + z * z + w * w)
     if norm < 1e-12:
         return (0.0, 0.0, 0.0, 1.0)
     return (x / norm, y / norm, z / norm, w / norm)
+```
 
+5장.3 전역 함수.quat_multiply()
+
+- 위치: `position_controller.py:27-37`
+- 입력: a, b
+- 출력: 계산 결과를 return하며, 호출한 제어 로직에서 다음 계산의 입력으로 사용됩니다.
+- 역할: 두 quaternion의 곱을 계산합니다. DVL 벡터 회전 변환에 사용됩니다.
+- 왜 사용했는가: ROV 제어에서는 자세 표현과 좌표계 변환이 계속 필요하므로, 반복되는 수학 연산을 함수로 분리한 것입니다.
+- 제어 영향: DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.
+- 내부 동작 흐름:
+  - 두 quaternion 성분을 각각 분리합니다.
+  - Hamilton product 공식을 적용합니다.
+  - 곱셈 결과 quaternion을 반환합니다.
+- 코드 일부:
+
+```python
 def quat_multiply(a, b):
     ax, ay, az, aw = a
     bx, by, bz, bw = b
@@ -91,11 +75,43 @@ def quat_multiply(a, b):
         aw * bz + ax * by - ay * bx + az * bw,
         aw * bw - ax * bx - ay * by - az * bz,
     )
+```
 
+5장.4 전역 함수.quat_conjugate()
+
+- 위치: `position_controller.py:38-42`
+- 입력: q
+- 출력: 계산 결과를 return하며, 호출한 제어 로직에서 다음 계산의 입력으로 사용됩니다.
+- 역할: quaternion 역회전에 필요한 켤레를 계산합니다.
+- 왜 사용했는가: ROV 제어에서는 자세 표현과 좌표계 변환이 계속 필요하므로, 반복되는 수학 연산을 함수로 분리한 것입니다.
+- 제어 영향: DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.
+- 내부 동작 흐름:
+  - 입력 quaternion 성분을 분리합니다.
+  - 벡터부 부호를 반전합니다.
+  - 스칼라부는 유지한 채 켤레 quaternion을 반환합니다.
+- 코드 일부:
+
+```python
 def quat_conjugate(q):
     x, y, z, w = q
     return (-x, -y, -z, w)
+```
 
+5장.5 전역 함수.quat_from_rpy()
+
+- 위치: `position_controller.py:43-57`
+- 입력: roll, pitch, yaw
+- 출력: 계산 결과를 return하며, 호출한 제어 로직에서 다음 계산의 입력으로 사용됩니다.
+- 역할: DVL 장착 각도를 quaternion으로 변환합니다.
+- 왜 사용했는가: ROV 제어에서는 자세 표현과 좌표계 변환이 계속 필요하므로, 반복되는 수학 연산을 함수로 분리한 것입니다.
+- 제어 영향: DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.
+- 내부 동작 흐름:
+  - roll, pitch, yaw의 half-angle 삼각함수를 계산합니다.
+  - quaternion 성분을 조합합니다.
+  - 정규화된 quaternion을 반환합니다.
+- 코드 일부:
+
+```python
 def quat_from_rpy(roll: float, pitch: float, yaw: float):
     cr = math.cos(roll * 0.5)
     sr = math.sin(roll * 0.5)
@@ -109,42 +125,45 @@ def quat_from_rpy(roll: float, pitch: float, yaw: float):
         cr * cp * sy - sr * sp * cy,
         cr * cp * cy + sr * sp * sy,
     )
+```
 
+5장.6 전역 함수.quat_rotate_vector()
+
+- 위치: `position_controller.py:58-63`
+- 입력: q, v
+- 출력: 계산 결과를 return하며, 호출한 제어 로직에서 다음 계산의 입력으로 사용됩니다.
+- 역할: quaternion으로 3차원 벡터를 회전시킵니다.
+- 왜 사용했는가: ROV 제어에서는 자세 표현과 좌표계 변환이 계속 필요하므로, 반복되는 수학 연산을 함수로 분리한 것입니다.
+- 제어 영향: DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.
+- 내부 동작 흐름:
+  - 벡터를 quaternion 형태로 확장합니다.
+  - 회전 quaternion과 켤레 quaternion으로 양쪽에서 곱합니다.
+  - 회전된 벡터 성분을 반환합니다.
+- 코드 일부:
+
+```python
 def quat_rotate_vector(q, v):
     qv = (v[0], v[1], v[2], 0.0)
     rotated = quat_multiply(quat_multiply(q, qv), quat_conjugate(q))
     return (rotated[0], rotated[1], rotated[2])
 ```
 
-### `__init__()`
+5장.7 PositionController.__init__()
 
-**의미**
-
-DVL 입력 방식, gain, yaw damping, manual override, frame 정책, velocity integration fallback까지 초기화합니다. 즉 이 함수는 position hold가 어떤 센서 구성과 어떤 좌표계 해석을 전제로 돌아갈지를 정의합니다.
-
-**영향**
-
-position hold가 absolute position 기반인지 velocity integration 기반인지, manual release 시 target을 다시 잡을지, 어떤 frame으로 publish할지가 모두 여기서 결정됩니다.
-
-**리뷰 메모**
-
-실전 운용형 controller답게 파라미터 구성이 좋습니다. 다만 manual freshness timeout이 없어서 수동 입력이 stale일 때 hold 복귀가 늦어질 수 있습니다.
-
-**상세 해설**
-
-이 함수는 position controller를 단순 PD controller 이상으로 만들어 주는 핵심 구간입니다. 먼저 `dvl_topic`, `dvl_position_topic`, `imu_topic` 등으로 어떤 센서 조합을 사용할지 선언합니다. 그 다음 `kp_x/kd_x`, `kp_y/kd_y`로 기본 복원력과 감쇠를 정하고, `yaw_rate_damping_gain`, `manual_yaw_damping_boost`로 yaw 운동 중 position hold를 얼마나 보수적으로 할지 결정합니다.
-
-또 `use_dvl_position`, `integrate_dvl_velocity_when_position_unavailable`는 absolute position 기반인지 dead-reckoning fallback 기반인지 선택하게 해 줍니다. 즉 이 함수는 '위치제어기'를 초기화하는 것이 아니라, 실제 field condition에서 어떤 센서 가정과 어떤 hold 감각으로 운영할지 선언하는 함수라고 보는 편이 정확합니다.
-
-**이 함수와 관련된 파라미터**
-
-- `dvl_topic`, `dvl_position_topic`, `imu_topic`, `manual_wrench_topic`: position hold가 의존하는 센서와 pilot 입력 채널입니다.
-- `kp_x`, `kd_x`, `kp_y`, `kd_y`: XY 위치 오차를 planar force로 바꾸는 핵심 PD 게인입니다.
-- `yaw_rate_damping_gain`, `manual_yaw_damping_boost`, `manual_yaw_override_threshold`: yaw 운동/조작이 있을 때 XY hold를 얼마나 보수적으로 만들지 결정합니다.
-- `manual_xy_override_threshold`, `capture_target_on_manual_release`: manual XY 조작 중 auto hold를 끊고, release 후 hold target을 다시 잡는 정책입니다.
-- `valid_timeout_sec`: DVL 기반 reference가 stale인지 판단하는 유효 시간입니다.
-- `use_dvl_position`, `integrate_dvl_velocity_when_position_unavailable`: absolute position과 velocity fallback 중 어떤 전략을 쓸지 정합니다.
-- `dvl_mount_roll_deg`, `dvl_mount_pitch_deg`, `dvl_mount_yaw_deg`: DVL 장착 방향이 body frame과 어긋날 때 이를 보정합니다.
+- 위치: `position_controller.py:66-216`
+- 입력: self
+- 출력: 직접적인 return 값보다는 내부 상태 갱신 또는 ROS topic 발행이 핵심 출력입니다.
+- 역할: ROS2 노드의 파라미터, 상태 변수, subscriber, publisher, timer를 초기화합니다. 해당 제어 노드가 시스템에 연결되는 시작점입니다.
+- 왜 사용했는가: 노드가 실행되기 전에 필요한 파라미터, 통신 인터페이스, 상태 변수를 모두 준비해야 하기 때문에 사용됩니다.
+- 제어 영향: DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.
+- 내부 동작 흐름:
+  - 노드 이름을 설정합니다.
+  - ROS parameter를 선언하고 현재 값을 읽습니다.
+  - 제어에 필요한 내부 상태 변수를 초기화합니다.
+  - subscriber와 publisher를 생성합니다.
+  - parameter callback을 등록합니다.
+  - 초기 설정값을 log로 출력합니다.
+- 코드 일부:
 
 ```python
 def __init__(self):
@@ -299,37 +318,40 @@ def __init__(self):
     self.get_logger().info(f'  control_enabled                 = {self.control_enabled}')
 ```
 
-### 상태/보조 함수
+5장.8 PositionController._publish_zero_force()
 
-**의미**
-
-이 함수들은 제어 출력을 언제 0으로 만들지, target을 언제 갱신할지, DVL 데이터가 유효한지 판정하는 기반 계층입니다.
-
-**영향**
-
-센서가 유효하지 않으면 output을 0으로 내리고, enable edge에서 hold target을 다시 캡처할 수 있습니다.
-
-**리뷰 메모**
-
-이 보조 계층 덕분에 publish 조건이 깔끔합니다. 실제 control law보다 앞단의 상태 판정이 잘 분리된 점이 장점입니다.
-
-**상세 해설**
-
-이 함수들은 각각 작아 보여도 제어기 안정성의 기본 골격을 담당합니다. `_has_valid_position_reference()`는 DVL 기반 상태가 충분히 최신인지 검사하고, `_set_control_enabled()`는 enable edge에서 target 재캡처와 zero-force 출력을 관리합니다. `_capture_current_position_as_target()`은 pilot release나 enable 시점에서 hold 기준점을 다시 정합니다.
-
-즉 이 계층은 'position error를 계산하기 전에 무엇이 유효한 상태인가'를 먼저 정의합니다. 센서가 stale이거나 armed 상태가 아닌데도 force를 계속 내지 않도록 막는 방어 로직이 여기 모여 있습니다.
-
-**이 함수와 관련된 파라미터**
-
-- `valid_timeout_sec`: position reference가 stale인지 판단하는 기준 시간입니다.
-- `control_enabled`: hold force 계산 자체를 허용할지 정합니다.
-- `force_deadband`: 작은 force를 제거하는 deadband 크기입니다.
-- `capture_initial_position_target`: 초기 유효 position을 target으로 자동 캡처할지 정합니다.
+- 위치: `position_controller.py:217-219`
+- 입력: self
+- 출력: 내부 상태 갱신이 중심이며, 필요 시 계산 결과를 return합니다.
+- 역할: position controller 출력 Wrench를 0으로 발행합니다.
+- 왜 사용했는가: 복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.
+- 제어 영향: DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.
+- 내부 동작 흐름:
+  - 빈 `Wrench()` 메시지를 준비합니다.
+  - 출력 publisher를 통해 0 force를 발행합니다.
+  - 자동 hold 출력을 즉시 정지시키는 역할을 수행합니다.
+- 코드 일부:
 
 ```python
 def _publish_zero_force(self):
     self.pub_force.publish(Wrench())
+```
 
+5장.9 PositionController._has_valid_position_reference()
+
+- 위치: `position_controller.py:220-227`
+- 입력: self, now
+- 출력: 계산 결과를 return하며, 호출한 제어 로직에서 다음 계산의 입력으로 사용됩니다.
+- 역할: IMU와 DVL 기준 정보가 유효 시간 안에 있는지 확인합니다.
+- 왜 사용했는가: 복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.
+- 제어 영향: DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.
+- 내부 동작 흐름:
+  - IMU가 유효한지 확인합니다.
+  - 마지막 유효 DVL 시각이 있는지 확인합니다.
+  - 현재 시각과의 차이가 `valid_timeout_sec` 안인지 판단합니다.
+- 코드 일부:
+
+```python
 def _has_valid_position_reference(self, now) -> bool:
     if not self.have_imu:
         return False
@@ -337,7 +359,23 @@ def _has_valid_position_reference(self, now) -> bool:
         return False
     age = (now - self.last_valid_dvl_time).nanoseconds * 1e-9
     return age <= self.valid_timeout_sec
+```
 
+5장.10 PositionController._set_control_enabled()
+
+- 위치: `position_controller.py:228-239`
+- 입력: self, enabled
+- 출력: 내부 상태 갱신이 중심이며, 필요 시 계산 결과를 return합니다.
+- 역할: 제어 enable 상태 변경 시 목표값, 적분항, 출력 상태를 초기화하거나 0 출력합니다.
+- 왜 사용했는가: 복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.
+- 제어 영향: DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.
+- 내부 동작 흐름:
+  - 이전 enable 상태와 새 상태를 비교합니다.
+  - enable 전이 시 유효한 위치 참조가 있으면 현재 위치를 target으로 캡처합니다.
+  - disable 전이 시 0 force를 발행합니다.
+- 코드 일부:
+
+```python
 def _set_control_enabled(self, enabled: bool):
     prev = self.control_enabled
     self.control_enabled = bool(enabled)
@@ -349,43 +387,106 @@ def _set_control_enabled(self, enabled: bool):
     elif (not self.control_enabled) and prev:
         self._publish_zero_force()
         self.get_logger().info('Position control disabled; publishing zero planar force')
+```
 
+5장.11 PositionController._capture_current_position_as_target()
+
+- 위치: `position_controller.py:240-244`
+- 입력: self
+- 출력: 내부 상태 갱신이 중심이며, 필요 시 계산 결과를 return합니다.
+- 역할: 현재 추정 위치를 position hold 목표로 저장합니다.
+- 왜 사용했는가: 복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.
+- 제어 영향: DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.
+- 내부 동작 흐름:
+  - 현재 position x/y를 읽습니다.
+  - target x/y에 저장합니다.
+  - target initialized 상태를 참으로 갱신합니다.
+- 코드 일부:
+
+```python
 def _capture_current_position_as_target(self):
     self.target_x = self.position_x
     self.target_y = self.position_y
     self.target_initialized = True
+```
 
+5장.12 PositionController._apply_deadband()
+
+- 위치: `position_controller.py:245-247`
+- 입력: self, value
+- 출력: 계산 결과를 return하며, 호출한 제어 로직에서 다음 계산의 입력으로 사용됩니다.
+- 역할: _apply_deadband 함수는 5장. position_controller.py 내부의 제어 흐름을 구성하는 보조 함수이며, 상태 갱신 또는 계산 단계를 분리하기 위해 사용됩니다.
+- 왜 사용했는가: 복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.
+- 제어 영향: DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.
+- 내부 동작 흐름:
+  - 입력 force 크기를 확인합니다.
+  - `force_deadband`보다 작으면 0으로 만듭니다.
+  - 그 외에는 원래 값을 반환합니다.
+- 코드 일부:
+
+```python
 def _apply_deadband(self, value: float) -> float:
     return 0.0 if abs(value) < self.force_deadband else value
+```
 
+5장.13 PositionController._dvl_position_is_finite()
+
+- 위치: `position_controller.py:248-250`
+- 입력: self, msg
+- 출력: 계산 결과를 return하며, 호출한 제어 로직에서 다음 계산의 입력으로 사용됩니다.
+- 역할: DVL position 메시지의 x/y가 finite 값인지 검사합니다.
+- 왜 사용했는가: 복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.
+- 제어 영향: DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.
+- 내부 동작 흐름:
+  - position x 값을 finite인지 확인합니다.
+  - position y 값을 finite인지 확인합니다.
+  - 두 값이 모두 finite일 때만 참을 반환합니다.
+- 코드 일부:
+
+```python
 def _dvl_position_is_finite(self, msg: PointStamped) -> bool:
     return math.isfinite(float(msg.point.x)) and math.isfinite(float(msg.point.y))
 ```
 
-### `manual_wrench_callback()`
+5장.14 PositionController.imu_callback()
 
-**의미**
+- 위치: `position_controller.py:251-260`
+- 입력: self, msg
+- 출력: 직접적인 return 값보다는 내부 상태 갱신 또는 ROS topic 발행이 핵심 출력입니다.
+- 역할: IMU 메시지를 수신하여 현재 자세, 각속도, 또는 z축 방향 정보를 내부 상태에 저장합니다.
+- 왜 사용했는가: ROS2 topic 기반 시스템에서 비동기 메시지를 받아 제어 상태를 최신 값으로 유지하기 위해 사용됩니다.
+- 제어 영향: DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.
+- 내부 동작 흐름:
+  - ROS2 메시지를 수신합니다.
+  - orientation을 정규화해 world-body quaternion을 갱신합니다.
+  - yaw rate와 IMU 유효 상태를 저장합니다.
+- 코드 일부:
 
-manual XY 입력이 active인지 판정하고, release edge에서 현재 위치를 새 hold target으로 캡처합니다.
+```python
+def imu_callback(self, msg: Imu):
+    self.q_world_body = quat_normalize(
+        msg.orientation.x,
+        msg.orientation.y,
+        msg.orientation.z,
+        msg.orientation.w,
+    )
+    self.current_yaw_rate = float(msg.angular_velocity.z)
+    self.have_imu = True
+```
 
-**영향**
+5장.15 PositionController.manual_wrench_callback()
 
-조종자가 이동을 끝내고 stick을 놓았을 때 그 자리에서 poshold가 다시 잠기게 만드는 함수입니다.
-
-**리뷰 메모**
-
-운용감은 좋지만 freshness timeout이 없어서 마지막 manual XY가 남으면 poshold 복귀가 안 될 수 있습니다. 현재 코드의 대표적인 개선 후보입니다.
-
-**상세 해설**
-
-이 함수는 manual XY를 단순히 저장하는 것보다, 현재 자동 hold를 잠시 끊어야 하는지 판단하는 역할이 더 큽니다. threshold를 넘는 입력이 들어오면 `manual_xy_active`를 켜고, release edge에서 현재 위치를 새 target으로 캡처해 자연스럽게 poshold로 복귀하게 만듭니다.
-
-즉 사용자는 '직접 움직이다가 손을 놓으면 그 자리에서 다시 hold'되는 감각을 얻게 됩니다. 다만 freshness 관리가 없기 때문에, 입력 주기가 끊겼을 때 manual 상태가 오래 남을 수 있다는 점은 문서에서 분명히 짚어야 합니다.
-
-**이 함수와 관련된 파라미터**
-
-- `manual_xy_override_threshold`: manual XY가 auto hold를 끊는 기준입니다.
-- `capture_target_on_manual_release`: pilot release 시 현재 위치를 새 hold target으로 잡을지 결정합니다.
+- 위치: `position_controller.py:261-280`
+- 입력: self, msg
+- 출력: 직접적인 return 값보다는 내부 상태 갱신 또는 ROS topic 발행이 핵심 출력입니다.
+- 역할: 조종기 또는 상위 입력에서 들어오는 수동 Wrench 명령을 저장합니다.
+- 왜 사용했는가: ROS2 topic 기반 시스템에서 비동기 메시지를 받아 제어 상태를 최신 값으로 유지하기 위해 사용됩니다.
+- 제어 영향: DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.
+- 내부 동작 흐름:
+  - ROS2 메시지를 수신합니다.
+  - manual wrench와 이전 active 상태를 저장합니다.
+  - manual XY override 상태를 계산하고 release edge면 현재 위치를 target으로 캡처합니다.
+- 코드 일부:
 
 ```python
 def manual_wrench_callback(self, msg: Wrench):
@@ -409,32 +510,55 @@ def manual_wrench_callback(self, msg: Wrench):
         )
 ```
 
-### DVL 입력 처리
+5장.16 PositionController.armed_callback()
 
-**의미**
+- 위치: `position_controller.py:281-300`
+- 입력: self, msg
+- 출력: 직접적인 return 값보다는 내부 상태 갱신 또는 ROS topic 발행이 핵심 출력입니다.
+- 역할: armed/disarmed 상태 변화를 받아 제어 목표 및 출력을 안전하게 초기화합니다.
+- 왜 사용했는가: ROS2 topic 기반 시스템에서 비동기 메시지를 받아 제어 상태를 최신 값으로 유지하기 위해 사용됩니다.
+- 제어 영향: DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.
+- 내부 동작 흐름:
+  - ROS2 메시지를 수신합니다.
+  - armed 상태와 이전 상태를 갱신합니다.
+  - arm/disarm edge에 따라 현재 위치 target 캡처 또는 0 force publish를 수행합니다.
+- 코드 일부:
 
-DVL position을 직접 쓰거나, 없으면 velocity를 body→world로 회전해 적분 위치를 만들고 속도 피드백을 갱신합니다.
+```python
+def armed_callback(self, msg: Bool):
+    self.prev_armed = self.armed
+    self.armed = bool(msg.data)
+    self.armed_received = True
 
-**영향**
+    if (
+        (not self.prev_armed) and
+        self.armed and
+        self._has_valid_position_reference(self.get_clock().now())
+    ):
+        self._capture_current_position_as_target()
+        self.get_logger().info(
+            f'ARM rising edge -> captured current hold position: '
+            f'x={self.target_x:.3f}, y={self.target_y:.3f}'
+        )
 
-센서 구성에 따라 absolute hold와 dead-reckoning hold를 모두 지원하게 해줍니다.
+    if self.prev_armed and (not self.armed):
+        self._publish_zero_force()
+        self.get_logger().info('DISARM -> position controller output reset to zero')
+```
 
-**리뷰 메모**
+5장.17 PositionController.dvl_position_callback()
 
-유연성이 높고 실제 운용에 유리합니다. 특히 `use_dvl_position=False` fallback 설계는 테스트 단계에서 큰 장점이 됩니다.
-
-**상세 해설**
-
-이 계층은 position controller가 어떤 형태의 DVL 정보를 받아도 내부 world-frame position/velocity 상태로 변환해 주는 센서 적응 계층입니다. `dvl_position_callback()`은 absolute position이 있을 때 이를 직접 hold 기준으로 쓰고, `dvl_callback()`은 body-frame velocity를 IMU yaw를 이용해 world frame으로 돌린 뒤 적분 fallback까지 수행합니다.
-
-즉 센서가 완벽하지 않아도 position hold를 최대한 유지하려는 실무형 구조입니다. absolute 위치와 dead-reckoning 위치가 어떻게 전환되는지 이해하면, poshold drift의 원인이 센서인지 controller인지 구분하기 쉬워집니다.
-
-**이 함수와 관련된 파라미터**
-
-- `use_dvl_position`: absolute DVL position을 직접 사용할지 정합니다.
-- `integrate_dvl_velocity_when_position_unavailable`: position이 없을 때 velocity 적분 fallback을 사용할지 정합니다.
-- `dvl_mount_roll_deg`, `dvl_mount_pitch_deg`, `dvl_mount_yaw_deg`: DVL 축이 body frame과 어긋난 경우 보정합니다.
-- `valid_timeout_sec`: 최근 DVL 기준을 얼마나 오래 유효로 볼지 정합니다.
+- 위치: `position_controller.py:301-325`
+- 입력: self, msg
+- 출력: 직접적인 return 값보다는 내부 상태 갱신 또는 ROS topic 발행이 핵심 출력입니다.
+- 역할: DVL이 제공하는 위치값을 직접 사용해 현재 위치를 갱신하고 position hold 출력을 계산합니다.
+- 왜 사용했는가: ROS2 topic 기반 시스템에서 비동기 메시지를 받아 제어 상태를 최신 값으로 유지하기 위해 사용됩니다.
+- 제어 영향: DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.
+- 내부 동작 흐름:
+  - ROS2 메시지를 수신합니다.
+  - 메시지의 timestamp와 finite 여부를 확인합니다.
+  - 유효하면 현재 위치와 최근 DVL 상태를 갱신하고 필요 시 control output을 계산합니다.
+- 코드 일부:
 
 ```python
 def dvl_position_callback(self, msg: PointStamped):
@@ -461,7 +585,23 @@ def dvl_position_callback(self, msg: PointStamped):
 
     self.publish_position_estimate(now)
     self.publish_control_output(now)
+```
 
+5장.18 PositionController.dvl_callback()
+
+- 위치: `position_controller.py:326-374`
+- 입력: self, msg
+- 출력: 직접적인 return 값보다는 내부 상태 갱신 또는 ROS topic 발행이 핵심 출력입니다.
+- 역할: DVL 속도 데이터를 body/world frame으로 변환하고 필요 시 적분하여 위치를 추정합니다.
+- 왜 사용했는가: ROS2 topic 기반 시스템에서 비동기 메시지를 받아 제어 상태를 최신 값으로 유지하기 위해 사용됩니다.
+- 제어 영향: DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.
+- 내부 동작 흐름:
+  - ROS2 메시지를 수신합니다.
+  - body frame DVL 속도를 장착 quaternion과 IMU 자세를 이용해 world frame으로 변환합니다.
+  - 필요 시 속도를 적분해 위치 추정을 갱신하고 control output을 계산합니다.
+- 코드 일부:
+
+```python
 def dvl_callback(self, msg: DVLData):
     now = self.get_clock().now()
     stamp = now
@@ -512,25 +652,19 @@ def dvl_callback(self, msg: DVLData):
     self.publish_control_output(now)
 ```
 
-### `publish_position_estimate()`
+5장.19 PositionController.publish_position_estimate()
 
-**의미**
-
-현재 controller가 보고 있는 position estimate를 외부에 publish합니다.
-
-**영향**
-
-상위 시각화, 디버깅, 로깅에서 controller 내부 상태를 그대로 볼 수 있게 해줍니다.
-
-**리뷰 메모**
-
-작은 함수지만 디버깅 가치가 큽니다. 이런 상태 출력이 없으면 position hold 문제를 센서 문제와 구분하기 어렵습니다.
-
-**상세 해설**
-
-이 함수는 controller 내부가 현재 어떤 위치를 믿고 있는지 외부로 드러내는 관찰 창입니다. 사용자는 이 publish를 통해 hold target과 현재 estimate 사이의 차이를 시각화하거나 로그로 비교할 수 있습니다.
-
-실제 제어 문제는 '힘이 이상하다'보다 '컨트롤러가 잘못된 위치를 믿고 있다'에서 시작되는 경우가 많습니다. 그래서 이런 상태 publish 함수는 작아도 리뷰에서 반드시 의미를 설명해 줘야 합니다.
+- 위치: `position_controller.py:375-383`
+- 입력: self, stamp
+- 출력: 내부 상태 갱신이 중심이며, 필요 시 계산 결과를 return합니다.
+- 역할: 현재 position estimate를 PointStamped로 발행합니다.
+- 왜 사용했는가: 복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.
+- 제어 영향: DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.
+- 내부 동작 흐름:
+  - PointStamped 메시지를 생성합니다.
+  - 현재 frame id와 position x/y를 채웁니다.
+  - position estimate topic으로 발행합니다.
+- 코드 일부:
 
 ```python
 def publish_position_estimate(self, stamp):
@@ -543,32 +677,22 @@ def publish_position_estimate(self, stamp):
     self.pub_position.publish(msg)
 ```
 
-### `publish_control_output()`
+5장.20 PositionController.publish_control_output()
 
-**의미**
-
-validity check, target error 계산, yaw-rate aware damping, world→body 회전, manual override 적용, force clamp를 수행하는 본체입니다.
-
-**영향**
-
-이 함수가 실제 position hold의 감각을 결정합니다. 특히 yaw 회전 중 damping boost와 body-frame force 변환이 핵심입니다.
-
-**리뷰 메모**
-
-구조는 명확하고 PD hold로서 좋습니다. 다만 `force_body_z`를 최종 출력에 포함시키는 부분은 설계 의도를 명시하지 않으면 depth와의 coupling을 읽는 사람이 헷갈릴 수 있습니다.
-
-**상세 해설**
-
-이 함수는 실제 position hold의 중심입니다. 하지만 단순히 오차를 force로 바꾸기 전에 먼저 `target_initialized`, `valid reference`, `armed`, `control_enabled`를 확인합니다. 즉 이 코드는 좋은 출력을 만드는 것보다, 잘못된 상태에서 출력을 내지 않는 것을 먼저 중요하게 봅니다.
-
-그 다음 error를 world frame에서 계산하고 yaw 상태에 따라 damping을 강화합니다. 이후 world force를 body frame으로 회전해 기체가 실제로 낼 수 있는 축으로 바꾸고, manual XY가 active면 auto force를 0으로 눌러 pilot 우선 정책을 구현합니다. 마지막에는 saturation과 deadband를 적용해 actuator-friendly한 force로 publish합니다.
-
-**이 함수와 관련된 파라미터**
-
-- `kp_x`, `kd_x`, `kp_y`, `kd_y`: 오차와 속도를 force로 바꾸는 식에 직접 들어갑니다.
-- `yaw_rate_damping_gain`, `manual_yaw_damping_boost`: yaw motion이 클수록 derivative 성분을 얼마나 더 키울지 정합니다.
-- `max_force_x`, `max_force_y`, `max_force_z`: 최종 force clamp 상한입니다.
-- `force_deadband`: 아주 작은 force를 0으로 눌러 actuator chatter를 줄입니다.
+- 위치: `position_controller.py:384-430`
+- 입력: self, now
+- 출력: 내부 상태 갱신이 중심이며, 필요 시 계산 결과를 return합니다.
+- 역할: position target과 현재 위치/속도 차이로 body frame force 명령을 계산해 발행합니다.
+- 왜 사용했는가: 복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.
+- 제어 영향: DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.
+- 내부 동작 흐름:
+  - position reference와 armed/control 상태가 유효한지 확인합니다.
+  - 목표 위치와 현재 위치의 x/y 오차를 계산합니다.
+  - yaw rate와 수동 yaw 입력에 따라 추가 damping을 계산합니다.
+  - world frame force를 계산한 뒤 body frame으로 회전 변환합니다.
+  - 수동 XY 입력이 active이면 position hold force를 0으로 둡니다.
+  - force limit와 deadband를 적용한 뒤 position_force topic으로 발행합니다.
+- 코드 일부:
 
 ```python
 def publish_control_output(self, now):
@@ -619,25 +743,21 @@ def publish_control_output(self, now):
     self.pub_force.publish(out)
 ```
 
-### `on_parameter_update()`
+5장.21 PositionController.on_parameter_update()
 
-**의미**
-
-gain, threshold, frame, DVL fallback 정책을 실시간으로 수정합니다.
-
-**영향**
-
-테스트 중 poshold의 stiffness와 damping을 바로 바꿀 수 있습니다.
-
-**리뷰 메모**
-
-runtime tuning은 강점이지만, 어떤 파라미터가 어떤 함수를 통해 결과에 연결되는지 문서가 꼭 필요합니다. 이번 리뷰 문서가 그 연결을 설명하는 역할을 합니다.
-
-**상세 해설**
-
-position hold는 gain뿐 아니라 sensor strategy, manual override policy, yaw damping 정책을 함께 튜닝해야 합니다. 즉 이 함수는 단순 PD gain 조정기가 아니라, 제어 law와 센서 해석 정책을 함께 바꾸는 관리 포인트입니다.
-
-그래서 문서에서도 각 파라미터를 단독 설명하는 수준을 넘어, 어떤 함수에서 사용되고 어떤 동작 분기를 바꾸는지까지 함께 설명하는 것이 중요합니다.
+- 위치: `position_controller.py:431-503`
+- 입력: self, params
+- 출력: 파라미터 갱신 결과를 `SetParametersResult`로 반환하면서 내부 상태를 함께 갱신합니다.
+- 역할: ROS2 runtime parameter 변경을 노드 내부 변수에 반영합니다.
+- 왜 사용했는가: 실제 로봇 테스트 중 gain과 제한값을 노드를 재시작하지 않고 바꾸기 위해 사용됩니다.
+- 제어 영향: DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.
+- 내부 동작 흐름:
+  - 변경 요청된 parameter 목록을 순회합니다.
+  - parameter 이름에 맞는 내부 변수를 갱신합니다.
+  - 각도 단위 parameter는 필요한 경우 radian으로 변환합니다.
+  - 갱신 결과를 log로 남깁니다.
+  - 성공 또는 실패 결과를 `SetParametersResult`로 반환합니다.
+- 코드 일부:
 
 ```python
 def on_parameter_update(self, params):
@@ -711,6 +831,38 @@ def on_parameter_update(self, params):
         return SetParametersResult(successful=True)
     except Exception as exc:
         return SetParametersResult(successful=False, reason=str(exc))
+```
+
+5장.22 전역 함수.main()
+
+- 위치: `position_controller.py:504-517`
+- 입력: args
+- 출력: 직접적인 return 값보다는 노드 실행과 종료 처리가 핵심 출력입니다.
+- 역할: rclpy를 초기화하고 노드를 생성한 뒤 spin을 수행합니다.
+- 왜 사용했는가: ROS2 노드 생명주기를 시작하고 종료 처리를 안정적으로 수행하기 위해 사용됩니다.
+- 제어 영향: DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.
+- 내부 동작 흐름:
+  - `rclpy.init()`으로 ROS2를 초기화합니다.
+  - 노드 객체를 생성합니다.
+  - `rclpy.spin()`으로 callback 처리를 시작합니다.
+  - 종료 시 노드를 destroy하고 `rclpy.shutdown()`을 호출합니다.
+- 코드 일부:
+
+```python
+def main(args=None):
+    rclpy.init(args=args)
+    node = PositionController()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()
 ```
 
 ## 전체 코드

@@ -1180,6 +1180,7 @@ MODULE_CHAPTERS = {
     "allocator": 2,
     "attitude": 3,
     "depth": 4,
+    "position": 5,
 }
 
 ALLOCATOR_FUNCTION_DOCS = {
@@ -1366,10 +1367,36 @@ DEPTH_FUNCTION_DOCS = {
     "main": {"role": "rclpy를 초기화하고 노드를 생성한 뒤 spin을 수행합니다.", "why": "ROS2 노드 생명주기를 시작하고 종료 처리를 안정적으로 수행하기 위해 사용됩니다.", "impact": "수심 목표 추종, 상승/하강 속도, 수동 heave 조작 이후의 depth hold 동작에 영향을 줍니다.", "flow": ("`rclpy.init()`으로 ROS2를 초기화합니다.", "노드 객체를 생성합니다.", "`rclpy.spin()`으로 callback 처리를 시작합니다.", "종료 시 노드를 destroy하고 `rclpy.shutdown()`을 호출합니다.")},
 }
 
+POSITION_FUNCTION_DOCS = {
+    "clamp": {"role": "값을 지정된 최소/최대 범위 안으로 제한합니다.", "why": "복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.", "impact": "DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.", "flow": ("입력값과 최소/최대 한계를 받습니다.", "최솟값보다 작으면 최솟값으로 제한합니다.", "최댓값보다 크면 최댓값으로 제한하고, 범위 안이면 그대로 반환합니다.")},
+    "quat_normalize": {"role": "quaternion을 단위 quaternion으로 정규화합니다.", "why": "ROV 제어에서는 자세 표현과 좌표계 변환이 계속 필요하므로, 반복되는 수학 연산을 함수로 분리한 것입니다.", "impact": "DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.", "flow": ("입력 quaternion 노름을 계산합니다.", "노름이 너무 작으면 기본 단위 quaternion을 반환합니다.", "정규화된 quaternion 성분을 반환합니다.")},
+    "quat_multiply": {"role": "두 quaternion의 곱을 계산합니다. DVL 벡터 회전 변환에 사용됩니다.", "why": "ROV 제어에서는 자세 표현과 좌표계 변환이 계속 필요하므로, 반복되는 수학 연산을 함수로 분리한 것입니다.", "impact": "DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.", "flow": ("두 quaternion 성분을 각각 분리합니다.", "Hamilton product 공식을 적용합니다.", "곱셈 결과 quaternion을 반환합니다.")},
+    "quat_conjugate": {"role": "quaternion 역회전에 필요한 켤레를 계산합니다.", "why": "ROV 제어에서는 자세 표현과 좌표계 변환이 계속 필요하므로, 반복되는 수학 연산을 함수로 분리한 것입니다.", "impact": "DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.", "flow": ("입력 quaternion 성분을 분리합니다.", "벡터부 부호를 반전합니다.", "스칼라부는 유지한 채 켤레 quaternion을 반환합니다.")},
+    "quat_from_rpy": {"role": "DVL 장착 각도를 quaternion으로 변환합니다.", "why": "ROV 제어에서는 자세 표현과 좌표계 변환이 계속 필요하므로, 반복되는 수학 연산을 함수로 분리한 것입니다.", "impact": "DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.", "flow": ("roll, pitch, yaw의 half-angle 삼각함수를 계산합니다.", "quaternion 성분을 조합합니다.", "정규화된 quaternion을 반환합니다.")},
+    "quat_rotate_vector": {"role": "quaternion으로 3차원 벡터를 회전시킵니다.", "why": "ROV 제어에서는 자세 표현과 좌표계 변환이 계속 필요하므로, 반복되는 수학 연산을 함수로 분리한 것입니다.", "impact": "DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.", "flow": ("벡터를 quaternion 형태로 확장합니다.", "회전 quaternion과 켤레 quaternion으로 양쪽에서 곱합니다.", "회전된 벡터 성분을 반환합니다.")},
+    "__init__": {"role": "ROS2 노드의 파라미터, 상태 변수, subscriber, publisher, timer를 초기화합니다. 해당 제어 노드가 시스템에 연결되는 시작점입니다.", "why": "노드가 실행되기 전에 필요한 파라미터, 통신 인터페이스, 상태 변수를 모두 준비해야 하기 때문에 사용됩니다.", "impact": "DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.", "flow": ("노드 이름을 설정합니다.", "ROS parameter를 선언하고 현재 값을 읽습니다.", "제어에 필요한 내부 상태 변수를 초기화합니다.", "subscriber와 publisher를 생성합니다.", "parameter callback을 등록합니다.", "초기 설정값을 log로 출력합니다.")},
+    "_publish_zero_force": {"role": "position controller 출력 Wrench를 0으로 발행합니다.", "why": "복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.", "impact": "DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.", "flow": ("빈 `Wrench()` 메시지를 준비합니다.", "출력 publisher를 통해 0 force를 발행합니다.", "자동 hold 출력을 즉시 정지시키는 역할을 수행합니다.")},
+    "_has_valid_position_reference": {"role": "IMU와 DVL 기준 정보가 유효 시간 안에 있는지 확인합니다.", "why": "복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.", "impact": "DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.", "flow": ("IMU가 유효한지 확인합니다.", "마지막 유효 DVL 시각이 있는지 확인합니다.", "현재 시각과의 차이가 `valid_timeout_sec` 안인지 판단합니다.")},
+    "_set_control_enabled": {"role": "제어 enable 상태 변경 시 목표값, 적분항, 출력 상태를 초기화하거나 0 출력합니다.", "why": "복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.", "impact": "DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.", "flow": ("이전 enable 상태와 새 상태를 비교합니다.", "enable 전이 시 유효한 위치 참조가 있으면 현재 위치를 target으로 캡처합니다.", "disable 전이 시 0 force를 발행합니다.")},
+    "_capture_current_position_as_target": {"role": "현재 추정 위치를 position hold 목표로 저장합니다.", "why": "복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.", "impact": "DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.", "flow": ("현재 position x/y를 읽습니다.", "target x/y에 저장합니다.", "target initialized 상태를 참으로 갱신합니다.")},
+    "_apply_deadband": {"role": "_apply_deadband 함수는 5장. position_controller.py 내부의 제어 흐름을 구성하는 보조 함수이며, 상태 갱신 또는 계산 단계를 분리하기 위해 사용됩니다.", "why": "복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.", "impact": "DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.", "flow": ("입력 force 크기를 확인합니다.", "`force_deadband`보다 작으면 0으로 만듭니다.", "그 외에는 원래 값을 반환합니다.")},
+    "_dvl_position_is_finite": {"role": "DVL position 메시지의 x/y가 finite 값인지 검사합니다.", "why": "복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.", "impact": "DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.", "flow": ("position x 값을 finite인지 확인합니다.", "position y 값을 finite인지 확인합니다.", "두 값이 모두 finite일 때만 참을 반환합니다.")},
+    "imu_callback": {"role": "IMU 메시지를 수신하여 현재 자세, 각속도, 또는 z축 방향 정보를 내부 상태에 저장합니다.", "why": "ROS2 topic 기반 시스템에서 비동기 메시지를 받아 제어 상태를 최신 값으로 유지하기 위해 사용됩니다.", "impact": "DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.", "flow": ("ROS2 메시지를 수신합니다.", "orientation을 정규화해 world-body quaternion을 갱신합니다.", "yaw rate와 IMU 유효 상태를 저장합니다.")},
+    "manual_wrench_callback": {"role": "조종기 또는 상위 입력에서 들어오는 수동 Wrench 명령을 저장합니다.", "why": "ROS2 topic 기반 시스템에서 비동기 메시지를 받아 제어 상태를 최신 값으로 유지하기 위해 사용됩니다.", "impact": "DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.", "flow": ("ROS2 메시지를 수신합니다.", "manual wrench와 이전 active 상태를 저장합니다.", "manual XY override 상태를 계산하고 release edge면 현재 위치를 target으로 캡처합니다.")},
+    "armed_callback": {"role": "armed/disarmed 상태 변화를 받아 제어 목표 및 출력을 안전하게 초기화합니다.", "why": "ROS2 topic 기반 시스템에서 비동기 메시지를 받아 제어 상태를 최신 값으로 유지하기 위해 사용됩니다.", "impact": "DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.", "flow": ("ROS2 메시지를 수신합니다.", "armed 상태와 이전 상태를 갱신합니다.", "arm/disarm edge에 따라 현재 위치 target 캡처 또는 0 force publish를 수행합니다.")},
+    "dvl_position_callback": {"role": "DVL이 제공하는 위치값을 직접 사용해 현재 위치를 갱신하고 position hold 출력을 계산합니다.", "why": "ROS2 topic 기반 시스템에서 비동기 메시지를 받아 제어 상태를 최신 값으로 유지하기 위해 사용됩니다.", "impact": "DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.", "flow": ("ROS2 메시지를 수신합니다.", "메시지의 timestamp와 finite 여부를 확인합니다.", "유효하면 현재 위치와 최근 DVL 상태를 갱신하고 필요 시 control output을 계산합니다.")},
+    "dvl_callback": {"role": "DVL 속도 데이터를 body/world frame으로 변환하고 필요 시 적분하여 위치를 추정합니다.", "why": "ROS2 topic 기반 시스템에서 비동기 메시지를 받아 제어 상태를 최신 값으로 유지하기 위해 사용됩니다.", "impact": "DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.", "flow": ("ROS2 메시지를 수신합니다.", "body frame DVL 속도를 장착 quaternion과 IMU 자세를 이용해 world frame으로 변환합니다.", "필요 시 속도를 적분해 위치 추정을 갱신하고 control output을 계산합니다.")},
+    "publish_position_estimate": {"role": "현재 position estimate를 PointStamped로 발행합니다.", "why": "복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.", "impact": "DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.", "flow": ("PointStamped 메시지를 생성합니다.", "현재 frame id와 position x/y를 채웁니다.", "position estimate topic으로 발행합니다.")},
+    "publish_control_output": {"role": "position target과 현재 위치/속도 차이로 body frame force 명령을 계산해 발행합니다.", "why": "복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.", "impact": "DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.", "flow": ("position reference와 armed/control 상태가 유효한지 확인합니다.", "목표 위치와 현재 위치의 x/y 오차를 계산합니다.", "yaw rate와 수동 yaw 입력에 따라 추가 damping을 계산합니다.", "world frame force를 계산한 뒤 body frame으로 회전 변환합니다.", "수동 XY 입력이 active이면 position hold force를 0으로 둡니다.", "force limit와 deadband를 적용한 뒤 position_force topic으로 발행합니다.")},
+    "on_parameter_update": {"role": "ROS2 runtime parameter 변경을 노드 내부 변수에 반영합니다.", "why": "실제 로봇 테스트 중 gain과 제한값을 노드를 재시작하지 않고 바꾸기 위해 사용됩니다.", "impact": "DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.", "flow": ("변경 요청된 parameter 목록을 순회합니다.", "parameter 이름에 맞는 내부 변수를 갱신합니다.", "각도 단위 parameter는 필요한 경우 radian으로 변환합니다.", "갱신 결과를 log로 남깁니다.", "성공 또는 실패 결과를 `SetParametersResult`로 반환합니다.")},
+    "main": {"role": "rclpy를 초기화하고 노드를 생성한 뒤 spin을 수행합니다.", "why": "ROS2 노드 생명주기를 시작하고 종료 처리를 안정적으로 수행하기 위해 사용됩니다.", "impact": "DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.", "flow": ("`rclpy.init()`으로 ROS2를 초기화합니다.", "노드 객체를 생성합니다.", "`rclpy.spin()`으로 callback 처리를 시작합니다.", "종료 시 노드를 destroy하고 `rclpy.shutdown()`을 호출합니다.")},
+}
+
 CHAPTER_FUNCTION_DOCS = {
     "allocator": ALLOCATOR_FUNCTION_DOCS,
     "attitude": ATTITUDE_FUNCTION_DOCS,
     "depth": DEPTH_FUNCTION_DOCS,
+    "position": POSITION_FUNCTION_DOCS,
 }
 
 
@@ -1522,6 +1549,12 @@ def format_chapter_function_title(module_key: str, name: str) -> str:
         if name in {"quat_to_rotation_z_row"}:
             return f"전역 함수.{name}()"
         return f"DepthController.{name}()"
+    if module_key == "position":
+        if name == "main":
+            return "전역 함수.main()"
+        if name in {"clamp", "quat_normalize", "quat_multiply", "quat_conjugate", "quat_from_rpy", "quat_rotate_vector"}:
+            return f"전역 함수.{name}()"
+        return f"PositionController.{name}()"
     return name
 
 
@@ -1580,11 +1613,13 @@ def render_markdown_chapter_module(config: ModuleConfig, source: str) -> str:
         "allocator": "최종 Wrench 명령을 8개 스러스터 명령으로 변환하는 Control Allocation 노드",
         "attitude": "IMU 기반 Roll/Pitch/Yaw 자세 유지 토크를 생성하는 자세 제어 노드",
         "depth": "수심 센서와 IMU 보정을 이용해 Heave 명령을 생성하는 수심 제어 노드",
+        "position": "DVL 위치/속도와 IMU 자세를 이용해 XY 위치 유지 힘을 생성하는 위치 제어 노드",
     }.get(config.key, config.role_summary)
     chapter_description = {
         "allocator": "이 파일은 제어기가 계산한 6축 wrench를 실제 8개 스러스터 명령으로 바꾸는 마지막 단계입니다. 제어 성능뿐 아니라 실제 로봇 안전에도 직접 연결됩니다.",
         "attitude": "이 파일은 IMU로 현재 자세를 읽고 목표 자세와 비교하여 roll/pitch/yaw 토크를 만듭니다. 수심, 위치 유지 중에도 기체 자세가 무너지지 않도록 하는 기반 제어기입니다.",
         "depth": "이 파일은 목표 수심과 현재 수심의 차이를 이용해 상승/하강 명령을 만듭니다. 수동 heave 조작과 자동 depth hold를 자연스럽게 연결합니다.",
+        "position": "이 파일은 DVL 위치 또는 속도를 이용해 XY 방향 위치 유지 힘을 만듭니다. 현재 위치를 hold target으로 잡고 위치 오차에 따라 수평 force를 만듭니다.",
     }.get(config.key, config.role_summary)
     lines: list[str] = [
         "# ROV Control Code Review - 함수별 설명 문서",
@@ -1655,11 +1690,13 @@ def render_html_chapter_module(config: ModuleConfig, source: str) -> str:
         "allocator": "최종 Wrench 명령을 8개 스러스터 명령으로 변환하는 Control Allocation 노드",
         "attitude": "IMU 기반 Roll/Pitch/Yaw 자세 유지 토크를 생성하는 자세 제어 노드",
         "depth": "수심 센서와 IMU 보정을 이용해 Heave 명령을 생성하는 수심 제어 노드",
+        "position": "DVL 위치/속도와 IMU 자세를 이용해 XY 위치 유지 힘을 생성하는 위치 제어 노드",
     }.get(config.key, config.role_summary)
     chapter_description = {
         "allocator": "이 파일은 제어기가 계산한 6축 wrench를 실제 8개 스러스터 명령으로 바꾸는 마지막 단계입니다. 제어 성능뿐 아니라 실제 로봇 안전에도 직접 연결됩니다.",
         "attitude": "이 파일은 IMU로 현재 자세를 읽고 목표 자세와 비교하여 roll/pitch/yaw 토크를 만듭니다. 수심, 위치 유지 중에도 기체 자세가 무너지지 않도록 하는 기반 제어기입니다.",
         "depth": "이 파일은 목표 수심과 현재 수심의 차이를 이용해 상승/하강 명령을 만듭니다. 수동 heave 조작과 자동 depth hold를 자연스럽게 연결합니다.",
+        "position": "이 파일은 DVL 위치 또는 속도를 이용해 XY 방향 위치 유지 힘을 만듭니다. 현재 위치를 hold target으로 잡고 위치 오차에 따라 수평 force를 만듭니다.",
     }.get(config.key, config.role_summary)
     nav_links = "\n".join(
         f'<a href="#fn-{html.escape(name)}">{html.escape(name)}()</a>' for name in function_map if name in function_docs
