@@ -1181,6 +1181,7 @@ MODULE_CHAPTERS = {
     "attitude": 3,
     "depth": 4,
     "position": 5,
+    "merger": 6,
 }
 
 ALLOCATOR_FUNCTION_DOCS = {
@@ -1392,11 +1393,27 @@ POSITION_FUNCTION_DOCS = {
     "main": {"role": "rclpy를 초기화하고 노드를 생성한 뒤 spin을 수행합니다.", "why": "ROS2 노드 생명주기를 시작하고 종료 처리를 안정적으로 수행하기 위해 사용됩니다.", "impact": "DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.", "flow": ("`rclpy.init()`으로 ROS2를 초기화합니다.", "노드 객체를 생성합니다.", "`rclpy.spin()`으로 callback 처리를 시작합니다.", "종료 시 노드를 destroy하고 `rclpy.shutdown()`을 호출합니다.")},
 }
 
+MERGER_FUNCTION_DOCS = {
+    "__init__": {"role": "ROS2 노드의 파라미터, 상태 변수, subscriber, publisher, timer를 초기화합니다. 해당 제어 노드가 시스템에 연결되는 시작점입니다.", "why": "노드가 실행되기 전에 필요한 파라미터, 통신 인터페이스, 상태 변수를 모두 준비해야 하기 때문에 사용됩니다.", "impact": "수동 조작과 자동 제어의 우선순위를 결정한다. 최종 allocator로 전달되는 wrench가 이 함수의 병합 결과로 정해집니다.", "flow": ("노드 이름을 설정합니다.", "ROS parameter를 선언하고 현재 값을 읽습니다.", "제어에 필요한 내부 상태 변수를 초기화합니다.", "subscriber와 publisher를 생성합니다.", "timer 또는 parameter callback을 등록합니다.", "초기 설정값을 log로 출력합니다.")},
+    "manual_wrench_callback": {"role": "조종기 또는 상위 입력에서 들어오는 수동 Wrench 명령을 저장합니다.", "why": "ROS2 topic 기반 시스템에서 비동기 메시지를 받아 제어 상태를 최신 값으로 유지하기 위해 사용됩니다.", "impact": "수동 조작과 자동 제어의 우선순위를 결정한다. 최종 allocator로 전달되는 wrench가 이 함수의 병합 결과로 정해집니다.", "flow": ("ROS2 메시지를 수신합니다.", "수동 wrench 값을 내부 상태에 저장합니다.", "수신 시각과 manual 수신 플래그를 갱신합니다.")},
+    "depth_heave_callback": {"role": "수심 제어 노드가 계산한 heave 명령을 저장합니다.", "why": "ROS2 topic 기반 시스템에서 비동기 메시지를 받아 제어 상태를 최신 값으로 유지하기 위해 사용됩니다.", "impact": "수심 목표 추종, 상승/하강 속도, 수동 heave 조작 이후의 depth hold 동작에 영향을 준다.", "flow": ("ROS2 메시지를 수신합니다.", "depth controller의 heave 값을 저장합니다.", "depth 수신 플래그를 갱신합니다.")},
+    "depth_active_callback": {"role": "depth controller가 활성 상태인지 저장합니다.", "why": "ROS2 topic 기반 시스템에서 비동기 메시지를 받아 제어 상태를 최신 값으로 유지하기 위해 사용됩니다.", "impact": "수심 목표 추종, 상승/하강 속도, 수동 heave 조작 이후의 depth hold 동작에 영향을 준다.", "flow": ("ROS2 Bool 메시지를 수신합니다.", "depth active 상태를 내부 변수에 저장합니다.", "depth active 수신 플래그를 갱신합니다.")},
+    "position_force_callback": {"role": "position controller에서 나온 force 명령을 저장합니다.", "why": "ROS2 topic 기반 시스템에서 비동기 메시지를 받아 제어 상태를 최신 값으로 유지하기 위해 사용됩니다.", "impact": "DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.", "flow": ("ROS2 메시지를 수신합니다.", "position force wrench를 저장합니다.", "position 수신 플래그를 갱신합니다.")},
+    "attitude_torque_callback": {"role": "attitude controller에서 나온 torque 명령을 저장합니다.", "why": "ROS2 topic 기반 시스템에서 비동기 메시지를 받아 제어 상태를 최신 값으로 유지하기 위해 사용됩니다.", "impact": "roll, pitch, yaw 자세 유지 토크에 영향을 준다. 특히 trim 자세, heading hold, rate damping 동작과 연결됩니다.", "flow": ("ROS2 메시지를 수신합니다.", "attitude torque wrench를 저장합니다.", "attitude 수신 플래그를 갱신합니다.")},
+    "armed_callback": {"role": "armed/disarmed 상태 변화를 받아 제어 목표 및 출력을 안전하게 초기화합니다.", "why": "ROS2 topic 기반 시스템에서 비동기 메시지를 받아 제어 상태를 최신 값으로 유지하기 위해 사용됩니다.", "impact": "수동 조작과 자동 제어의 우선순위를 결정한다. 최종 allocator로 전달되는 wrench가 이 함수의 병합 결과로 정해집니다.", "flow": ("ROS2 메시지를 수신합니다.", "armed 상태와 이전 상태를 갱신합니다.", "상태 변화가 있으면 로그를 남기고 이후 병합 판단에 사용할 armed 상태를 유지합니다.")},
+    "publish_zero_wrench": {"role": "최종 Wrench를 0으로 발행합니다.", "why": "복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.", "impact": "수동 조작과 자동 제어의 우선순위를 결정한다. 최종 allocator로 전달되는 wrench가 이 함수의 병합 결과로 정해집니다.", "flow": ("빈 `Wrench()` 메시지를 준비합니다.", "출력 publisher를 통해 0 wrench를 발행합니다.", "비정상 상태나 disarmed 상태에서 안전한 기본 출력을 제공합니다.")},
+    "manual_wrench_is_fresh": {"role": "최근 수동 wrench 입력이 timeout 이내인지 판단합니다.", "why": "복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.", "impact": "수동 조작과 자동 제어의 우선순위를 결정한다. 최종 allocator로 전달되는 wrench가 이 함수의 병합 결과로 정해집니다.", "flow": ("manual 입력을 한 번이라도 받았는지 확인합니다.", "timeout 설정과 마지막 수신 시각을 확인합니다.", "현재 시각과의 차이를 계산해 freshness 여부를 반환합니다.")},
+    "publish_merged_wrench": {"role": "수동 입력, depth heave, position force, attitude torque를 우선순위 규칙에 따라 병합해 최종 Wrench를 발행합니다.", "why": "복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.", "impact": "수동 조작과 자동 제어의 우선순위를 결정한다. 최종 allocator로 전달되는 wrench가 이 함수의 병합 결과로 정해집니다.", "flow": ("armed 상태를 확인하고 아직 수신 전이거나 disarmed이면 zero wrench를 발행합니다.", "manual wrench freshness를 확인해 오래된 수동 입력은 0으로 처리합니다.", "surge/sway는 수동 입력이 threshold를 넘으면 수동값을, 아니면 position force를 사용합니다.", "heave는 depth_active 상태에 따라 자동 depth heave를 사용하거나 수동 override를 허용합니다.", "roll/pitch torque는 attitude controller 출력을 사용합니다.", "yaw는 수동 yaw 입력이 active이면 수동값을, 아니면 attitude yaw torque를 사용합니다.", "병합된 최종 Wrench를 `/rov/wrench_cmd`로 발행합니다.")},
+    "on_parameter_update": {"role": "ROS2 runtime parameter 변경을 노드 내부 변수에 반영합니다.", "why": "실제 로봇 테스트 중 gain과 제한값을 노드를 재시작하지 않고 바꾸기 위해 사용됩니다.", "impact": "수동 조작과 자동 제어의 우선순위를 결정한다. 최종 allocator로 전달되는 wrench가 이 함수의 병합 결과로 정해집니다.", "flow": ("변경 요청된 parameter 목록을 순회합니다.", "parameter 이름에 맞는 내부 변수를 갱신합니다.", "필요하면 publish timer 재생성 여부를 기록합니다.", "갱신 결과를 log로 남깁니다.", "성공 또는 실패 결과를 `SetParametersResult`로 반환합니다.")},
+    "main": {"role": "rclpy를 초기화하고 노드를 생성한 뒤 spin을 수행합니다.", "why": "ROS2 노드 생명주기를 시작하고 종료 처리를 안정적으로 수행하기 위해 사용됩니다.", "impact": "수동 조작과 자동 제어의 우선순위를 결정한다. 최종 allocator로 전달되는 wrench가 이 함수의 병합 결과로 정해집니다.", "flow": ("`rclpy.init()`으로 ROS2를 초기화합니다.", "노드 객체를 생성합니다.", "`rclpy.spin()`으로 callback 처리를 시작합니다.", "종료 시 노드를 destroy하고 `rclpy.shutdown()`을 호출합니다.")},
+}
+
 CHAPTER_FUNCTION_DOCS = {
     "allocator": ALLOCATOR_FUNCTION_DOCS,
     "attitude": ATTITUDE_FUNCTION_DOCS,
     "depth": DEPTH_FUNCTION_DOCS,
     "position": POSITION_FUNCTION_DOCS,
+    "merger": MERGER_FUNCTION_DOCS,
 }
 
 
@@ -1555,6 +1572,10 @@ def format_chapter_function_title(module_key: str, name: str) -> str:
         if name in {"clamp", "quat_normalize", "quat_multiply", "quat_conjugate", "quat_from_rpy", "quat_rotate_vector"}:
             return f"전역 함수.{name}()"
         return f"PositionController.{name}()"
+    if module_key == "merger":
+        if name == "main":
+            return "전역 함수.main()"
+        return f"WrenchMerger.{name}()"
     return name
 
 
@@ -1614,12 +1635,14 @@ def render_markdown_chapter_module(config: ModuleConfig, source: str) -> str:
         "attitude": "IMU 기반 Roll/Pitch/Yaw 자세 유지 토크를 생성하는 자세 제어 노드",
         "depth": "수심 센서와 IMU 보정을 이용해 Heave 명령을 생성하는 수심 제어 노드",
         "position": "DVL 위치/속도와 IMU 자세를 이용해 XY 위치 유지 힘을 생성하는 위치 제어 노드",
+        "merger": "수동 입력과 자동 제어 출력을 하나의 최종 Wrench로 병합하는 노드",
     }.get(config.key, config.role_summary)
     chapter_description = {
         "allocator": "이 파일은 제어기가 계산한 6축 wrench를 실제 8개 스러스터 명령으로 바꾸는 마지막 단계입니다. 제어 성능뿐 아니라 실제 로봇 안전에도 직접 연결됩니다.",
         "attitude": "이 파일은 IMU로 현재 자세를 읽고 목표 자세와 비교하여 roll/pitch/yaw 토크를 만듭니다. 수심, 위치 유지 중에도 기체 자세가 무너지지 않도록 하는 기반 제어기입니다.",
         "depth": "이 파일은 목표 수심과 현재 수심의 차이를 이용해 상승/하강 명령을 만듭니다. 수동 heave 조작과 자동 depth hold를 자연스럽게 연결합니다.",
         "position": "이 파일은 DVL 위치 또는 속도를 이용해 XY 방향 위치 유지 힘을 만듭니다. 현재 위치를 hold target으로 잡고 위치 오차에 따라 수평 force를 만듭니다.",
+        "merger": "이 파일은 여러 제어기의 출력을 최종 하나의 Wrench로 합칩니다. 수동 입력이 우선해야 하는 축과 자동 제어가 우선해야 하는 축을 구분하는 역할을 합니다.",
     }.get(config.key, config.role_summary)
     lines: list[str] = [
         "# ROV Control Code Review - 함수별 설명 문서",
@@ -1691,12 +1714,14 @@ def render_html_chapter_module(config: ModuleConfig, source: str) -> str:
         "attitude": "IMU 기반 Roll/Pitch/Yaw 자세 유지 토크를 생성하는 자세 제어 노드",
         "depth": "수심 센서와 IMU 보정을 이용해 Heave 명령을 생성하는 수심 제어 노드",
         "position": "DVL 위치/속도와 IMU 자세를 이용해 XY 위치 유지 힘을 생성하는 위치 제어 노드",
+        "merger": "수동 입력과 자동 제어 출력을 하나의 최종 Wrench로 병합하는 노드",
     }.get(config.key, config.role_summary)
     chapter_description = {
         "allocator": "이 파일은 제어기가 계산한 6축 wrench를 실제 8개 스러스터 명령으로 바꾸는 마지막 단계입니다. 제어 성능뿐 아니라 실제 로봇 안전에도 직접 연결됩니다.",
         "attitude": "이 파일은 IMU로 현재 자세를 읽고 목표 자세와 비교하여 roll/pitch/yaw 토크를 만듭니다. 수심, 위치 유지 중에도 기체 자세가 무너지지 않도록 하는 기반 제어기입니다.",
         "depth": "이 파일은 목표 수심과 현재 수심의 차이를 이용해 상승/하강 명령을 만듭니다. 수동 heave 조작과 자동 depth hold를 자연스럽게 연결합니다.",
         "position": "이 파일은 DVL 위치 또는 속도를 이용해 XY 방향 위치 유지 힘을 만듭니다. 현재 위치를 hold target으로 잡고 위치 오차에 따라 수평 force를 만듭니다.",
+        "merger": "이 파일은 여러 제어기의 출력을 최종 하나의 Wrench로 합칩니다. 수동 입력이 우선해야 하는 축과 자동 제어가 우선해야 하는 축을 구분하는 역할을 합니다.",
     }.get(config.key, config.role_summary)
     nav_links = "\n".join(
         f'<a href="#fn-{html.escape(name)}">{html.escape(name)}()</a>' for name in function_map if name in function_docs

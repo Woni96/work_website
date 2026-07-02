@@ -1,69 +1,31 @@
-# Wrench Merger Review
+# ROV Control Code Review - 함수별 설명 문서
 
-대상 파일: `code_review/code/wrench_merger.py`
+6장. `wrench_merger.py`
 
-## 역할
-이 코드는 manual input, depth, position, attitude 출력을 축별 규칙으로 합쳐 최종 `Wrench`를 만드는 supervisory mixer입니다.
+수동 입력과 자동 제어 출력을 하나의 최종 Wrench로 병합하는 노드
 
-## 설계 해석
-핵심 설계는 `manual override + auto hold arbitration`입니다. 각 축별로 manual과 auto의 우선순위를 다르게 해석해 최종 명령을 만듭니다.
+이 파일은 여러 제어기의 출력을 최종 하나의 Wrench로 합칩니다. 수동 입력이 우선해야 하는 축과 자동 제어가 우선해야 하는 축을 구분하는 역할을 합니다.
 
-## 리뷰 초점
-리뷰 포인트는 `manual freshness가 어떻게 적용되는지`, `depth active일 때 heave를 어떻게 해석하는지`, `roll/pitch와 yaw의 arbitration 철학이 어떻게 다른지`입니다.
+- 파일: `wrench_merger.py`
+- 함수 개수: 12
+- 주요 역할: 수동 입력과 자동 제어 출력을 하나의 최종 Wrench로 병합하는 노드
 
-## 런타임 동작 해설
-이 모듈은 각 callback에서 manual/depth/position/attitude 입력의 최신값만 저장하고, 실제 merge는 timer 기반 `publish_merged_wrench()`에서 수행합니다. 그래서 입력 주기가 서로 달라도 최종 wrench 주기를 일정하게 유지할 수 있고, armed/disarmed 상태를 마지막 게이트로 적용할 수 있습니다.
+6장.1 WrenchMerger.__init__()
 
-## 핵심 파라미터
-- `publish_rate`: 최종 wrench를 얼마 주기로 publish할지 정합니다.
-- `manual_wrench_timeout_sec`: manual input이 stale이면 zero wrench로 간주하는 기준 시간입니다.
-- `manual_xy_override_threshold`: XY 축에서 manual이 auto position보다 우선하는 경계값입니다.
-- `manual_heave_override_threshold`: heave 축에서 manual이 auto depth보다 우선하는 경계값입니다.
-- `manual_yaw_override_threshold`: yaw 축에서 manual yaw가 attitude yaw hold보다 우선하는 경계값입니다.
-
-## 함수 맵
-- `__init__()`
-- `manual_wrench_callback()`
-- `depth_heave_callback()`
-- `depth_active_callback()`
-- `position_force_callback()`
-- `attitude_torque_callback()`
-- `armed_callback()`
-- `publish_zero_wrench()`
-- `manual_wrench_is_fresh()`
-- `publish_merged_wrench()`
-- `on_parameter_update()`
-- `main()`
-
-## 함수 리뷰
-
-### `__init__()`
-
-**의미**
-
-입력 토픽, armed gating, manual override threshold, publish timer와 마지막 입력 상태들을 준비합니다. 즉 이 함수는 merger가 어떤 축에서 누구 말을 우선 들을지 정하는 arbitration 환경을 초기화합니다.
-
-**영향**
-
-이 함수가 곧 이 노드의 arbitration 정책 초기 상태를 만듭니다. 특히 timer 기반 publish는 입력 주기가 달라도 최종 wrench 주기를 일정하게 유지합니다.
-
-**리뷰 메모**
-
-구조가 단순하고 목적이 분명합니다. 이런 중간 supervisory layer가 있으면 상위 제어기와 allocator를 느슨하게 연결할 수 있습니다.
-
-**상세 해설**
-
-이 함수가 중요한 이유는 이 노드가 전체 시스템의 마지막 supervisory decision layer이기 때문입니다. 상위 depth / position / attitude controller들이 각각 좋은 출력을 만들어도, 최종적으로 어떤 출력을 실제 thruster 쪽에 보낼지는 이 노드가 결정합니다.
-
-여기서 `manual_*_override_threshold`와 `manual_wrench_timeout_sec`가 함께 선언된다는 점이 중요합니다. 즉 단순히 manual이 auto보다 우선하는 것이 아니라, manual이 '얼마나 커야 우선인지', '얼마 동안 유효한지'까지 여기서 정의됩니다. 또 `publish_rate`가 timer 기반으로 사용되므로, 이 함수는 최종 output synchronization 정책도 함께 선언합니다.
-
-**이 함수와 관련된 파라미터**
-
-- `manual_wrench_topic`, `depth_heave_topic`, `depth_active_topic`, `position_force_topic`, `attitude_torque_topic`: merge 대상이 되는 모든 입력 채널입니다.
-- `output_wrench_topic`: 최종 arbitration 결과가 publish되는 출력 채널입니다.
-- `publish_rate`: 각 입력 callback 즉시 출력이 아니라 timer 기반으로 몇 Hz로 재발행할지 정합니다.
-- `manual_xy_override_threshold`, `manual_heave_override_threshold`, `manual_yaw_override_threshold`: 축별로 manual이 auto를 이기기 시작하는 경계값입니다.
-- `manual_wrench_timeout_sec`: manual 입력을 stale로 보고 무시하기 시작하는 시간입니다.
+- 위치: `wrench_merger.py:27-156`
+- 입력: self
+- 출력: 직접적인 return 값보다는 내부 상태 갱신 또는 ROS topic 발행이 핵심 출력입니다.
+- 역할: ROS2 노드의 파라미터, 상태 변수, subscriber, publisher, timer를 초기화합니다. 해당 제어 노드가 시스템에 연결되는 시작점입니다.
+- 왜 사용했는가: 노드가 실행되기 전에 필요한 파라미터, 통신 인터페이스, 상태 변수를 모두 준비해야 하기 때문에 사용됩니다.
+- 제어 영향: 수동 조작과 자동 제어의 우선순위를 결정한다. 최종 allocator로 전달되는 wrench가 이 함수의 병합 결과로 정해집니다.
+- 내부 동작 흐름:
+  - 노드 이름을 설정합니다.
+  - ROS parameter를 선언하고 현재 값을 읽습니다.
+  - 제어에 필요한 내부 상태 변수를 초기화합니다.
+  - subscriber와 publisher를 생성합니다.
+  - timer 또는 parameter callback을 등록합니다.
+  - 초기 설정값을 log로 출력합니다.
+- 코드 일부:
 
 ```python
 def __init__(self):
@@ -197,48 +159,122 @@ def __init__(self):
     self.get_logger().info('  initial armed state             = False')
 ```
 
-### 입력 저장 함수
+6장.2 WrenchMerger.manual_wrench_callback()
 
-**의미**
-
-각 제어기 출력을 최신값으로 저장하고 armed 상태를 갱신하는 함수들입니다.
-
-**영향**
-
-이 함수들이 직접 최종 출력은 만들지 않지만, timer 루프가 읽을 최신 상태를 보관합니다.
-
-**리뷰 메모**
-
-timer 기반 merge 구조와 잘 맞습니다. 다만 manual 이외 auto 입력에 freshness timestamp가 없어 마지막 자동 출력이 오래 남을 수 있습니다.
-
-**상세 해설**
-
-이 함수들의 공통점은 직접 출력 계산을 하지 않고, timer 루프가 읽을 마지막 상태만 저장한다는 점입니다. 이 구조 덕분에 depth/position/attitude controller들의 publish 주기가 서로 달라도 merger는 일정한 주기로 최종 wrench를 재구성할 수 있습니다.
-
-즉 입력 callback과 최종 arbitration을 분리해 temporal decoupling을 만든 설계입니다. 다만 manual 외 자동 입력 freshness가 없기 때문에, 상위 노드가 멈췄을 때 마지막 값이 남을 수 있다는 점은 꼭 문서에 드러나야 합니다.
+- 위치: `wrench_merger.py:157-161`
+- 입력: self, msg
+- 출력: 직접적인 return 값보다는 내부 상태 갱신 또는 ROS topic 발행이 핵심 출력입니다.
+- 역할: 조종기 또는 상위 입력에서 들어오는 수동 Wrench 명령을 저장합니다.
+- 왜 사용했는가: ROS2 topic 기반 시스템에서 비동기 메시지를 받아 제어 상태를 최신 값으로 유지하기 위해 사용됩니다.
+- 제어 영향: 수동 조작과 자동 제어의 우선순위를 결정한다. 최종 allocator로 전달되는 wrench가 이 함수의 병합 결과로 정해집니다.
+- 내부 동작 흐름:
+  - ROS2 메시지를 수신합니다.
+  - 수동 wrench 값을 내부 상태에 저장합니다.
+  - 수신 시각과 manual 수신 플래그를 갱신합니다.
+- 코드 일부:
 
 ```python
 def manual_wrench_callback(self, msg: Wrench):
     self.last_manual_wrench = msg
     self.last_manual_wrench_time = self.get_clock().now()
     self.manual_received = True
+```
 
+6장.3 WrenchMerger.depth_heave_callback()
+
+- 위치: `wrench_merger.py:162-165`
+- 입력: self, msg
+- 출력: 직접적인 return 값보다는 내부 상태 갱신 또는 ROS topic 발행이 핵심 출력입니다.
+- 역할: 수심 제어 노드가 계산한 heave 명령을 저장합니다.
+- 왜 사용했는가: ROS2 topic 기반 시스템에서 비동기 메시지를 받아 제어 상태를 최신 값으로 유지하기 위해 사용됩니다.
+- 제어 영향: 수심 목표 추종, 상승/하강 속도, 수동 heave 조작 이후의 depth hold 동작에 영향을 준다.
+- 내부 동작 흐름:
+  - ROS2 메시지를 수신합니다.
+  - depth controller의 heave 값을 저장합니다.
+  - depth 수신 플래그를 갱신합니다.
+- 코드 일부:
+
+```python
 def depth_heave_callback(self, msg: Float64):
     self.last_depth_heave = msg.data
     self.depth_received = True
+```
 
+6장.4 WrenchMerger.depth_active_callback()
+
+- 위치: `wrench_merger.py:166-169`
+- 입력: self, msg
+- 출력: 직접적인 return 값보다는 내부 상태 갱신 또는 ROS topic 발행이 핵심 출력입니다.
+- 역할: depth controller가 활성 상태인지 저장합니다.
+- 왜 사용했는가: ROS2 topic 기반 시스템에서 비동기 메시지를 받아 제어 상태를 최신 값으로 유지하기 위해 사용됩니다.
+- 제어 영향: 수심 목표 추종, 상승/하강 속도, 수동 heave 조작 이후의 depth hold 동작에 영향을 준다.
+- 내부 동작 흐름:
+  - ROS2 Bool 메시지를 수신합니다.
+  - depth active 상태를 내부 변수에 저장합니다.
+  - depth active 수신 플래그를 갱신합니다.
+- 코드 일부:
+
+```python
 def depth_active_callback(self, msg: Bool):
     self.depth_active = bool(msg.data)
     self.depth_active_received = True
+```
 
+6장.5 WrenchMerger.position_force_callback()
+
+- 위치: `wrench_merger.py:170-173`
+- 입력: self, msg
+- 출력: 직접적인 return 값보다는 내부 상태 갱신 또는 ROS topic 발행이 핵심 출력입니다.
+- 역할: position controller에서 나온 force 명령을 저장합니다.
+- 왜 사용했는가: ROS2 topic 기반 시스템에서 비동기 메시지를 받아 제어 상태를 최신 값으로 유지하기 위해 사용됩니다.
+- 제어 영향: DVL 기반 위치 추정과 XY position hold 힘에 영향을 준다. 좌표 변환 결과는 전진/좌우 힘 방향을 결정합니다.
+- 내부 동작 흐름:
+  - ROS2 메시지를 수신합니다.
+  - position force wrench를 저장합니다.
+  - position 수신 플래그를 갱신합니다.
+- 코드 일부:
+
+```python
 def position_force_callback(self, msg: Wrench):
     self.last_position_force = msg
     self.position_received = True
+```
 
+6장.6 WrenchMerger.attitude_torque_callback()
+
+- 위치: `wrench_merger.py:174-177`
+- 입력: self, msg
+- 출력: 직접적인 return 값보다는 내부 상태 갱신 또는 ROS topic 발행이 핵심 출력입니다.
+- 역할: attitude controller에서 나온 torque 명령을 저장합니다.
+- 왜 사용했는가: ROS2 topic 기반 시스템에서 비동기 메시지를 받아 제어 상태를 최신 값으로 유지하기 위해 사용됩니다.
+- 제어 영향: roll, pitch, yaw 자세 유지 토크에 영향을 준다. 특히 trim 자세, heading hold, rate damping 동작과 연결됩니다.
+- 내부 동작 흐름:
+  - ROS2 메시지를 수신합니다.
+  - attitude torque wrench를 저장합니다.
+  - attitude 수신 플래그를 갱신합니다.
+- 코드 일부:
+
+```python
 def attitude_torque_callback(self, msg: Wrench):
     self.last_attitude_torque = msg
     self.attitude_received = True
+```
 
+6장.7 WrenchMerger.armed_callback()
+
+- 위치: `wrench_merger.py:178-185`
+- 입력: self, msg
+- 출력: 직접적인 return 값보다는 내부 상태 갱신 또는 ROS topic 발행이 핵심 출력입니다.
+- 역할: armed/disarmed 상태 변화를 받아 제어 목표 및 출력을 안전하게 초기화합니다.
+- 왜 사용했는가: ROS2 topic 기반 시스템에서 비동기 메시지를 받아 제어 상태를 최신 값으로 유지하기 위해 사용됩니다.
+- 제어 영향: 수동 조작과 자동 제어의 우선순위를 결정한다. 최종 allocator로 전달되는 wrench가 이 함수의 병합 결과로 정해집니다.
+- 내부 동작 흐름:
+  - ROS2 메시지를 수신합니다.
+  - armed 상태와 이전 상태를 갱신합니다.
+  - 상태 변화가 있으면 로그를 남기고 이후 병합 판단에 사용할 armed 상태를 유지합니다.
+- 코드 일부:
+
+```python
 def armed_callback(self, msg: Bool):
     prev = self.armed
     self.armed = bool(msg.data)
@@ -248,34 +284,40 @@ def armed_callback(self, msg: Bool):
         self.get_logger().info(f'armed state changed: {self.armed}')
 ```
 
-### `manual_wrench_is_fresh()`
+6장.8 WrenchMerger.publish_zero_wrench()
 
-**의미**
-
-manual input이 최근에 들어왔는지 판정하고 stale이면 사실상 zero wrench로 취급하게 만드는 안전 함수입니다.
-
-**영향**
-
-조종기 신호 유실 시 마지막 manual 명령이 latch되는 문제를 막아줍니다.
-
-**리뷰 메모**
-
-현재 코드베이스에서 freshness 처리가 가장 깔끔하게 들어간 부분입니다. 같은 아이디어가 auto inputs에도 확장되면 훨씬 견고해집니다.
-
-**상세 해설**
-
-이 함수는 merger가 manual input을 '값'이 아니라 '최근성 있는 사건'으로 해석하게 만들어 줍니다. `publish_zero_wrench()`와 함께 사용되면서 조종기 데이터가 사라졌을 때 마지막 manual 명령을 계속 재사용하지 않도록 방지합니다.
-
-supervisory layer에서는 이런 freshness가 특히 중요합니다. 이 노드는 최종 명령을 내보내기 때문에, 오래된 manual 값 하나가 전체 시스템 출력을 계속 왜곡할 수 있기 때문입니다.
-
-**이 함수와 관련된 파라미터**
-
-- `manual_wrench_timeout_sec`: manual 입력을 더 이상 믿지 않는 시간 기준입니다.
+- 위치: `wrench_merger.py:186-188`
+- 입력: self
+- 출력: 내부 상태 갱신이 중심이며, 필요 시 계산 결과를 return합니다.
+- 역할: 최종 Wrench를 0으로 발행합니다.
+- 왜 사용했는가: 복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.
+- 제어 영향: 수동 조작과 자동 제어의 우선순위를 결정한다. 최종 allocator로 전달되는 wrench가 이 함수의 병합 결과로 정해집니다.
+- 내부 동작 흐름:
+  - 빈 `Wrench()` 메시지를 준비합니다.
+  - 출력 publisher를 통해 0 wrench를 발행합니다.
+  - 비정상 상태나 disarmed 상태에서 안전한 기본 출력을 제공합니다.
+- 코드 일부:
 
 ```python
 def publish_zero_wrench(self):
     self.wrench_pub.publish(Wrench())
+```
 
+6장.9 WrenchMerger.manual_wrench_is_fresh()
+
+- 위치: `wrench_merger.py:189-201`
+- 입력: self
+- 출력: 계산 결과를 return하며, 호출한 제어 로직에서 다음 계산의 입력으로 사용됩니다.
+- 역할: 최근 수동 wrench 입력이 timeout 이내인지 판단합니다.
+- 왜 사용했는가: 복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.
+- 제어 영향: 수동 조작과 자동 제어의 우선순위를 결정한다. 최종 allocator로 전달되는 wrench가 이 함수의 병합 결과로 정해집니다.
+- 내부 동작 흐름:
+  - manual 입력을 한 번이라도 받았는지 확인합니다.
+  - timeout 설정과 마지막 수신 시각을 확인합니다.
+  - 현재 시각과의 차이를 계산해 freshness 여부를 반환합니다.
+- 코드 일부:
+
+```python
 def manual_wrench_is_fresh(self) -> bool:
     if not self.manual_received:
         return False
@@ -290,32 +332,23 @@ def manual_wrench_is_fresh(self) -> bool:
     return age <= self.manual_wrench_timeout_sec
 ```
 
-### `publish_merged_wrench()`
+6장.10 WrenchMerger.publish_merged_wrench()
 
-**의미**
-
-armed gating, manual freshness 확인, 축별 override 규칙, depth active 정책, yaw arbitration을 적용해 최종 wrench를 publish합니다.
-
-**영향**
-
-이 함수가 전체 제어 시스템의 최종 의사결정자입니다. 같은 upper controller 출력이라도 여기서 어떤 축은 manual이 이기고 어떤 축은 auto가 이깁니다.
-
-**리뷰 메모**
-
-정책은 명료하고 읽기 쉽습니다. 다만 `last_position_force`, `last_depth_heave`, `last_attitude_torque`에도 freshness를 넣지 않으면 상위 노드 장애 시 마지막 값이 계속 살아남습니다.
-
-**상세 해설**
-
-이 함수는 사실상 전체 제어기의 최종 의사결정표입니다. 먼저 armed state를 확인해 출력 자체를 허용할지 결정하고, 그 다음 manual input freshness를 검사해 stale manual을 자동으로 0으로 만듭니다. 이후 각 축별로 다른 규칙을 적용합니다: surge/sway는 manual XY threshold를 넘으면 manual, 아니면 position force를 씁니다. heave는 depth_active 여부가 중요해서, depth hold가 켜져 있으면 manual heave보다 depth controller 출력을 우선 해석합니다. roll/pitch는 attitude auto torque가 항상 이기고, yaw는 manual yaw가 threshold를 넘을 때만 auto yaw hold를 덮어씁니다.
-
-즉 이 함수는 단순 merge가 아니라, '축마다 다른 운용 철학을 구현하는 arbitration state machine'입니다.
-
-**이 함수와 관련된 파라미터**
-
-- `manual_xy_override_threshold`: surge/sway에서 position hold를 manual이 끊는 기준입니다.
-- `manual_heave_override_threshold`: depth hold가 비활성일 때 heave를 manual이 강제로 가져오는 기준입니다.
-- `manual_yaw_override_threshold`: yaw hold보다 manual yaw를 우선하는 기준입니다.
-- `manual_wrench_timeout_sec`: 이 시간이 지나면 마지막 manual 입력을 더 이상 믿지 않습니다.
+- 위치: `wrench_merger.py:202-283`
+- 입력: self
+- 출력: 내부 상태 갱신이 중심이며, 필요 시 계산 결과를 return합니다.
+- 역할: 수동 입력, depth heave, position force, attitude torque를 우선순위 규칙에 따라 병합해 최종 Wrench를 발행합니다.
+- 왜 사용했는가: 복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.
+- 제어 영향: 수동 조작과 자동 제어의 우선순위를 결정한다. 최종 allocator로 전달되는 wrench가 이 함수의 병합 결과로 정해집니다.
+- 내부 동작 흐름:
+  - armed 상태를 확인하고 아직 수신 전이거나 disarmed이면 zero wrench를 발행합니다.
+  - manual wrench freshness를 확인해 오래된 수동 입력은 0으로 처리합니다.
+  - surge/sway는 수동 입력이 threshold를 넘으면 수동값을, 아니면 position force를 사용합니다.
+  - heave는 depth_active 상태에 따라 자동 depth heave를 사용하거나 수동 override를 허용합니다.
+  - roll/pitch torque는 attitude controller 출력을 사용합니다.
+  - yaw는 수동 yaw 입력이 active이면 수동값을, 아니면 attitude yaw torque를 사용합니다.
+  - 병합된 최종 Wrench를 `/rov/wrench_cmd`로 발행합니다.
+- 코드 일부:
 
 ```python
 def publish_merged_wrench(self):
@@ -401,25 +434,21 @@ def publish_merged_wrench(self):
     # )
 ```
 
-### `on_parameter_update()`
+6장.11 WrenchMerger.on_parameter_update()
 
-**의미**
-
-publish rate와 override threshold를 런타임에 갱신하고 timer도 재생성합니다.
-
-**영향**
-
-운용자가 merge 주기와 manual override 감도를 실시간 조정할 수 있습니다.
-
-**리뷰 메모**
-
-supervisory node답게 runtime tuning이 단순하고 이해하기 쉽습니다.
-
-**상세 해설**
-
-이 함수는 merge 주기와 manual override 감도를 운영 중에도 바꿀 수 있게 해 줍니다. supervisory node에서는 작은 threshold 변화만으로도 manual/auto 우선순위가 달라지므로, 이런 갱신 함수는 생각보다 시스템 거동에 큰 영향을 미칩니다.
-
-따라서 리뷰 문서에서도 단순히 '업데이트 가능'이라고 끝내지 않고, 어떤 threshold가 어떤 축의 arbitration을 바꾸는지 연결해서 설명하는 것이 중요합니다.
+- 위치: `wrench_merger.py:284-311`
+- 입력: self, params
+- 출력: 파라미터 갱신 결과를 `SetParametersResult`로 반환하면서 내부 상태를 함께 갱신합니다.
+- 역할: ROS2 runtime parameter 변경을 노드 내부 변수에 반영합니다.
+- 왜 사용했는가: 실제 로봇 테스트 중 gain과 제한값을 노드를 재시작하지 않고 바꾸기 위해 사용됩니다.
+- 제어 영향: 수동 조작과 자동 제어의 우선순위를 결정한다. 최종 allocator로 전달되는 wrench가 이 함수의 병합 결과로 정해집니다.
+- 내부 동작 흐름:
+  - 변경 요청된 parameter 목록을 순회합니다.
+  - parameter 이름에 맞는 내부 변수를 갱신합니다.
+  - 필요하면 publish timer 재생성 여부를 기록합니다.
+  - 갱신 결과를 log로 남깁니다.
+  - 성공 또는 실패 결과를 `SetParametersResult`로 반환합니다.
+- 코드 일부:
 
 ```python
 def on_parameter_update(self, params):
@@ -448,6 +477,38 @@ def on_parameter_update(self, params):
         return SetParametersResult(successful=True)
     except Exception as e:
         return SetParametersResult(successful=False, reason=str(e))
+```
+
+6장.12 전역 함수.main()
+
+- 위치: `wrench_merger.py:312-325`
+- 입력: args
+- 출력: 직접적인 return 값보다는 노드 실행과 종료 처리가 핵심 출력입니다.
+- 역할: rclpy를 초기화하고 노드를 생성한 뒤 spin을 수행합니다.
+- 왜 사용했는가: ROS2 노드 생명주기를 시작하고 종료 처리를 안정적으로 수행하기 위해 사용됩니다.
+- 제어 영향: 수동 조작과 자동 제어의 우선순위를 결정한다. 최종 allocator로 전달되는 wrench가 이 함수의 병합 결과로 정해집니다.
+- 내부 동작 흐름:
+  - `rclpy.init()`으로 ROS2를 초기화합니다.
+  - 노드 객체를 생성합니다.
+  - `rclpy.spin()`으로 callback 처리를 시작합니다.
+  - 종료 시 노드를 destroy하고 `rclpy.shutdown()`을 호출합니다.
+- 코드 일부:
+
+```python
+def main(args=None):
+    rclpy.init(args=args)
+    node = WrenchMerger()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()
 ```
 
 ## 전체 코드
