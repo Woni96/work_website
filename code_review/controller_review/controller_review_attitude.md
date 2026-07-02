@@ -1,99 +1,111 @@
-# Attitude Controller Review
+# ROV Control Code Review - 함수별 설명 문서
 
-대상 파일: `code_review/code/attitude_controller.py`
+3장. `attitude_controller.py`
 
-## 역할
-이 코드는 IMU와 수동 wrench를 받아 ROV의 `roll`, `pitch`, `yaw` 토크를 만드는 자세 제어기입니다.
+IMU 기반 Roll/Pitch/Yaw 자세 유지 토크를 생성하는 자세 제어 노드
 
-## 설계 해석
-설계상 핵심은 `roll/pitch stabilizer + yaw heading hold`입니다. 즉 단순히 자세 오차만 줄이는 것이 아니라, 조종자의 yaw 조작과 translational motion 중에도 trim attitude와 heading hold를 유지하려는 운용 감각이 강하게 들어가 있습니다.
+이 파일은 IMU로 현재 자세를 읽고 목표 자세와 비교하여 roll/pitch/yaw 토크를 만듭니다. 수심, 위치 유지 중에도 기체 자세가 무너지지 않도록 하는 기반 제어기입니다.
 
-## 리뷰 초점
-리뷰 포인트는 `목표 자세를 어떻게 잡는지`, `IMU를 어떻게 제어 상태로 필터링하는지`, `yaw manual override와 hold가 어떻게 전환되는지`, `translation/heave 중 보호 로직이 어떤 출력을 만드는지`입니다.
+- 파일: `attitude_controller.py`
+- 함수 개수: 26
+- 주요 역할: IMU 기반 Roll/Pitch/Yaw 자세 유지 토크를 생성하는 자세 제어 노드
 
-## 런타임 동작 해설
-런타임에서는 `imu_callback()`이 현재 자세와 각속도를 계속 갱신하고, `control_loop()`가 주기적으로 목표 자세와 현재 자세의 차이를 계산해 토크를 냅니다. 여기에 yaw stick release 이후 heading을 다시 잠그는 로직, translation 중 roll/pitch trim을 유지하는 로직, heave나 큰 body rate 상황에서 출력을 보호하는 로직이 겹쳐서 실제 조종 감각을 만듭니다.
+3장.1 전역 함수.clamp()
 
-## 핵심 파라미터
-- `kp_roll`, `ki_roll`, `kd_roll`: roll 축 복원력, steady-state bias 보상, roll rate damping 강도를 정합니다.
-- `kp_pitch`, `ki_pitch`, `kd_pitch`: pitch 축 응답과 감쇠를 정하며 surge 중 nose-up 경향을 얼마나 강하게 잡을지에도 영향을 줍니다.
-- `kp_yaw`, `kd_yaw`: heading error를 얼마나 세게 복원할지와 yaw rate를 얼마나 감쇠할지 결정합니다.
-- `yaw_manual_override_threshold`: 이 값보다 큰 yaw stick이 들어오면 yaw hold보다 manual yaw를 우선합니다.
-- `yaw_hold_settle_time_sec`: yaw stick을 놓은 직후 heading을 다시 잠그기 전에 잠깐 damping만 적용하는 시간입니다.
-- `xy_motion_protect_threshold`, `strong_xy_motion_threshold`: translation 중 roll/pitch trim hold를 약하게 만들기 시작하는 기준입니다.
-- `rp_scale_when_xy_motion`, `rp_scale_when_strong_xy_motion`: translation 중 roll/pitch torque를 얼마나 줄일지 정합니다.
-- `heave_protect_threshold`, `strong_heave_threshold`: 수직 조작 중 yaw hold를 더 보수적으로 만들지 결정하는 기준입니다.
-- `large_tilt_disable_deg`: 기체가 너무 크게 기울면 torque 출력을 끊는 안전 게이트입니다.
-- `orientation_filter_measurement_alpha`, `orientation_filter_max_correction_rate_deg`: IMU 기반 control attitude filter의 추종 속도와 correction 한계를 정합니다.
-
-## 함수 맵
-- `clamp()`
-- `vec_norm()`
-- `quat_normalize()`
-- `quat_conj()`
-- `quat_mul()`
-- `quat_to_rpy()`
-- `rpy_to_quat()`
-- `wrap_to_pi()`
-- `__init__()`
-- `_update_target_quaternion()`
-- `_force_level_roll_pitch_target()`
-- `_capture_current_attitude_as_target()`
-- `_capture_current_yaw_as_target()`
-- `_set_control_enabled()`
-- `imu_callback()`
-- `manual_wrench_callback()`
-- `cmd_attitude_callback()`
-- `cmd_attitude_trim_callback()`
-- `_apply_deadband()`
-- `_reset_control_attitude_filter()`
-- `_update_control_attitude_filter()`
-- `_apply_rp_torque_slew()`
-- `_translation_tilt_feedforward()`
-- `control_loop()`
-- `on_parameter_update()`
-- `main()`
-
-## 함수 리뷰
-
-### Quaternion / Angle 유틸리티
-
-**의미**
-
-이 함수들은 제어기 본체보다 먼저, 자세 표현을 다루기 위한 공통 도구입니다. Quaternion을 정규화하고 곱하고 Euler angle로 바꾸는 역할을 맡습니다.
-
-**영향**
-
-이 유틸리티가 안정적이어야 목표 자세 계산과 yaw wrapping이 깨지지 않습니다. 특히 `wrap_to_pi()`는 yaw 오차가 `+π/-π` 경계에서 튀는 문제를 막아줍니다.
-
-**리뷰 메모**
-
-이 계층은 제어식의 기반이라서 작아 보여도 중요합니다. 자세 제어가 갑자기 반대로 튀거나 yaw 오차가 크게 보이는 문제는 여기서 시작되는 경우가 많습니다.
-
-**상세 해설**
-
-이 유틸리티 묶음은 attitude controller가 어떤 좌표 표현을 믿고 있는지 보여주는 기반입니다. `quat_normalize()`는 센서 quaternion의 수치 안정성을 확보하고, `quat_mul()`과 `quat_conj()`는 목표 자세와 현재 자세의 관계를 계산할 수 있게 해 줍니다. `quat_to_rpy()`와 `rpy_to_quat()`는 사람이 이해하기 쉬운 roll/pitch/yaw와 내부 quaternion 표현을 오가는 다리 역할을 합니다.
-
-특히 `wrap_to_pi()`는 yaw hold에서 필수적입니다. heading target이 179도이고 현재 yaw가 -179도일 때, 이 함수를 거치지 않으면 오차를 358도로 해석해 잘못된 큰 토크가 나올 수 있습니다. 즉 이 계층은 '작은 보조 함수'가 아니라 제어기의 오차 정의와 좌표계 일관성을 지키는 기반 계층입니다.
+- 위치: `attitude_controller.py:20-23`
+- 입력: x, lo, hi
+- 출력: 계산 결과를 return하며, 호출한 제어 로직에서 다음 계산의 입력으로 사용됩니다.
+- 역할: 값을 지정된 최소/최대 범위 안으로 제한합니다.
+- 왜 사용했는가: 복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.
+- 제어 영향: roll, pitch, yaw 자세 유지 토크에 영향을 준다. 특히 trim 자세, heading hold, rate damping 동작과 연결됩니다.
+- 내부 동작 흐름:
+  - 입력값과 최소/최대 한계를 받습니다.
+  - 최솟값보다 작으면 최솟값으로 제한합니다.
+  - 최댓값보다 크면 최댓값으로 제한하고, 범위 안이면 그대로 반환합니다.
+- 코드 일부:
 
 ```python
 def clamp(x: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, x))
+```
 
+3장.2 전역 함수.vec_norm()
+
+- 위치: `attitude_controller.py:24-27`
+- 입력: x, y, z
+- 출력: 계산 결과를 return하며, 호출한 제어 로직에서 다음 계산의 입력으로 사용됩니다.
+- 역할: 3차원 벡터의 크기를 계산합니다. 각속도 크기 판단 등에 사용됩니다.
+- 왜 사용했는가: 복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.
+- 제어 영향: roll, pitch, yaw 자세 유지 토크에 영향을 준다. 특히 trim 자세, heading hold, rate damping 동작과 연결됩니다.
+- 내부 동작 흐름:
+  - x, y, z 성분을 읽습니다.
+  - 각 성분 제곱합을 계산합니다.
+  - 제곱근을 취해 벡터 크기를 반환합니다.
+- 코드 일부:
+
+```python
 def vec_norm(x: float, y: float, z: float) -> float:
     return math.sqrt(x * x + y * y + z * z)
+```
 
+3장.3 전역 함수.quat_normalize()
+
+- 위치: `attitude_controller.py:28-35`
+- 입력: q
+- 출력: 계산 결과를 return하며, 호출한 제어 로직에서 다음 계산의 입력으로 사용됩니다.
+- 역할: quaternion을 단위 quaternion으로 정규화합니다.
+- 왜 사용했는가: ROV 제어에서는 자세 표현과 좌표계 변환이 계속 필요하므로, 반복되는 수학 연산을 함수로 분리한 것입니다.
+- 제어 영향: roll, pitch, yaw 자세 유지 토크에 영향을 준다. 특히 trim 자세, heading hold, rate damping 동작과 연결됩니다.
+- 내부 동작 흐름:
+  - 입력 quaternion 성분을 분리합니다.
+  - 노름을 계산합니다.
+  - 노름이 너무 작으면 기본 단위 quaternion을 반환하고, 아니면 정규화 결과를 반환합니다.
+- 코드 일부:
+
+```python
 def quat_normalize(q: Tuple[float, float, float, float]) -> Tuple[float, float, float, float]:
     x, y, z, w = q
     n = math.sqrt(x * x + y * y + z * z + w * w)
     if n < 1e-12:
         return (0.0, 0.0, 0.0, 1.0)
     return (x / n, y / n, z / n, w / n)
+```
 
+3장.4 전역 함수.quat_conj()
+
+- 위치: `attitude_controller.py:36-40`
+- 입력: q
+- 출력: 계산 결과를 return하며, 호출한 제어 로직에서 다음 계산의 입력으로 사용됩니다.
+- 역할: quaternion의 켤레를 계산합니다. 회전 역변환에 사용됩니다.
+- 왜 사용했는가: ROV 제어에서는 자세 표현과 좌표계 변환이 계속 필요하므로, 반복되는 수학 연산을 함수로 분리한 것입니다.
+- 제어 영향: roll, pitch, yaw 자세 유지 토크에 영향을 준다. 특히 trim 자세, heading hold, rate damping 동작과 연결됩니다.
+- 내부 동작 흐름:
+  - 입력 quaternion 성분을 분리합니다.
+  - 벡터부 부호를 반전합니다.
+  - 스칼라부는 유지한 채 켤레 quaternion을 반환합니다.
+- 코드 일부:
+
+```python
 def quat_conj(q: Tuple[float, float, float, float]) -> Tuple[float, float, float, float]:
     x, y, z, w = q
     return (-x, -y, -z, w)
+```
 
+3장.5 전역 함수.quat_mul()
+
+- 위치: `attitude_controller.py:41-52`
+- 입력: 없음
+- 출력: 계산 결과를 return하며, 호출한 제어 로직에서 다음 계산의 입력으로 사용됩니다.
+- 역할: 두 quaternion의 곱을 계산합니다. 자세 오차 또는 벡터 회전에 사용됩니다.
+- 왜 사용했는가: ROV 제어에서는 자세 표현과 좌표계 변환이 계속 필요하므로, 반복되는 수학 연산을 함수로 분리한 것입니다.
+- 제어 영향: roll, pitch, yaw 자세 유지 토크에 영향을 준다. 특히 trim 자세, heading hold, rate damping 동작과 연결됩니다.
+- 내부 동작 흐름:
+  - 두 quaternion의 성분을 각각 분리합니다.
+  - Hamilton product 공식을 적용합니다.
+  - 곱셈 결과 quaternion을 반환합니다.
+- 코드 일부:
+
+```python
 def quat_mul(a: Tuple[float, float, float, float],
              b: Tuple[float, float, float, float]) -> Tuple[float, float, float, float]:
     ax, ay, az, aw = a
@@ -104,7 +116,23 @@ def quat_mul(a: Tuple[float, float, float, float],
         aw * bz + ax * by - ay * bx + az * bw,
         aw * bw - ax * bx - ay * by - az * bz,
     )
+```
 
+3장.6 전역 함수.quat_to_rpy()
+
+- 위치: `attitude_controller.py:53-70`
+- 입력: x, y, z, w
+- 출력: 계산 결과를 return하며, 호출한 제어 로직에서 다음 계산의 입력으로 사용됩니다.
+- 역할: quaternion 자세 표현을 roll, pitch, yaw 각도로 변환합니다. 사람이 이해하기 쉬운 자세 오차 및 보상 계산에 사용됩니다.
+- 왜 사용했는가: ROV 제어에서는 자세 표현과 좌표계 변환이 계속 필요하므로, 반복되는 수학 연산을 함수로 분리한 것입니다.
+- 제어 영향: roll, pitch, yaw 자세 유지 토크에 영향을 준다. 특히 trim 자세, heading hold, rate damping 동작과 연결됩니다.
+- 내부 동작 흐름:
+  - quaternion 성분으로 roll을 계산합니다.
+  - pitch를 계산하며 asin 범위를 넘어설 경우 안전하게 처리합니다.
+  - yaw를 계산해 세 각도를 반환합니다.
+- 코드 일부:
+
+```python
 def quat_to_rpy(x: float, y: float, z: float, w: float):
     sinr_cosp = 2.0 * (w * x + y * z)
     cosr_cosp = 1.0 - 2.0 * (x * x + y * y)
@@ -121,7 +149,23 @@ def quat_to_rpy(x: float, y: float, z: float, w: float):
     yaw = math.atan2(siny_cosp, cosy_cosp)
 
     return roll, pitch, yaw
+```
 
+3장.7 전역 함수.rpy_to_quat()
+
+- 위치: `attitude_controller.py:71-85`
+- 입력: roll, pitch, yaw
+- 출력: 계산 결과를 return하며, 호출한 제어 로직에서 다음 계산의 입력으로 사용됩니다.
+- 역할: roll, pitch, yaw 목표를 quaternion으로 변환합니다.
+- 왜 사용했는가: ROV 제어에서는 자세 표현과 좌표계 변환이 계속 필요하므로, 반복되는 수학 연산을 함수로 분리한 것입니다.
+- 제어 영향: roll, pitch, yaw 자세 유지 토크에 영향을 준다. 특히 trim 자세, heading hold, rate damping 동작과 연결됩니다.
+- 내부 동작 흐름:
+  - roll, pitch, yaw의 half-angle 삼각함수를 계산합니다.
+  - quaternion 성분을 조합합니다.
+  - 정규화된 목표 quaternion을 반환합니다.
+- 코드 일부:
+
+```python
 def rpy_to_quat(roll: float, pitch: float, yaw: float) -> Tuple[float, float, float, float]:
     cr = math.cos(roll * 0.5)
     sr = math.sin(roll * 0.5)
@@ -135,40 +179,43 @@ def rpy_to_quat(roll: float, pitch: float, yaw: float) -> Tuple[float, float, fl
     qz = cr * cp * sy - sr * sp * cy
     qw = cr * cp * cy + sr * sp * sy
     return quat_normalize((qx, qy, qz, qw))
+```
 
+3장.8 전역 함수.wrap_to_pi()
+
+- 위치: `attitude_controller.py:86-89`
+- 입력: angle
+- 출력: 계산 결과를 return하며, 호출한 제어 로직에서 다음 계산의 입력으로 사용됩니다.
+- 역할: 각도를 -pi~pi 범위로 정규화합니다. yaw wrap 문제를 방지합니다.
+- 왜 사용했는가: ROV 제어에서는 자세 표현과 좌표계 변환이 계속 필요하므로, 반복되는 수학 연산을 함수로 분리한 것입니다.
+- 제어 영향: roll, pitch, yaw 자세 유지 토크에 영향을 준다. 특히 trim 자세, heading hold, rate damping 동작과 연결됩니다.
+- 내부 동작 흐름:
+  - 입력 각도의 sin과 cos를 계산합니다.
+  - `atan2`를 이용해 같은 방향의 대표 각도로 변환합니다.
+  - -pi~pi 범위의 각도를 반환합니다.
+- 코드 일부:
+
+```python
 def wrap_to_pi(angle: float) -> float:
     return math.atan2(math.sin(angle), math.cos(angle))
 ```
 
-### `__init__()`
+3장.9 AttitudeController.__init__()
 
-**의미**
-
-노드의 토픽, 게인, 제한값, 보호 로직, yaw hold 정책을 전부 선언하고 상태 변수를 초기화합니다. 즉 이 함수는 단순 constructor가 아니라 이 controller가 어떤 철학으로 동작할지 정의하는 설정 진입점입니다.
-
-**영향**
-
-이 함수가 곧 제어기의 운용 정책 선언부입니다. 어떤 입력을 받고 어떤 보호 로직이 켜지는지, yaw stick을 놓았을 때 어떤 감각으로 복귀하는지가 여기서 결정됩니다.
-
-**리뷰 메모**
-
-파라미터가 많지만 모두 의미가 분명합니다. 특히 이 함수 하나만 읽어도 이 자세 제어기가 `단순 자세 PID`가 아니라 `manual yaw override`, `trim hold`, `translation 보호`, `orientation filtering`을 가진 운용형 controller라는 점을 알 수 있습니다. 다만 수동 입력 freshness를 위한 timestamp/state가 없는 점은 후반 제어 루프에서 stale manual state로 이어질 수 있습니다.
-
-**상세 해설**
-
-이 함수에서 먼저 보아야 할 것은 파라미터가 어떤 덩어리로 나뉘는지입니다. 첫 번째 덩어리는 `imu_topic`, `manual_wrench_topic`, `output_torque_topic` 같은 입출력 토픽입니다. 두 번째 덩어리는 `kp_*`, `ki_*`, `kd_*`로 대표되는 기본 제어 게인입니다. 세 번째 덩어리는 `tx_limit`, `ty_limit`, `tz_limit`, `rp_torque_slew_rate` 같은 출력 shaping / safety 관련 파라미터입니다. 마지막으로 이 코드의 성격을 가장 잘 보여주는 것은 `yaw_hold_enabled`, `capture_yaw_target_on_release`, `xy_motion_protect_threshold`, `translation_tilt_ff_*`, `orientation_filter_*` 같은 운용 정책 파라미터입니다.
-
-즉 이 함수는 단순히 숫자를 로드하는 함수가 아니라, 기체를 어떤 감각으로 조종할 것인지 선언하는 정책 테이블입니다. 그래서 이 함수 설명이 빈약하면 전체 코드 해석이 얕아질 수밖에 없습니다.
-
-**이 함수와 관련된 파라미터**
-
-- `imu_topic`, `manual_wrench_topic`, `output_torque_topic`: 센서 입력, pilot 입력, 최종 torque 출력이 어디를 통해 흐르는지 정합니다.
-- `kp_roll/pitch/yaw`, `ki_roll/pitch`, `kd_roll/pitch/yaw`: 자세 오차에 대한 복원력과 damping의 기본 강도를 정하는 핵심 제어 파라미터입니다.
-- `tx_limit`, `ty_limit`, `tz_limit`: 각 축 torque saturation 상한입니다. 기체를 세우는 힘보다 actuator 보호를 우선할 때 중요합니다.
-- `rp_torque_slew_rate`: roll/pitch torque가 한 주기에서 얼마나 급하게 바뀔 수 있는지 제한합니다.
-- `yaw_hold_enabled`, `capture_yaw_target_on_release`, `yaw_hold_settle_time_sec`: yaw stick을 놓은 뒤 heading hold가 어떤 감각으로 복귀할지 결정합니다.
-- `xy_motion_protect_threshold`, `strong_xy_motion_threshold`, `rp_scale_when_*`: translation 중 자세 hold를 얼마나 약하게 또는 강하게 유지할지 결정합니다.
-- `orientation_filter_*`: IMU 자세를 control attitude로 쓸 때 얼마나 부드럽게 필터링할지 정합니다.
+- 위치: `attitude_controller.py:92-368`
+- 입력: self
+- 출력: 직접적인 return 값보다는 내부 상태 갱신 또는 ROS topic 발행이 핵심 출력입니다.
+- 역할: ROS2 노드의 파라미터, 상태 변수, subscriber, publisher, timer를 초기화합니다. 해당 제어 노드가 시스템에 연결되는 시작점입니다.
+- 왜 사용했는가: 노드가 실행되기 전에 필요한 파라미터, 통신 인터페이스, 상태 변수를 모두 준비해야 하기 때문에 사용됩니다.
+- 제어 영향: roll, pitch, yaw 자세 유지 토크에 영향을 준다. 특히 trim 자세, heading hold, rate damping 동작과 연결됩니다.
+- 내부 동작 흐름:
+  - 노드 이름을 설정합니다.
+  - ROS parameter를 선언하고 현재 값을 읽습니다.
+  - 제어에 필요한 내부 상태 변수를 초기화합니다.
+  - subscriber와 publisher를 생성합니다.
+  - timer와 parameter callback을 등록합니다.
+  - 초기 설정값을 log로 출력합니다.
+- 코드 일부:
 
 ```python
 def __init__(self):
@@ -449,45 +496,64 @@ def __init__(self):
     )
 ```
 
-### 목표 자세 캡처 계열
+3장.10 AttitudeController._update_target_quaternion()
 
-**의미**
-
-이 함수들은 '지금 무엇을 목표 자세로 볼 것인가'를 정하는 계층입니다. 초기 캡처, level target 유지, yaw release 후 heading hold 재설정이 모두 여기서 일어납니다.
-
-**영향**
-
-사용자가 조작을 놓았을 때 기체가 어느 자세로 돌아갈지 결정합니다. 운용감이 좋은지, trim이 유지되는지, yaw hold가 자연스러운지가 이 계층에 달려 있습니다.
-
-**리뷰 메모**
-
-이 코드의 운용 감각은 꽤 좋습니다. 특히 yaw target을 현재 yaw로 다시 잡는 설계는 실제 조종 감각을 부드럽게 만듭니다.
-
-**상세 해설**
-
-이 함수들은 모두 'target attitude를 언제, 무엇으로 재정의할 것인가'에 답하는 계층입니다. `_capture_current_attitude_as_target()`은 현재 기체 자세를 그대로 목표로 잠그고, `_capture_current_yaw_as_target()`은 yaw만 현재값으로 다시 잡습니다. `_force_level_roll_pitch_target()`은 roll/pitch를 level 또는 trim 기준으로 되돌리는 강한 정책 함수입니다.
-
-운용 관점에서 중요한 점은, 이 계층이 단순한 초기화 코드가 아니라 control loop가 참조하는 목표 상태를 직접 바꾼다는 것입니다. 따라서 기체가 '왜 지금 이 자세를 목표로 삼고 있는지'를 이해하려면 PID 게인보다 먼저 이 계층을 봐야 합니다.
-
-**이 함수와 관련된 파라미터**
-
-- `capture_initial_target`: 첫 IMU 수신 시 현재 자세를 목표로 잡을지 결정합니다.
-- `level_roll_pitch_target`, `target_roll_deg`, `target_pitch_deg`: roll/pitch target을 항상 수평 또는 지정된 trim 기준으로 강제할지 정합니다.
-- `roll_trim_deg`, `pitch_trim_deg`: 완전한 level 대신 운용상 필요한 기준 기울기를 target에 더합니다.
-- `capture_yaw_target_on_release`: manual yaw를 놓은 뒤 현재 heading을 다시 잠글지 정합니다.
+- 위치: `attitude_controller.py:369-372`
+- 입력: self
+- 출력: 내부 상태 갱신이 중심이며, 필요 시 계산 결과를 return합니다.
+- 역할: 현재 target roll/pitch/yaw로부터 목표 quaternion을 갱신합니다.
+- 왜 사용했는가: 복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.
+- 제어 영향: roll, pitch, yaw 자세 유지 토크에 영향을 준다. 특히 trim 자세, heading hold, rate damping 동작과 연결됩니다.
+- 내부 동작 흐름:
+  - 현재 target roll/pitch/yaw를 읽습니다.
+  - `rpy_to_quat()`로 목표 quaternion을 계산합니다.
+  - target initialized 상태를 참으로 갱신합니다.
+- 코드 일부:
 
 ```python
 def _update_target_quaternion(self):
     self.q_target = rpy_to_quat(self.target_roll, self.target_pitch, self.target_yaw)
     self.target_initialized = True
+```
 
+3장.11 AttitudeController._force_level_roll_pitch_target()
+
+- 위치: `attitude_controller.py:373-379`
+- 입력: self
+- 출력: 내부 상태 갱신이 중심이며, 필요 시 계산 결과를 return합니다.
+- 역할: level target과 trim 값을 이용해 roll/pitch 목표를 강제로 갱신합니다.
+- 왜 사용했는가: 복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.
+- 제어 영향: roll, pitch, yaw 자세 유지 토크에 영향을 준다. 특히 trim 자세, heading hold, rate damping 동작과 연결됩니다.
+- 내부 동작 흐름:
+  - level target 사용 여부를 확인합니다.
+  - target roll/pitch와 trim 값을 radian으로 변환해 목표값을 갱신합니다.
+  - 갱신된 목표로 quaternion을 다시 계산합니다.
+- 코드 일부:
+
+```python
 def _force_level_roll_pitch_target(self):
     if not self.level_roll_pitch_target:
         return
     self.target_roll = math.radians(self.target_roll_deg + self.roll_trim_deg)
     self.target_pitch = math.radians(self.target_pitch_deg + self.pitch_trim_deg)
     self._update_target_quaternion()
+```
 
+3장.12 AttitudeController._capture_current_attitude_as_target()
+
+- 위치: `attitude_controller.py:380-389`
+- 입력: self
+- 출력: 내부 상태 갱신이 중심이며, 필요 시 계산 결과를 return합니다.
+- 역할: 현재 자세를 제어 목표로 캡처합니다. 초기화 또는 제어 재활성화 시 사용됩니다.
+- 왜 사용했는가: 복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.
+- 제어 영향: roll, pitch, yaw 자세 유지 토크에 영향을 준다. 특히 trim 자세, heading hold, rate damping 동작과 연결됩니다.
+- 내부 동작 흐름:
+  - 현재 yaw를 wrap 처리해 목표 yaw로 저장합니다.
+  - level mode이면 설정된 level/trim 목표를 사용하고, 아니면 현재 control roll/pitch를 사용합니다.
+  - 새 목표 quaternion을 계산합니다.
+- 코드 일부:
+
+```python
 def _capture_current_attitude_as_target(self):
     self.target_yaw = wrap_to_pi(self.yaw)
     if self.level_roll_pitch_target:
@@ -497,31 +563,75 @@ def _capture_current_attitude_as_target(self):
         self.target_roll = self.control_roll
         self.target_pitch = self.control_pitch
     self._update_target_quaternion()
+```
 
+3장.13 AttitudeController._capture_current_yaw_as_target()
+
+- 위치: `attitude_controller.py:390-393`
+- 입력: self
+- 출력: 내부 상태 갱신이 중심이며, 필요 시 계산 결과를 return합니다.
+- 역할: 현재 yaw를 heading hold 목표로 캡처합니다.
+- 왜 사용했는가: 복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.
+- 제어 영향: roll, pitch, yaw 자세 유지 토크에 영향을 준다. 특히 trim 자세, heading hold, rate damping 동작과 연결됩니다.
+- 내부 동작 흐름:
+  - 현재 yaw를 wrap 처리합니다.
+  - 목표 yaw에 저장합니다.
+  - 새 목표 quaternion을 계산합니다.
+- 코드 일부:
+
+```python
 def _capture_current_yaw_as_target(self):
     self.target_yaw = wrap_to_pi(self.yaw)
     self._update_target_quaternion()
 ```
 
-### `imu_callback()`
+3장.14 AttitudeController._set_control_enabled()
 
-**의미**
+- 위치: `attitude_controller.py:394-411`
+- 입력: self, enabled
+- 출력: 내부 상태 갱신이 중심이며, 필요 시 계산 결과를 return합니다.
+- 역할: 제어 enable 상태 변경 시 목표값, 적분항, 출력 상태를 초기화하거나 0 출력합니다.
+- 왜 사용했는가: 복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.
+- 제어 영향: roll, pitch, yaw 자세 유지 토크에 영향을 준다. 특히 trim 자세, heading hold, rate damping 동작과 연결됩니다.
+- 내부 동작 흐름:
+  - 이전 enable 상태와 새 상태를 비교합니다.
+  - enable 전이 시 필터와 목표 자세, 적분항을 초기화합니다.
+  - disable 전이 시 0 torque publish와 상태 정리를 수행합니다.
+- 코드 일부:
 
-IMU quaternion과 body rate를 읽어 현재 자세와 각속도를 최신 상태로 갱신합니다.
+```python
+def _set_control_enabled(self, enabled: bool):
+    prev = self.control_enabled
+    self.control_enabled = bool(enabled)
 
-**영향**
+    if self.control_enabled and not prev and self.have_imu:
+        self._reset_control_attitude_filter()
+        self._capture_current_attitude_as_target()
+        self.roll_integral = 0.0
+        self.pitch_integral = 0.0
+        self.get_logger().info(
+            'Attitude control enabled; captured yaw and kept roll/pitch trim target'
+        )
+    elif (not self.control_enabled) and prev:
+        self.roll_integral = 0.0
+        self.pitch_integral = 0.0
+        self.pub_torque.publish(Wrench())
+        self.get_logger().info('Attitude control disabled; publishing zero torque')
+```
 
-제어기의 모든 피드백이 여기서 들어옵니다. 처음 IMU를 받으면 초기 target을 캡처하기 때문에, 이 함수는 센서 수신과 target initialization을 동시에 담당합니다.
+3장.15 AttitudeController.imu_callback()
 
-**리뷰 메모**
-
-초기 target capture와 IMU 상태 갱신이 한 곳에 모여 있어 흐름은 명확합니다. 다만 manual freshness와는 독립이라 이후 control loop가 오래된 manual 입력을 그대로 읽을 수 있습니다.
-
-**상세 해설**
-
-이 함수는 attitude controller의 센서 입력 관문입니다. quaternion에서 현재 roll/pitch/yaw를 해석하고, body rate를 읽어 control loop가 사용할 최신 피드백 상태를 갱신합니다. 또한 첫 IMU가 들어왔을 때 target attitude를 초기화하는 역할도 함께 담당합니다.
-
-즉 이 함수는 단순한 센서 수신기가 아니라, '제어를 시작할 준비가 되었는가'를 판단하는 초기화 관문이기도 합니다. IMU 데이터가 흔들리거나 지연되면 이후 제어 오차 계산 전체가 흔들리므로, 디버깅 시에는 토크 출력보다 먼저 이 함수가 갱신하는 상태를 확인해야 합니다.
+- 위치: `attitude_controller.py:412-435`
+- 입력: self, msg
+- 출력: 직접적인 return 값보다는 내부 상태 갱신 또는 ROS topic 발행이 핵심 출력입니다.
+- 역할: IMU 메시지를 수신하여 현재 자세, 각속도, 또는 z축 방향 정보를 내부 상태에 저장합니다.
+- 왜 사용했는가: ROS2 topic 기반 시스템에서 비동기 메시지를 받아 제어 상태를 최신 값으로 유지하기 위해 사용됩니다.
+- 제어 영향: roll, pitch, yaw 자세 유지 토크에 영향을 준다. 특히 trim 자세, heading hold, rate damping 동작과 연결됩니다.
+- 내부 동작 흐름:
+  - ROS2 메시지를 수신합니다.
+  - orientation을 정규화하고 roll/pitch/yaw를 계산합니다.
+  - 각속도와 현재 자세 상태를 갱신하고 필요하면 초기 target을 캡처합니다.
+- 코드 일부:
 
 ```python
 def imu_callback(self, msg: Imu):
@@ -549,38 +659,158 @@ def imu_callback(self, msg: Imu):
         )
 ```
 
-### `_update_control_attitude_filter()`
+3장.16 AttitudeController.manual_wrench_callback()
 
-**의미**
+- 위치: `attitude_controller.py:436-438`
+- 입력: self, msg
+- 출력: 직접적인 return 값보다는 내부 상태 갱신 또는 ROS topic 발행이 핵심 출력입니다.
+- 역할: 조종기 또는 상위 입력에서 들어오는 수동 Wrench 명령을 저장합니다.
+- 왜 사용했는가: ROS2 topic 기반 시스템에서 비동기 메시지를 받아 제어 상태를 최신 값으로 유지하기 위해 사용됩니다.
+- 제어 영향: roll, pitch, yaw 자세 유지 토크에 영향을 준다. 특히 trim 자세, heading hold, rate damping 동작과 연결됩니다.
+- 내부 동작 흐름:
+  - ROS2 메시지를 수신합니다.
+  - 수동 wrench를 내부 상태에 저장합니다.
+  - 이후 control loop가 사용할 최신 manual 입력으로 유지합니다.
+- 코드 일부:
 
-IMU 자세를 그대로 쓰지 않고, body rate 적분 예측값과 measurement를 섞어서 `control_roll`, `control_pitch`를 만듭니다.
+```python
+def manual_wrench_callback(self, msg: Wrench):
+    self.manual_wrench = msg
+```
 
-**영향**
+3장.17 AttitudeController.cmd_attitude_callback()
 
-센서 노이즈와 순간 흔들림을 줄이고 제어 대상 자세를 더 부드럽게 만듭니다. 즉 이 함수는 제어 입력의 품질을 개선하는 내부 observer 역할을 합니다.
+- 위치: `attitude_controller.py:439-463`
+- 입력: self, msg
+- 출력: 직접적인 return 값보다는 내부 상태 갱신 또는 ROS topic 발행이 핵심 출력입니다.
+- 역할: 외부에서 들어오는 목표 자세 명령을 내부 목표 roll/pitch/yaw 값으로 반영합니다.
+- 왜 사용했는가: ROS2 topic 기반 시스템에서 비동기 메시지를 받아 제어 상태를 최신 값으로 유지하기 위해 사용됩니다.
+- 제어 영향: roll, pitch, yaw 자세 유지 토크에 영향을 준다. 특히 trim 자세, heading hold, rate damping 동작과 연결됩니다.
+- 내부 동작 흐름:
+  - ROS2 메시지를 수신합니다.
+  - NaN이 아닌 목표 roll/pitch/yaw를 읽습니다.
+  - 업데이트가 있으면 목표 quaternion을 다시 계산합니다.
+- 코드 일부:
 
-**리뷰 메모**
+```python
+def cmd_attitude_callback(self, msg: Vector3):
+    updated = False
 
-이 필터는 attitude hold를 덜 거칠게 만들어 주는 좋은 계층입니다. 또한 `dt`가 비정상이면 reset하도록 만들어 센서 타이밍 문제에 비교적 안전합니다.
+    if not math.isnan(msg.x):
+        self.target_roll = msg.x
+        updated = True
 
-**상세 해설**
+    if not math.isnan(msg.y):
+        self.target_pitch = msg.y
+        updated = True
 
-이 함수는 IMU measurement를 곧바로 제어 오차에 넣지 않고, 예측과 보정을 섞어 조금 더 매끈한 `control attitude`를 만듭니다. body rate를 적분해 예측한 자세를 만들고, measurement와의 차이를 제한된 correction rate로만 따라가게 해 순간적인 센서 튐이 바로 torque 튐으로 이어지지 않게 합니다.
+    if self.yaw_hold_enabled and (not math.isnan(msg.z)):
+        self.target_yaw = wrap_to_pi(msg.z)
+        updated = True
 
-결국 이 계층은 observer에 가까운 역할을 합니다. 측정값의 진실성은 유지하되, 제어 대상은 조금 더 조종 친화적인 상태로 바꿔 쓰는 구조입니다.
+    if not updated:
+        return
 
-**이 함수와 관련된 파라미터**
+    self._update_target_quaternion()
 
-- `orientation_filter_enabled`: 필터를 켤지, IMU 자세를 그대로 쓸지 결정합니다.
-- `orientation_filter_measurement_alpha`: measurement correction 비중을 정합니다.
-- `orientation_filter_max_correction_rate_deg`: 한 주기에서 measurement 쪽으로 얼마나 빠르게 끌려갈지 제한합니다.
+    self.get_logger().info(
+        f'Updated target attitude: '
+        f'roll={self.target_roll:.3f}, pitch={self.target_pitch:.3f}, yaw={self.target_yaw:.3f}'
+    )
+```
+
+3장.18 AttitudeController.cmd_attitude_trim_callback()
+
+- 위치: `attitude_controller.py:464-484`
+- 입력: self, msg
+- 출력: 직접적인 return 값보다는 내부 상태 갱신 또는 ROS topic 발행이 핵심 출력입니다.
+- 역할: trim 형태의 목표 자세를 수신하여 roll/pitch 보정 기준으로 사용합니다.
+- 왜 사용했는가: ROS2 topic 기반 시스템에서 비동기 메시지를 받아 제어 상태를 최신 값으로 유지하기 위해 사용됩니다.
+- 제어 영향: roll, pitch, yaw 자세 유지 토크에 영향을 준다. 특히 trim 자세, heading hold, rate damping 동작과 연결됩니다.
+- 내부 동작 흐름:
+  - ROS2 메시지를 수신합니다.
+  - NaN이 아닌 trim 값을 읽어 degree 기준 trim 상태를 갱신합니다.
+  - 업데이트가 있으면 필요 시 level target을 다시 구성합니다.
+- 코드 일부:
+
+```python
+def cmd_attitude_trim_callback(self, msg: Vector3):
+    updated = False
+
+    if not math.isnan(msg.x):
+        self.roll_trim_deg = math.degrees(msg.x)
+        updated = True
+
+    if not math.isnan(msg.y):
+        self.pitch_trim_deg = math.degrees(msg.y)
+        updated = True
+
+    if not updated:
+        return
+
+    self._force_level_roll_pitch_target()
+    self.get_logger().info(
+        f'Updated attitude trim: '
+        f'roll_trim={self.roll_trim_deg:.1f} deg, '
+        f'pitch_trim={self.pitch_trim_deg:.1f} deg'
+    )
+```
+
+3장.19 AttitudeController._apply_deadband()
+
+- 위치: `attitude_controller.py:485-487`
+- 입력: self, x
+- 출력: 계산 결과를 return하며, 호출한 제어 로직에서 다음 계산의 입력으로 사용됩니다.
+- 역할: 작은 torque 값을 0으로 만들어 미세 떨림과 불필요한 토크 출력을 줄입니다.
+- 왜 사용했는가: 복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.
+- 제어 영향: roll, pitch, yaw 자세 유지 토크에 영향을 준다. 특히 trim 자세, heading hold, rate damping 동작과 연결됩니다.
+- 내부 동작 흐름:
+  - 입력 torque 크기를 확인합니다.
+  - `torque_deadband`보다 작으면 0으로 만듭니다.
+  - 그 외에는 원래 값을 반환합니다.
+- 코드 일부:
+
+```python
+def _apply_deadband(self, x: float) -> float:
+    return 0.0 if abs(x) < self.torque_deadband else x
+```
+
+3장.20 AttitudeController._reset_control_attitude_filter()
+
+- 위치: `attitude_controller.py:488-492`
+- 입력: self
+- 출력: 내부 상태 갱신이 중심이며, 필요 시 계산 결과를 return합니다.
+- 역할: roll/pitch 제어용 필터 상태를 현재 IMU 자세로 초기화합니다.
+- 왜 사용했는가: 복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.
+- 제어 영향: roll, pitch, yaw 자세 유지 토크에 영향을 준다. 특히 trim 자세, heading hold, rate damping 동작과 연결됩니다.
+- 내부 동작 흐름:
+  - 현재 roll/pitch를 읽습니다.
+  - control roll/pitch 상태를 현재 자세로 맞춥니다.
+  - 필터 초기화 완료 플래그를 켭니다.
+- 코드 일부:
 
 ```python
 def _reset_control_attitude_filter(self):
     self.control_roll = self.roll
     self.control_pitch = self.pitch
     self.control_attitude_filter_initialized = True
+```
 
+3장.21 AttitudeController._update_control_attitude_filter()
+
+- 위치: `attitude_controller.py:493-516`
+- 입력: self, dt
+- 출력: 내부 상태 갱신이 중심이며, 필요 시 계산 결과를 return합니다.
+- 역할: 각속도 적분 예측과 IMU 측정을 섞어 roll/pitch 제어용 자세 값을 갱신합니다.
+- 왜 사용했는가: 복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.
+- 제어 영향: roll, pitch, yaw 자세 유지 토크에 영향을 준다. 특히 trim 자세, heading hold, rate damping 동작과 연결됩니다.
+- 내부 동작 흐름:
+  - 필터 활성 여부와 dt 유효성을 확인합니다.
+  - body rate 적분으로 예측값을 계산합니다.
+  - measurement와의 차이를 제한된 correction으로 반영해 control roll/pitch를 갱신합니다.
+- 코드 일부:
+
+```python
 def _update_control_attitude_filter(self, dt: float):
     if (
         not self.orientation_filter_enabled or
@@ -606,32 +836,47 @@ def _update_control_attitude_filter(self, dt: float):
     self.control_pitch = wrap_to_pi(predicted_pitch + pitch_correction)
 ```
 
-### `_translation_tilt_feedforward()`
+3장.22 AttitudeController._apply_rp_torque_slew()
 
-**의미**
+- 위치: `attitude_controller.py:517-528`
+- 입력: self, tx_ctrl, ty_ctrl, dt
+- 출력: 계산 결과를 return하며, 호출한 제어 로직에서 다음 계산의 입력으로 사용됩니다.
+- 역할: roll/pitch 제어 토크 변화량을 제한합니다.
+- 왜 사용했는가: 복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.
+- 제어 영향: roll, pitch, yaw 자세 유지 토크에 영향을 준다. 특히 trim 자세, heading hold, rate damping 동작과 연결됩니다.
+- 내부 동작 흐름:
+  - dt로 허용 가능한 최대 토크 변화량을 계산합니다.
+  - 현재 목표 torque를 이전 torque 주변 허용 범위로 clamp합니다.
+  - 갱신된 torque를 저장하고 반환합니다.
+- 코드 일부:
 
-수동 surge/sway가 있을 때 미리 roll/pitch 토크를 보정해 translation 중 trim 자세 붕괴를 줄이려는 feedforward 함수입니다.
+```python
+def _apply_rp_torque_slew(self, tx_ctrl: float, ty_ctrl: float, dt: float):
+    if dt <= 0.0:
+        max_delta = 0.0
+    else:
+        # rp_torque_slew_rate is torque command units per second.
+        max_delta = max(0.0, self.rp_torque_slew_rate) * min(dt, 0.1)
+    tx_out = clamp(tx_ctrl, self.prev_tx_ctrl - max_delta, self.prev_tx_ctrl + max_delta)
+    ty_out = clamp(ty_ctrl, self.prev_ty_ctrl - max_delta, self.prev_ty_ctrl + max_delta)
+    self.prev_tx_ctrl = tx_out
+    self.prev_ty_ctrl = ty_out
+    return tx_out, ty_out
+```
 
-**영향**
+3장.23 AttitudeController._translation_tilt_feedforward()
 
-이 함수가 켜지면 단순 PID 복원보다 더 적극적으로 자세를 유지하려고 합니다. 특히 기체가 이동하면서 생기는 pitch-up / roll-off 경향을 선제적으로 누를 수 있습니다.
-
-**리뷰 메모**
-
-기능 자체는 고급스럽지만, 튜닝 의존성이 큽니다. gain이 과하면 조종감이 뻣뻣해질 수 있어 실제 운용 로그와 함께 봐야 합니다.
-
-**상세 해설**
-
-이 함수는 translation 명령이 들어왔을 때 발생할 것으로 예상되는 기체 기울어짐을 PID가 뒤늦게 복구하기 전에 미리 보상하는 계층입니다. 예를 들어 전진 thrust가 들어가면 nose-up 경향이 있다면, surge 입력만 보고 바로 pitch 반대 토크를 조금 넣어 줄 수 있습니다.
-
-이런 feedforward는 잘 맞으면 조종감이 훨씬 단단해지지만, 잘못 맞으면 사용자가 의도하지 않은 자동 개입처럼 느껴질 수 있습니다. 그래서 이 함수는 수학적으로보다 운용감 측면에서 더 신중하게 설명되어야 하는 구간입니다.
-
-**이 함수와 관련된 파라미터**
-
-- `translation_tilt_ff_enabled`: translation 기반 선행 보상을 사용할지 정합니다.
-- `translation_pitch_ff_gain`, `translation_roll_ff_gain`: surge/sway 입력이 각각 얼마나 pitch/roll 보상으로 연결될지 정합니다.
-- `translation_tilt_ff_max`: feedforward 토크 최대치를 제한합니다.
-- `translation_tilt_ff_deadband`: 작은 조작에서는 feedforward가 개입하지 않도록 합니다.
+- 위치: `attitude_controller.py:529-543`
+- 입력: self, manual_surge, manual_sway
+- 출력: 계산 결과를 return하며, 호출한 제어 로직에서 다음 계산의 입력으로 사용됩니다.
+- 역할: 수평 이동 중 목표 roll/pitch trim 유지에 필요한 feed-forward 토크를 계산합니다.
+- 왜 사용했는가: 복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.
+- 제어 영향: roll, pitch, yaw 자세 유지 토크에 영향을 준다. 특히 trim 자세, heading hold, rate damping 동작과 연결됩니다.
+- 내부 동작 흐름:
+  - 기능 활성 여부를 확인합니다.
+  - surge/sway 입력에서 deadband를 뺀 유효 drive를 계산합니다.
+  - 설정 gain과 최대치로 roll/pitch feed-forward torque를 만듭니다.
+- 코드 일부:
 
 ```python
 def _translation_tilt_feedforward(self, manual_surge: float, manual_sway: float):
@@ -650,25 +895,23 @@ def _translation_tilt_feedforward(self, manual_surge: float, manual_sway: float)
     return clamp(tx_ff, -limit, limit), clamp(ty_ff, -limit, limit)
 ```
 
-### `control_loop()`
+3장.24 AttitudeController.control_loop()
 
-**의미**
-
-실제 제어법칙이 수행되는 중심 함수입니다. 자세 오차 계산, 적분, rate damping, yaw manual override, translation/heave 보호, slew limit, 최종 토크 publish가 모두 여기에 있습니다.
-
-**영향**
-
-이 함수의 동작이 곧 조종감입니다. 조종자가 translation 중인지, heave를 주는지, yaw stick을 놓았는지에 따라 토크 출력 정책이 바뀝니다.
-
-**리뷰 메모**
-
-구조는 매우 좋고 운용 의도도 분명합니다. 다만 manual wrench freshness가 없어서 `yaw_manual_active`, `heave_protect`, `xy_soft_trim`이 오래 남을 수 있는 리스크가 있습니다.
-
-**상세 해설**
-
-이 함수는 실제로 여러 개의 작은 상태 머신이 겹쳐진 형태입니다. 먼저 IMU/target/control_enabled 상태를 보고 제어를 수행할지 결정합니다. 그 다음 roll/pitch는 angle error + integral + rate damping으로 계산하고, yaw는 heading hold 상태인지 manual yaw 상태인지에 따라 완전히 다른 정책을 탑니다. 여기에 translation 중 trim 유지 약화, heave 중 yaw 보호, large tilt disable, body-rate limit, slew-rate 제한이 순서대로 겹칩니다.
-
-그래서 이 함수는 단순 PID 함수가 아니라, 실제 조종 감각을 조합하는 중앙 orchestration 함수라고 보는 편이 정확합니다. 문제 분석 시에도 '게인이 이상하다'보다 '지금 어떤 보호 모드가 켜졌는가'를 먼저 봐야 하는 이유가 여기 있습니다.
+- 위치: `attitude_controller.py:544-754`
+- 입력: self
+- 출력: 내부 상태 갱신이 중심이며, 필요 시 계산 결과를 return합니다.
+- 역할: 자세 오차와 각속도 damping으로 roll/pitch/yaw 토크를 계산하고 발행하는 주 제어 루프입니다.
+- 왜 사용했는가: 복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.
+- 제어 영향: roll, pitch, yaw 자세 유지 토크에 영향을 준다. 특히 trim 자세, heading hold, rate damping 동작과 연결됩니다.
+- 내부 동작 흐름:
+  - IMU와 target 초기화 여부를 확인합니다.
+  - dt를 계산하고 control_enabled 상태를 확인합니다.
+  - roll/pitch 필터를 갱신하고 목표 자세를 준비합니다.
+  - 수동 wrench 입력에서 heave, surge, sway, yaw 명령을 읽습니다.
+  - roll/pitch/yaw 오차와 각속도 damping으로 제어 토크를 계산합니다.
+  - 수동 yaw 조작 중에는 yaw hold를 양보하고, release 시 현재 yaw를 목표로 캡처합니다.
+  - 계산된 토크를 limit와 slew-rate 처리 후 attitude torque topic으로 발행합니다.
+- 코드 일부:
 
 ```python
 def control_loop(self):
@@ -883,25 +1126,21 @@ def control_loop(self):
     #     )
 ```
 
-### `on_parameter_update()`
+3장.25 AttitudeController.on_parameter_update()
 
-**의미**
-
-런타임 파라미터 갱신을 받아 제어기 상태와 게인을 즉시 바꾸는 함수입니다.
-
-**영향**
-
-GUI나 runtime tuning에서 실시간으로 gain과 정책을 바꿀 수 있게 해줍니다. 실험 속도를 크게 올리는 대신, 파라미터 변경 시 즉시 제어 감각이 달라집니다.
-
-**리뷰 메모**
-
-runtime tuning을 적극적으로 지원하는 점은 강점입니다. 동시에 리뷰 관점에서는 파라미터 변화가 control loop에 어떤 영향을 주는지 문서가 꼭 필요하다는 뜻이기도 합니다.
-
-**상세 해설**
-
-이 함수는 단순히 숫자를 바꾸는 관리 함수가 아닙니다. 실제로는 제어 정책을 런타임에 갈아끼우는 진입점입니다. 예를 들어 yaw hold 민감도, roll/pitch torque 제한, translation 보호 강도, orientation filter 성향이 모두 비행 중 즉시 달라질 수 있습니다.
-
-그래서 이 함수가 있는 모듈은 문서가 특히 중요합니다. 파라미터 이름만 나열해서는 충분하지 않고, 어떤 값이 어느 함수의 어떤 분기를 바꾸는지까지 연결해 줘야 안전하게 튜닝할 수 있습니다.
+- 위치: `attitude_controller.py:755-871`
+- 입력: self, params
+- 출력: 파라미터 갱신 결과를 `SetParametersResult`로 반환하면서 내부 상태를 함께 갱신합니다.
+- 역할: ROS2 runtime parameter 변경을 노드 내부 변수에 반영합니다.
+- 왜 사용했는가: 실제 로봇 테스트 중 gain과 제한값을 노드를 재시작하지 않고 바꾸기 위해 사용됩니다.
+- 제어 영향: roll, pitch, yaw 자세 유지 토크에 영향을 준다. 특히 trim 자세, heading hold, rate damping 동작과 연결됩니다.
+- 내부 동작 흐름:
+  - 변경 요청된 parameter 목록을 순회합니다.
+  - parameter 이름에 맞는 내부 변수를 갱신합니다.
+  - 각도 단위 parameter는 필요한 경우 radian으로 변환합니다.
+  - 갱신 결과를 log로 남깁니다.
+  - 성공 또는 실패 결과를 `SetParametersResult`로 반환합니다.
+- 코드 일부:
 
 ```python
 def on_parameter_update(self, params):
@@ -1020,6 +1259,38 @@ def on_parameter_update(self, params):
         return SetParametersResult(successful=True)
     except Exception as e:
         return SetParametersResult(successful=False, reason=str(e))
+```
+
+3장.26 전역 함수.main()
+
+- 위치: `attitude_controller.py:872-885`
+- 입력: args
+- 출력: 직접적인 return 값보다는 노드 실행과 종료 처리가 핵심 출력입니다.
+- 역할: rclpy를 초기화하고 노드를 생성한 뒤 spin을 수행합니다.
+- 왜 사용했는가: ROS2 노드 생명주기를 시작하고 종료 처리를 안정적으로 수행하기 위해 사용됩니다.
+- 제어 영향: 이 함수는 attitude controller 노드가 실제 ROS graph 안에서 동작하기 시작하는 진입점입니다.
+- 내부 동작 흐름:
+  - `rclpy.init()`으로 ROS2를 초기화합니다.
+  - 노드 객체를 생성합니다.
+  - `rclpy.spin()`으로 callback 처리를 시작합니다.
+  - 종료 시 노드를 정리하고 `rclpy.shutdown()`을 호출합니다.
+- 코드 일부:
+
+```python
+def main(args=None):
+    rclpy.init(args=args)
+    node = AttitudeController()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()
 ```
 
 ## 전체 코드

@@ -2,13 +2,13 @@
 
 2장. `allocator_node.py`
 
-이 코드는 최종 `Wrench(Fx, Fy, Fz, Tx, Ty, Tz)`를 8개 thruster 명령으로 바꾸는 control allocation 노드입니다.
+최종 Wrench 명령을 8개 스러스터 명령으로 변환하는 Control Allocation 노드
 
 이 파일은 제어기가 계산한 6축 wrench를 실제 8개 스러스터 명령으로 바꾸는 마지막 단계입니다. 제어 성능뿐 아니라 실제 로봇 안전에도 직접 연결됩니다.
 
 - 파일: `allocator_node.py`
 - 함수 개수: 22
-- 주요 역할: 이 코드는 최종 `Wrench(Fx, Fy, Fz, Tx, Ty, Tz)`를 8개 thruster 명령으로 바꾸는 control allocation 노드입니다.
+- 주요 역할: 최종 Wrench 명령을 8개 스러스터 명령으로 변환하는 Control Allocation 노드
 
 2장.1 전역 함수.normalize()
 

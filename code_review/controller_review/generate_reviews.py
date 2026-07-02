@@ -1178,6 +1178,7 @@ SUMMARY_HTML = """
 
 MODULE_CHAPTERS = {
     "allocator": 2,
+    "attitude": 3,
 }
 
 ALLOCATOR_FUNCTION_DOCS = {
@@ -1315,6 +1316,40 @@ ALLOCATOR_FUNCTION_DOCS = {
     },
 }
 
+ATTITUDE_FUNCTION_DOCS = {
+    "clamp": {"role": "값을 지정된 최소/최대 범위 안으로 제한합니다.", "why": "복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.", "impact": "roll, pitch, yaw 자세 유지 토크에 영향을 준다. 특히 trim 자세, heading hold, rate damping 동작과 연결됩니다.", "flow": ("입력값과 최소/최대 한계를 받습니다.", "최솟값보다 작으면 최솟값으로 제한합니다.", "최댓값보다 크면 최댓값으로 제한하고, 범위 안이면 그대로 반환합니다.")},
+    "vec_norm": {"role": "3차원 벡터의 크기를 계산합니다. 각속도 크기 판단 등에 사용됩니다.", "why": "복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.", "impact": "roll, pitch, yaw 자세 유지 토크에 영향을 준다. 특히 trim 자세, heading hold, rate damping 동작과 연결됩니다.", "flow": ("x, y, z 성분을 읽습니다.", "각 성분 제곱합을 계산합니다.", "제곱근을 취해 벡터 크기를 반환합니다.")},
+    "quat_normalize": {"role": "quaternion을 단위 quaternion으로 정규화합니다.", "why": "ROV 제어에서는 자세 표현과 좌표계 변환이 계속 필요하므로, 반복되는 수학 연산을 함수로 분리한 것입니다.", "impact": "roll, pitch, yaw 자세 유지 토크에 영향을 준다. 특히 trim 자세, heading hold, rate damping 동작과 연결됩니다.", "flow": ("입력 quaternion 성분을 분리합니다.", "노름을 계산합니다.", "노름이 너무 작으면 기본 단위 quaternion을 반환하고, 아니면 정규화 결과를 반환합니다.")},
+    "quat_conj": {"role": "quaternion의 켤레를 계산합니다. 회전 역변환에 사용됩니다.", "why": "ROV 제어에서는 자세 표현과 좌표계 변환이 계속 필요하므로, 반복되는 수학 연산을 함수로 분리한 것입니다.", "impact": "roll, pitch, yaw 자세 유지 토크에 영향을 준다. 특히 trim 자세, heading hold, rate damping 동작과 연결됩니다.", "flow": ("입력 quaternion 성분을 분리합니다.", "벡터부 부호를 반전합니다.", "스칼라부는 유지한 채 켤레 quaternion을 반환합니다.")},
+    "quat_mul": {"role": "두 quaternion의 곱을 계산합니다. 자세 오차 또는 벡터 회전에 사용됩니다.", "why": "ROV 제어에서는 자세 표현과 좌표계 변환이 계속 필요하므로, 반복되는 수학 연산을 함수로 분리한 것입니다.", "impact": "roll, pitch, yaw 자세 유지 토크에 영향을 준다. 특히 trim 자세, heading hold, rate damping 동작과 연결됩니다.", "flow": ("두 quaternion의 성분을 각각 분리합니다.", "Hamilton product 공식을 적용합니다.", "곱셈 결과 quaternion을 반환합니다.")},
+    "quat_to_rpy": {"role": "quaternion 자세 표현을 roll, pitch, yaw 각도로 변환합니다. 사람이 이해하기 쉬운 자세 오차 및 보상 계산에 사용됩니다.", "why": "ROV 제어에서는 자세 표현과 좌표계 변환이 계속 필요하므로, 반복되는 수학 연산을 함수로 분리한 것입니다.", "impact": "roll, pitch, yaw 자세 유지 토크에 영향을 준다. 특히 trim 자세, heading hold, rate damping 동작과 연결됩니다.", "flow": ("quaternion 성분으로 roll을 계산합니다.", "pitch를 계산하며 asin 범위를 넘어설 경우 안전하게 처리합니다.", "yaw를 계산해 세 각도를 반환합니다.")},
+    "rpy_to_quat": {"role": "roll, pitch, yaw 목표를 quaternion으로 변환합니다.", "why": "ROV 제어에서는 자세 표현과 좌표계 변환이 계속 필요하므로, 반복되는 수학 연산을 함수로 분리한 것입니다.", "impact": "roll, pitch, yaw 자세 유지 토크에 영향을 준다. 특히 trim 자세, heading hold, rate damping 동작과 연결됩니다.", "flow": ("roll, pitch, yaw의 half-angle 삼각함수를 계산합니다.", "quaternion 성분을 조합합니다.", "정규화된 목표 quaternion을 반환합니다.")},
+    "wrap_to_pi": {"role": "각도를 -pi~pi 범위로 정규화합니다. yaw wrap 문제를 방지합니다.", "why": "ROV 제어에서는 자세 표현과 좌표계 변환이 계속 필요하므로, 반복되는 수학 연산을 함수로 분리한 것입니다.", "impact": "roll, pitch, yaw 자세 유지 토크에 영향을 준다. 특히 trim 자세, heading hold, rate damping 동작과 연결됩니다.", "flow": ("입력 각도의 sin과 cos를 계산합니다.", "`atan2`를 이용해 같은 방향의 대표 각도로 변환합니다.", "-pi~pi 범위의 각도를 반환합니다.")},
+    "__init__": {"role": "ROS2 노드의 파라미터, 상태 변수, subscriber, publisher, timer를 초기화합니다. 해당 제어 노드가 시스템에 연결되는 시작점입니다.", "why": "노드가 실행되기 전에 필요한 파라미터, 통신 인터페이스, 상태 변수를 모두 준비해야 하기 때문에 사용됩니다.", "impact": "roll, pitch, yaw 자세 유지 토크에 영향을 준다. 특히 trim 자세, heading hold, rate damping 동작과 연결됩니다.", "flow": ("노드 이름을 설정합니다.", "ROS parameter를 선언하고 현재 값을 읽습니다.", "제어에 필요한 내부 상태 변수를 초기화합니다.", "subscriber와 publisher를 생성합니다.", "timer와 parameter callback을 등록합니다.", "초기 설정값을 log로 출력합니다.")},
+    "_update_target_quaternion": {"role": "현재 target roll/pitch/yaw로부터 목표 quaternion을 갱신합니다.", "why": "복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.", "impact": "roll, pitch, yaw 자세 유지 토크에 영향을 준다. 특히 trim 자세, heading hold, rate damping 동작과 연결됩니다.", "flow": ("현재 target roll/pitch/yaw를 읽습니다.", "`rpy_to_quat()`로 목표 quaternion을 계산합니다.", "target initialized 상태를 참으로 갱신합니다.")},
+    "_force_level_roll_pitch_target": {"role": "level target과 trim 값을 이용해 roll/pitch 목표를 강제로 갱신합니다.", "why": "복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.", "impact": "roll, pitch, yaw 자세 유지 토크에 영향을 준다. 특히 trim 자세, heading hold, rate damping 동작과 연결됩니다.", "flow": ("level target 사용 여부를 확인합니다.", "target roll/pitch와 trim 값을 radian으로 변환해 목표값을 갱신합니다.", "갱신된 목표로 quaternion을 다시 계산합니다.")},
+    "_capture_current_attitude_as_target": {"role": "현재 자세를 제어 목표로 캡처합니다. 초기화 또는 제어 재활성화 시 사용됩니다.", "why": "복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.", "impact": "roll, pitch, yaw 자세 유지 토크에 영향을 준다. 특히 trim 자세, heading hold, rate damping 동작과 연결됩니다.", "flow": ("현재 yaw를 wrap 처리해 목표 yaw로 저장합니다.", "level mode이면 설정된 level/trim 목표를 사용하고, 아니면 현재 control roll/pitch를 사용합니다.", "새 목표 quaternion을 계산합니다.")},
+    "_capture_current_yaw_as_target": {"role": "현재 yaw를 heading hold 목표로 캡처합니다.", "why": "복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.", "impact": "roll, pitch, yaw 자세 유지 토크에 영향을 준다. 특히 trim 자세, heading hold, rate damping 동작과 연결됩니다.", "flow": ("현재 yaw를 wrap 처리합니다.", "목표 yaw에 저장합니다.", "새 목표 quaternion을 계산합니다.")},
+    "_set_control_enabled": {"role": "제어 enable 상태 변경 시 목표값, 적분항, 출력 상태를 초기화하거나 0 출력합니다.", "why": "복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.", "impact": "roll, pitch, yaw 자세 유지 토크에 영향을 준다. 특히 trim 자세, heading hold, rate damping 동작과 연결됩니다.", "flow": ("이전 enable 상태와 새 상태를 비교합니다.", "enable 전이 시 필터와 목표 자세, 적분항을 초기화합니다.", "disable 전이 시 0 torque publish와 상태 정리를 수행합니다.")},
+    "imu_callback": {"role": "IMU 메시지를 수신하여 현재 자세, 각속도, 또는 z축 방향 정보를 내부 상태에 저장합니다.", "why": "ROS2 topic 기반 시스템에서 비동기 메시지를 받아 제어 상태를 최신 값으로 유지하기 위해 사용됩니다.", "impact": "roll, pitch, yaw 자세 유지 토크에 영향을 준다. 특히 trim 자세, heading hold, rate damping 동작과 연결됩니다.", "flow": ("ROS2 메시지를 수신합니다.", "orientation을 정규화하고 roll/pitch/yaw를 계산합니다.", "각속도와 현재 자세 상태를 갱신하고 필요하면 초기 target을 캡처합니다.")},
+    "manual_wrench_callback": {"role": "조종기 또는 상위 입력에서 들어오는 수동 Wrench 명령을 저장합니다.", "why": "ROS2 topic 기반 시스템에서 비동기 메시지를 받아 제어 상태를 최신 값으로 유지하기 위해 사용됩니다.", "impact": "roll, pitch, yaw 자세 유지 토크에 영향을 준다. 특히 trim 자세, heading hold, rate damping 동작과 연결됩니다.", "flow": ("ROS2 메시지를 수신합니다.", "수동 wrench를 내부 상태에 저장합니다.", "이후 control loop가 사용할 최신 manual 입력으로 유지합니다.")},
+    "cmd_attitude_callback": {"role": "외부에서 들어오는 목표 자세 명령을 내부 목표 roll/pitch/yaw 값으로 반영합니다.", "why": "ROS2 topic 기반 시스템에서 비동기 메시지를 받아 제어 상태를 최신 값으로 유지하기 위해 사용됩니다.", "impact": "roll, pitch, yaw 자세 유지 토크에 영향을 준다. 특히 trim 자세, heading hold, rate damping 동작과 연결됩니다.", "flow": ("ROS2 메시지를 수신합니다.", "NaN이 아닌 목표 roll/pitch/yaw를 읽습니다.", "업데이트가 있으면 목표 quaternion을 다시 계산합니다.")},
+    "cmd_attitude_trim_callback": {"role": "trim 형태의 목표 자세를 수신하여 roll/pitch 보정 기준으로 사용합니다.", "why": "ROS2 topic 기반 시스템에서 비동기 메시지를 받아 제어 상태를 최신 값으로 유지하기 위해 사용됩니다.", "impact": "roll, pitch, yaw 자세 유지 토크에 영향을 준다. 특히 trim 자세, heading hold, rate damping 동작과 연결됩니다.", "flow": ("ROS2 메시지를 수신합니다.", "NaN이 아닌 trim 값을 읽어 degree 기준 trim 상태를 갱신합니다.", "업데이트가 있으면 필요 시 level target을 다시 구성합니다.")},
+    "_apply_deadband": {"role": "작은 torque 값을 0으로 만들어 미세 떨림과 불필요한 토크 출력을 줄입니다.", "why": "복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.", "impact": "roll, pitch, yaw 자세 유지 토크에 영향을 준다. 특히 trim 자세, heading hold, rate damping 동작과 연결됩니다.", "flow": ("입력 torque 크기를 확인합니다.", "`torque_deadband`보다 작으면 0으로 만듭니다.", "그 외에는 원래 값을 반환합니다.")},
+    "_reset_control_attitude_filter": {"role": "roll/pitch 제어용 필터 상태를 현재 IMU 자세로 초기화합니다.", "why": "복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.", "impact": "roll, pitch, yaw 자세 유지 토크에 영향을 준다. 특히 trim 자세, heading hold, rate damping 동작과 연결됩니다.", "flow": ("현재 roll/pitch를 읽습니다.", "control roll/pitch 상태를 현재 자세로 맞춥니다.", "필터 초기화 완료 플래그를 켭니다.")},
+    "_update_control_attitude_filter": {"role": "각속도 적분 예측과 IMU 측정을 섞어 roll/pitch 제어용 자세 값을 갱신합니다.", "why": "복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.", "impact": "roll, pitch, yaw 자세 유지 토크에 영향을 준다. 특히 trim 자세, heading hold, rate damping 동작과 연결됩니다.", "flow": ("필터 활성 여부와 dt 유효성을 확인합니다.", "body rate 적분으로 예측값을 계산합니다.", "measurement와의 차이를 제한된 correction으로 반영해 control roll/pitch를 갱신합니다.")},
+    "_apply_rp_torque_slew": {"role": "roll/pitch 제어 토크 변화량을 제한합니다.", "why": "복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.", "impact": "roll, pitch, yaw 자세 유지 토크에 영향을 준다. 특히 trim 자세, heading hold, rate damping 동작과 연결됩니다.", "flow": ("dt로 허용 가능한 최대 토크 변화량을 계산합니다.", "현재 목표 torque를 이전 torque 주변 허용 범위로 clamp합니다.", "갱신된 torque를 저장하고 반환합니다.")},
+    "_translation_tilt_feedforward": {"role": "수평 이동 중 목표 roll/pitch trim 유지에 필요한 feed-forward 토크를 계산합니다.", "why": "복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.", "impact": "roll, pitch, yaw 자세 유지 토크에 영향을 준다. 특히 trim 자세, heading hold, rate damping 동작과 연결됩니다.", "flow": ("기능 활성 여부를 확인합니다.", "surge/sway 입력에서 deadband를 뺀 유효 drive를 계산합니다.", "설정 gain과 최대치로 roll/pitch feed-forward torque를 만듭니다.")},
+    "control_loop": {"role": "자세 오차와 각속도 damping으로 roll/pitch/yaw 토크를 계산하고 발행하는 주 제어 루프입니다.", "why": "복잡한 제어 계산을 작은 단위로 분리하여 역할을 명확히 하고, 다른 계산 단계에서 재사용하기 위해 사용됩니다.", "impact": "roll, pitch, yaw 자세 유지 토크에 영향을 준다. 특히 trim 자세, heading hold, rate damping 동작과 연결됩니다.", "flow": ("IMU와 target 초기화 여부를 확인합니다.", "dt를 계산하고 control_enabled 상태를 확인합니다.", "roll/pitch 필터를 갱신하고 목표 자세를 준비합니다.", "수동 wrench 입력에서 heave, surge, sway, yaw 명령을 읽습니다.", "roll/pitch/yaw 오차와 각속도 damping으로 제어 토크를 계산합니다.", "수동 yaw 조작 중에는 yaw hold를 양보하고, release 시 현재 yaw를 목표로 캡처합니다.", "계산된 토크를 limit와 slew-rate 처리 후 attitude torque topic으로 발행합니다.")},
+    "on_parameter_update": {"role": "ROS2 runtime parameter 변경을 노드 내부 변수에 반영합니다.", "why": "실제 로봇 테스트 중 gain과 제한값을 노드를 재시작하지 않고 바꾸기 위해 사용됩니다.", "impact": "roll, pitch, yaw 자세 유지 토크에 영향을 준다. 특히 trim 자세, heading hold, rate damping 동작과 연결됩니다.", "flow": ("변경 요청된 parameter 목록을 순회합니다.", "parameter 이름에 맞는 내부 변수를 갱신합니다.", "각도 단위 parameter는 필요한 경우 radian으로 변환합니다.", "갱신 결과를 log로 남깁니다.", "성공 또는 실패 결과를 `SetParametersResult`로 반환합니다.")},
+    "main": {"role": "rclpy를 초기화하고 노드를 생성한 뒤 spin을 수행합니다.", "why": "ROS2 노드 생명주기를 시작하고 종료 처리를 안정적으로 수행하기 위해 사용됩니다.", "impact": "이 함수는 attitude controller 노드가 실제 ROS graph 안에서 동작하기 시작하는 진입점입니다.", "flow": ("`rclpy.init()`으로 ROS2를 초기화합니다.", "노드 객체를 생성합니다.", "`rclpy.spin()`으로 callback 처리를 시작합니다.", "종료 시 노드를 정리하고 `rclpy.shutdown()`을 호출합니다.")},
+}
+
+CHAPTER_FUNCTION_DOCS = {
+    "allocator": ALLOCATOR_FUNCTION_DOCS,
+    "attitude": ATTITUDE_FUNCTION_DOCS,
+}
+
 
 DEF_RE = re.compile(r"^(\s*)def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 CLASS_RE = re.compile(r"^(\s*)class\s+([A-Za-z_][A-Za-z0-9_]*)\s*[:(]")
@@ -1395,8 +1430,23 @@ def get_parameter_names_from_signature(signature: str) -> list[str]:
     raw = match.group(1).strip()
     if not raw:
         return []
+    parts: list[str] = []
+    current: list[str] = []
+    depth = 0
+    for char in raw:
+        if char in "([":
+            depth += 1
+        elif char in ")]":
+            depth = max(0, depth - 1)
+        if char == "," and depth == 0:
+            parts.append("".join(current).strip())
+            current = []
+            continue
+        current.append(char)
+    if current:
+        parts.append("".join(current).strip())
     names: list[str] = []
-    for part in raw.split(","):
+    for part in parts:
         item = part.strip()
         if not item:
             continue
@@ -1433,6 +1483,18 @@ def format_allocator_function_title(name: str) -> str:
     if name in {"normalize", "normalize_group_unit", "quat_to_rotation_z_row", "quat_to_rpy"}:
         return f"전역 함수.{name}()"
     return f"AllocatorNode.{name}()"
+
+
+def format_chapter_function_title(module_key: str, name: str) -> str:
+    if module_key == "allocator":
+        return format_allocator_function_title(name)
+    if module_key == "attitude":
+        if name == "main":
+            return "전역 함수.main()"
+        if name in {"clamp", "vec_norm", "quat_normalize", "quat_conj", "quat_mul", "quat_to_rpy", "rpy_to_quat", "wrap_to_pi"}:
+            return f"전역 함수.{name}()"
+        return f"AttitudeController.{name}()"
+    return name
 
 
 def render_flow_steps_markdown(steps: tuple[str, ...]) -> list[str]:
@@ -1481,27 +1543,36 @@ def build_function_map(source: str) -> list[str]:
     return names
 
 
-def render_markdown_allocator_module(config: ModuleConfig, source: str) -> str:
+def render_markdown_chapter_module(config: ModuleConfig, source: str) -> str:
     function_map = build_function_map(source)
     def_map = get_def_map(source)
     chapter_no = MODULE_CHAPTERS.get(config.key, 2)
+    function_docs = CHAPTER_FUNCTION_DOCS[config.key]
+    chapter_title = {
+        "allocator": "최종 Wrench 명령을 8개 스러스터 명령으로 변환하는 Control Allocation 노드",
+        "attitude": "IMU 기반 Roll/Pitch/Yaw 자세 유지 토크를 생성하는 자세 제어 노드",
+    }.get(config.key, config.role_summary)
+    chapter_description = {
+        "allocator": "이 파일은 제어기가 계산한 6축 wrench를 실제 8개 스러스터 명령으로 바꾸는 마지막 단계입니다. 제어 성능뿐 아니라 실제 로봇 안전에도 직접 연결됩니다.",
+        "attitude": "이 파일은 IMU로 현재 자세를 읽고 목표 자세와 비교하여 roll/pitch/yaw 토크를 만듭니다. 수심, 위치 유지 중에도 기체 자세가 무너지지 않도록 하는 기반 제어기입니다.",
+    }.get(config.key, config.role_summary)
     lines: list[str] = [
         "# ROV Control Code Review - 함수별 설명 문서",
         "",
         f"{chapter_no}장. `{config.source_filename}`",
         "",
-        config.role_summary,
+        chapter_title,
         "",
-        "이 파일은 제어기가 계산한 6축 wrench를 실제 8개 스러스터 명령으로 바꾸는 마지막 단계입니다. 제어 성능뿐 아니라 실제 로봇 안전에도 직접 연결됩니다.",
+        chapter_description,
         "",
         f"- 파일: `{config.source_filename}`",
         f"- 함수 개수: {len(function_map)}",
-        f"- 주요 역할: {config.role_summary}",
+        f"- 주요 역할: {chapter_title}",
         "",
     ]
 
     for index, name in enumerate(function_map, start=1):
-        meta = ALLOCATOR_FUNCTION_DOCS.get(name)
+        meta = function_docs.get(name)
         if meta is None:
             continue
         snippet = extract_snippet(source, (name,))
@@ -1513,7 +1584,7 @@ def render_markdown_allocator_module(config: ModuleConfig, source: str) -> str:
         end = int(def_info["end"]) if def_info else start
         lines.extend(
             [
-                f"{chapter_no}장.{index} {format_allocator_function_title(name)}",
+                f"{chapter_no}장.{index} {format_chapter_function_title(config.key, name)}",
                 "",
                 f"- 위치: `{config.source_filename}:{start}-{end}`",
                 f"- 입력: {params}",
@@ -1545,16 +1616,25 @@ def render_markdown_allocator_module(config: ModuleConfig, source: str) -> str:
     return "\n".join(lines)
 
 
-def render_html_allocator_module(config: ModuleConfig, source: str) -> str:
+def render_html_chapter_module(config: ModuleConfig, source: str) -> str:
     function_map = build_function_map(source)
     def_map = get_def_map(source)
     chapter_no = MODULE_CHAPTERS.get(config.key, 2)
+    function_docs = CHAPTER_FUNCTION_DOCS[config.key]
+    chapter_title = {
+        "allocator": "최종 Wrench 명령을 8개 스러스터 명령으로 변환하는 Control Allocation 노드",
+        "attitude": "IMU 기반 Roll/Pitch/Yaw 자세 유지 토크를 생성하는 자세 제어 노드",
+    }.get(config.key, config.role_summary)
+    chapter_description = {
+        "allocator": "이 파일은 제어기가 계산한 6축 wrench를 실제 8개 스러스터 명령으로 바꾸는 마지막 단계입니다. 제어 성능뿐 아니라 실제 로봇 안전에도 직접 연결됩니다.",
+        "attitude": "이 파일은 IMU로 현재 자세를 읽고 목표 자세와 비교하여 roll/pitch/yaw 토크를 만듭니다. 수심, 위치 유지 중에도 기체 자세가 무너지지 않도록 하는 기반 제어기입니다.",
+    }.get(config.key, config.role_summary)
     nav_links = "\n".join(
-        f'<a href="#fn-{html.escape(name)}">{html.escape(name)}()</a>' for name in function_map if name in ALLOCATOR_FUNCTION_DOCS
+        f'<a href="#fn-{html.escape(name)}">{html.escape(name)}()</a>' for name in function_map if name in function_docs
     )
     sections: list[str] = []
     for index, name in enumerate(function_map, start=1):
-        meta = ALLOCATOR_FUNCTION_DOCS.get(name)
+        meta = function_docs.get(name)
         if meta is None:
             continue
         snippet = extract_snippet(source, (name,))
@@ -1570,7 +1650,7 @@ def render_html_allocator_module(config: ModuleConfig, source: str) -> str:
         <div class="panel-heading">
           <div>
             <p class="section-kicker">Chapter {chapter_no}.{index}</p>
-            <h2>{html.escape(format_allocator_function_title(name))}</h2>
+            <h2>{html.escape(format_chapter_function_title(config.key, name))}</h2>
           </div>
         </div>
         <div class="doc-grid">
@@ -1608,7 +1688,7 @@ def render_html_allocator_module(config: ModuleConfig, source: str) -> str:
       <a class="back-link" href="index.html">← 리뷰 홈으로</a>
       <p class="eyebrow">ROV Control Code Review</p>
       <h1>{chapter_no}장. {html.escape(config.source_filename)}</h1>
-      <p class="meta">{inline_code(config.role_summary)}</p>
+      <p class="meta">{inline_code(chapter_title)}</p>
       <nav class="toc">
         <a href="#chapter">장 개요</a>
         {nav_links}
@@ -1619,13 +1699,13 @@ def render_html_allocator_module(config: ModuleConfig, source: str) -> str:
       <section id="chapter" class="hero">
         <div>
           <p class="eyebrow">Module Chapter</p>
-          <h2>최종 Wrench 명령을 8개 스러스터 명령으로 변환하는 Control Allocation 노드</h2>
-          <p>{inline_code(config.role_summary)}</p>
-          <p>이 파일은 제어기가 계산한 6축 wrench를 실제 8개 스러스터 명령으로 바꾸는 마지막 단계입니다. 제어 성능뿐 아니라 실제 로봇 안전에도 직접 연결됩니다.</p>
+          <h2>{html.escape(chapter_title)}</h2>
+          <p>{inline_code(chapter_title)}</p>
+          <p>{inline_code(chapter_description)}</p>
           <ul class="summary-list">
             <li>파일: <code>{html.escape(config.source_filename)}</code></li>
             <li>함수 개수: {len(function_map)}</li>
-            <li>주요 역할: {inline_code(config.role_summary)}</li>
+            <li>주요 역할: {inline_code(chapter_title)}</li>
           </ul>
         </div>
       </section>
@@ -1650,8 +1730,8 @@ def render_html_allocator_module(config: ModuleConfig, source: str) -> str:
 
 
 def render_markdown_module(config: ModuleConfig, source: str) -> str:
-    if config.key == "allocator":
-        return render_markdown_allocator_module(config, source)
+    if config.key in CHAPTER_FUNCTION_DOCS:
+        return render_markdown_chapter_module(config, source)
 
     function_map = build_function_map(source)
     lines: list[str] = [
@@ -1744,8 +1824,8 @@ def render_markdown_module(config: ModuleConfig, source: str) -> str:
 
 
 def render_html_module(config: ModuleConfig, source: str) -> str:
-    if config.key == "allocator":
-        return render_html_allocator_module(config, source)
+    if config.key in CHAPTER_FUNCTION_DOCS:
+        return render_html_chapter_module(config, source)
 
     function_map = build_function_map(source)
     nav_links = "\n".join(
