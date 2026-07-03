@@ -15,6 +15,7 @@
       <p class="meta">DVL 위치/속도와 IMU 자세를 이용해 XY 위치 유지 힘을 생성하는 위치 제어 노드</p>
       <nav class="toc">
         <a href="#chapter">장 개요</a>
+        <a href="#parameter-table">파라미터 표</a>
         <a href="#fn-clamp">clamp()</a>
 <a href="#fn-quat_normalize">quat_normalize()</a>
 <a href="#fn-quat_multiply">quat_multiply()</a>
@@ -52,6 +53,20 @@
             <li>함수 개수: 22</li>
             <li>주요 역할: DVL 위치/속도와 IMU 자세를 이용해 XY 위치 유지 힘을 생성하는 위치 제어 노드</li>
           </ul>
+          <div class="module-actions">
+            <a class="primary-link" href="#parameter-table">파라미터 표 보기</a>
+          </div>
+        </div>
+      </section>
+      <section id="parameter-table" class="panel">
+        <div class="panel-heading">
+          <div>
+            <p class="section-kicker">Parameters</p>
+            <h2>position_controller.py 파라미터 표</h2>
+          </div>
+        </div>
+        <div class="review-card">
+          <div class="table-scroll"><table class="parameter-table"><thead><tr><th>파라미터</th><th>기본값</th><th>설명</th></tr></thead><tbody><tr><td><code>dvl_topic</code></td><td><code>&#x27;/dvl/data&#x27;</code></td><td>DVL 속도 데이터를 수신하는 토픽</td></tr><tr><td><code>dvl_position_topic</code></td><td><code>&#x27;/dvl/position&#x27;</code></td><td>DVL 위치 데이터를 수신하는 토픽</td></tr><tr><td><code>imu_topic</code></td><td><code>&#x27;/imu&#x27;</code></td><td>IMU 데이터를 수신하는 토픽</td></tr><tr><td><code>manual_wrench_topic</code></td><td><code>&#x27;/rov/wrench_manual&#x27;</code></td><td>수동 조작 Wrench 입력 토픽</td></tr><tr><td><code>position_force_topic</code></td><td><code>&#x27;/ctrl/position_force&#x27;</code></td><td>계산된 위치 유지 Force 출력 토픽</td></tr><tr><td><code>position_estimate_topic</code></td><td><code>&#x27;/rov/position_estimate&#x27;</code></td><td>추정 위치 출력 토픽</td></tr><tr><td><code>armed_topic</code></td><td><code>&#x27;/rov/armed&#x27;</code></td><td>Armed 상태 수신 토픽</td></tr><tr><td><code>control_enabled</code></td><td><code>True</code></td><td>위치 제어 기능 기본 활성화 여부</td></tr><tr><td><code>kp_x</code></td><td><code>0.8</code></td><td>X축 위치 비례 게인</td></tr><tr><td><code>kd_x</code></td><td><code>0.6</code></td><td>X축 속도 감쇠 게인</td></tr><tr><td><code>kp_y</code></td><td><code>0.8</code></td><td>Y축 위치 비례 게인</td></tr><tr><td><code>kd_y</code></td><td><code>0.6</code></td><td>Y축 속도 감쇠 게인</td></tr><tr><td><code>max_force_x</code></td><td><code>1.0</code></td><td>X축 Force 최대 출력 제한</td></tr><tr><td><code>max_force_y</code></td><td><code>1.0</code></td><td>Y축 Force 최대 출력 제한</td></tr><tr><td><code>max_force_z</code></td><td><code>1.0</code></td><td>Z축 보정 Force 최대 출력 제한</td></tr><tr><td><code>force_deadband</code></td><td><code>1e-4</code></td><td>미세 Force 출력 제거 Deadband</td></tr><tr><td><code>yaw_rate_damping_gain</code></td><td><code>1.2</code></td><td>Yaw 회전 중 XY damping 추가 게인</td></tr><tr><td><code>manual_yaw_damping_boost</code></td><td><code>0.6</code></td><td>수동 Yaw 조작 시 XY damping 추가량</td></tr><tr><td><code>manual_yaw_override_threshold</code></td><td><code>0.05</code></td><td>수동 Yaw override 판정 기준</td></tr><tr><td><code>manual_xy_override_threshold</code></td><td><code>0.05</code></td><td>수동 XY override 판정 기준</td></tr><tr><td><code>capture_initial_position_target</code></td><td><code>True</code></td><td>시작 시 현재 위치를 목표로 캡처할지 여부</td></tr><tr><td><code>capture_target_on_manual_release</code></td><td><code>True</code></td><td>XY 스틱 release 시 새 hold target 재캡처 여부</td></tr><tr><td><code>valid_timeout_sec</code></td><td><code>0.5</code></td><td>위치/속도 참조 freshness timeout</td></tr><tr><td><code>hold_frame_id</code></td><td><code>&#x27;dvl_odom&#x27;</code></td><td>위치 유지 기준 frame id</td></tr><tr><td><code>use_dvl_position</code></td><td><code>True</code></td><td>DVL absolute position을 직접 사용할지 여부</td></tr><tr><td><code>integrate_dvl_velocity_when_position_unavailable</code></td><td><code>True</code></td><td>절대 위치 없을 때 속도 적분 유지 여부</td></tr><tr><td><code>dvl_mount_roll_deg</code></td><td><code>0.0</code></td><td>DVL 장착 Roll 보정각</td></tr><tr><td><code>dvl_mount_pitch_deg</code></td><td><code>0.0</code></td><td>DVL 장착 Pitch 보정각</td></tr><tr><td><code>dvl_mount_yaw_deg</code></td><td><code>0.0</code></td><td>DVL 장착 Yaw 보정각</td></tr></tbody></table></div>
         </div>
       </section>
       <section id="fn-clamp" class="review-section">

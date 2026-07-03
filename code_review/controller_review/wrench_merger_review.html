@@ -15,6 +15,7 @@
       <p class="meta">수동 입력과 자동 제어 출력을 하나의 최종 Wrench로 병합하는 노드</p>
       <nav class="toc">
         <a href="#chapter">장 개요</a>
+        <a href="#parameter-table">파라미터 표</a>
         <a href="#fn-__init__">__init__()</a>
 <a href="#fn-manual_wrench_callback">manual_wrench_callback()</a>
 <a href="#fn-depth_heave_callback">depth_heave_callback()</a>
@@ -42,6 +43,20 @@
             <li>함수 개수: 12</li>
             <li>주요 역할: 수동 입력과 자동 제어 출력을 하나의 최종 Wrench로 병합하는 노드</li>
           </ul>
+          <div class="module-actions">
+            <a class="primary-link" href="#parameter-table">파라미터 표 보기</a>
+          </div>
+        </div>
+      </section>
+      <section id="parameter-table" class="panel">
+        <div class="panel-heading">
+          <div>
+            <p class="section-kicker">Parameters</p>
+            <h2>wrench_merger.py 파라미터 표</h2>
+          </div>
+        </div>
+        <div class="review-card">
+          <div class="table-scroll"><table class="parameter-table"><thead><tr><th>파라미터</th><th>기본값</th><th>설명</th></tr></thead><tbody><tr><td><code>manual_wrench_topic</code></td><td><code>&#x27;/rov/wrench_manual&#x27;</code></td><td></td></tr><tr><td><code>depth_heave_topic</code></td><td><code>&#x27;/ctrl/depth_heave&#x27;</code></td><td></td></tr><tr><td><code>depth_active_topic</code></td><td><code>&#x27;/ctrl/depth_active&#x27;</code></td><td></td></tr><tr><td><code>position_force_topic</code></td><td><code>&#x27;/ctrl/position_force&#x27;</code></td><td></td></tr><tr><td><code>attitude_torque_topic</code></td><td><code>&#x27;/ctrl/attitude_torque&#x27;</code></td><td></td></tr><tr><td><code>output_wrench_topic</code></td><td><code>&#x27;/rov/wrench_cmd&#x27;</code></td><td></td></tr><tr><td><code>armed_topic</code></td><td><code>&#x27;/rov/armed&#x27;</code></td><td></td></tr><tr><td><code>publish_rate</code></td><td><code>50.0</code></td><td></td></tr><tr><td><code>manual_heave_override_threshold</code></td><td><code>0.05</code></td><td></td></tr><tr><td><code>manual_xy_override_threshold</code></td><td><code>0.05</code></td><td></td></tr><tr><td><code>manual_yaw_override_threshold</code></td><td><code>0.02</code></td><td></td></tr><tr><td><code>manual_wrench_timeout_sec</code></td><td><code>0.5</code></td><td></td></tr></tbody></table></div>
         </div>
       </section>
       <section id="fn-__init__" class="review-section">

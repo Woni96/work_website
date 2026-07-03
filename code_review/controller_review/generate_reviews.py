@@ -1616,6 +1616,214 @@ def render_parameter_notes_markdown(parameters: tuple[tuple[str, str], ...]) -> 
     return [f"- {name}: {description}" for name, description in parameters]
 
 
+DECLARE_PARAMETER_RE = re.compile(
+    r"declare_parameter\(\s*'(?P<name>[^']+)'\s*,\s*(?P<default>[^)]+?)\s*\)"
+)
+
+
+CHAPTER_PARAMETER_DESCRIPTIONS: dict[str, dict[str, str]] = {
+    "attitude": {
+        "imu_topic": "IMU 데이터를 수신하는 토픽",
+        "manual_wrench_topic": "수동 조작 Wrench 입력 토픽",
+        "output_torque_topic": "계산된 자세 토크를 출력하는 토픽",
+        "cmd_attitude_topic": "목표 자세(Roll, Pitch) 명령 토픽",
+        "cmd_attitude_trim_topic": "목표 자세 Trim(보정값) 토픽",
+        "control_rate_hz": "자세 제어 루프 실행 주기(Hz)",
+        "control_enabled": "자세 제어 기능 기본 활성화 여부",
+        "kp_roll": "Roll 비례 게인",
+        "kd_roll": "Roll 미분 게인",
+        "ki_roll": "Roll 적분 게인",
+        "kp_pitch": "Pitch 비례 게인",
+        "kd_pitch": "Pitch 미분 게인",
+        "ki_pitch": "Pitch 적분 게인",
+        "kp_yaw": "Yaw 비례 게인",
+        "kd_yaw": "Yaw 미분 게인",
+        "tx_limit": "Roll 토크 출력 제한",
+        "ty_limit": "Pitch 토크 출력 제한",
+        "tz_limit": "Yaw 토크 출력 제한",
+        "rp_torque_slew_rate": "Roll/Pitch 토크 변화 속도 제한",
+        "capture_initial_target": "시작 시 현재 자세를 초기 목표로 캡처할지 여부",
+        "level_roll_pitch_target": "기본 목표 Roll/Pitch를 수평으로 둘지 여부",
+        "target_roll_deg": "기본 목표 Roll 각도",
+        "target_pitch_deg": "기본 목표 Pitch 각도",
+        "roll_trim_deg": "Roll Trim 보정값",
+        "pitch_trim_deg": "Pitch Trim 보정값",
+        "heave_protect_threshold": "수직 조작 중 보호 로직 시작 기준",
+        "strong_heave_threshold": "강한 수직 조작으로 판단하는 기준",
+        "xy_motion_protect_threshold": "수평 이동 중 Roll/Pitch 보호 시작 기준",
+        "strong_xy_motion_threshold": "강한 수평 이동으로 판단하는 기준",
+        "rp_scale_when_xy_motion": "수평 이동 중 Roll/Pitch 토크 축소 비율",
+        "rp_scale_when_strong_xy_motion": "강한 수평 이동 중 Roll/Pitch 최소 비율",
+        "xy_soft_trim_ignore_forward": "전진 시 soft trim 무시 여부",
+        "forward_surge_sign": "전진 방향 Surge 부호 설정",
+        "yaw_scale_when_heave": "수직 조작 중 Yaw 출력 배율",
+        "yaw_scale_when_strong_heave": "강한 수직 조작 중 Yaw 출력 배율",
+        "max_body_rate_for_control": "이 각속도 이상이면 제어를 제한하는 기준",
+        "large_tilt_disable_deg": "큰 기울기에서 토크 출력을 차단하는 각도",
+        "torque_deadband": "미세 토크 출력 제거 Deadband",
+        "roll_pitch_error_deadband_deg": "작은 Roll/Pitch 오차 무시 범위",
+        "roll_integral_limit": "Roll 적분항 제한",
+        "orientation_filter_enabled": "자세 필터 사용 여부",
+        "orientation_filter_measurement_alpha": "자세 필터 측정 반영 비율",
+        "orientation_filter_max_correction_rate_deg": "자세 필터 최대 보정 속도",
+        "translation_tilt_ff_enabled": "이동 기반 Tilt Feed-forward 사용 여부",
+        "translation_pitch_ff_gain": "이동 시 Pitch Feed-forward 게인",
+        "translation_roll_ff_gain": "이동 시 Roll Feed-forward 게인",
+        "translation_tilt_ff_max": "Tilt Feed-forward 최대값",
+        "translation_tilt_ff_deadband": "Tilt Feed-forward 적용 Deadband",
+        "yaw_hold_enabled": "Yaw Hold 기능 사용 여부",
+        "yaw_manual_override_threshold": "수동 Yaw override 판정 기준",
+        "capture_yaw_target_on_release": "Yaw 스틱 release 시 목표 Heading 재캡처 여부",
+        "yaw_hold_settle_time_sec": "Yaw Hold 재진입 전 settling 시간",
+        "yaw_error_deadband_deg": "작은 Yaw 오차 무시 범위",
+    },
+    "depth": {
+        "depth_topic": "수심 데이터를 수신하는 토픽",
+        "imu_topic": "IMU 데이터를 수신하는 토픽",
+        "cmd_depth_topic": "목표 수심 명령 토픽",
+        "manual_wrench_topic": "수동 조작 Wrench 입력 토픽",
+        "heave_cmd_topic": "계산된 Heave 명령 출력 토픽",
+        "depth_active_topic": "Depth Hold 활성 상태 출력 토픽",
+        "target_depth_status_topic": "현재 목표 수심 상태 출력 토픽",
+        "depth_error_topic": "수심 오차 출력 토픽",
+        "depth_rate_topic": "추정 수심 변화율 출력 토픽",
+        "armed_topic": "Armed 상태 수신 토픽",
+        "control_enabled": "수심 제어 기능 기본 활성화 여부",
+        "kp_depth": "Depth 비례 게인",
+        "ki_depth": "Depth 적분 게인",
+        "kd_depth": "Depth 미분 게인",
+        "max_heave": "Heave 최대 출력 제한",
+        "max_upward_heave": "상승 방향 Heave 최대 출력 제한",
+        "upward_heave_cmd_sign": "상승 방향 Heave 부호 설정",
+        "depth_integral_limit": "Depth 적분항 제한",
+        "manual_heave_override_threshold": "수동 Heave override 판정 기준",
+        "manual_wrench_timeout_sec": "수동 Wrench 입력 freshness timeout",
+        "manual_heave_release_target_offset": "Heave release 시 새 목표 수심 오프셋",
+        "capture_initial_depth_target": "시작 시 현재 수심을 목표로 캡처할지 여부",
+        "pilot_depth_rate_enabled": "스틱 입력을 목표 수심 변화율로 해석할지 여부",
+        "max_pilot_depth_rate": "Pilot depth-rate 최대값",
+        "pilot_depth_rate_sign": "Pilot depth-rate 방향 부호 설정",
+        "min_target_depth": "목표 수심 최소값",
+        "max_target_depth": "목표 수심 최대값",
+        "heave_cmd_sign": "최종 Heave 출력 부호 설정",
+        "depth_rate_alpha": "수심 변화율 low-pass filter 계수",
+        "max_heave_delta_per_cycle": "주기당 Heave 변화량 제한",
+        "depth_sensor_offset_x": "수심 센서 X축 장착 오프셋",
+        "depth_sensor_offset_y": "수심 센서 Y축 장착 오프셋",
+        "depth_sensor_offset_z": "수심 센서 Z축 장착 오프셋",
+        "depth_sensor_offset_compensation_enabled": "IMU 기반 센서 오프셋 보상 사용 여부",
+    },
+    "position": {
+        "dvl_topic": "DVL 속도 데이터를 수신하는 토픽",
+        "dvl_position_topic": "DVL 위치 데이터를 수신하는 토픽",
+        "imu_topic": "IMU 데이터를 수신하는 토픽",
+        "manual_wrench_topic": "수동 조작 Wrench 입력 토픽",
+        "position_force_topic": "계산된 위치 유지 Force 출력 토픽",
+        "position_estimate_topic": "추정 위치 출력 토픽",
+        "armed_topic": "Armed 상태 수신 토픽",
+        "control_enabled": "위치 제어 기능 기본 활성화 여부",
+        "kp_x": "X축 위치 비례 게인",
+        "kd_x": "X축 속도 감쇠 게인",
+        "kp_y": "Y축 위치 비례 게인",
+        "kd_y": "Y축 속도 감쇠 게인",
+        "max_force_x": "X축 Force 최대 출력 제한",
+        "max_force_y": "Y축 Force 최대 출력 제한",
+        "max_force_z": "Z축 보정 Force 최대 출력 제한",
+        "force_deadband": "미세 Force 출력 제거 Deadband",
+        "yaw_rate_damping_gain": "Yaw 회전 중 XY damping 추가 게인",
+        "manual_yaw_damping_boost": "수동 Yaw 조작 시 XY damping 추가량",
+        "manual_yaw_override_threshold": "수동 Yaw override 판정 기준",
+        "manual_xy_override_threshold": "수동 XY override 판정 기준",
+        "capture_initial_position_target": "시작 시 현재 위치를 목표로 캡처할지 여부",
+        "capture_target_on_manual_release": "XY 스틱 release 시 새 hold target 재캡처 여부",
+        "valid_timeout_sec": "위치/속도 참조 freshness timeout",
+        "hold_frame_id": "위치 유지 기준 frame id",
+        "use_dvl_position": "DVL absolute position을 직접 사용할지 여부",
+        "integrate_dvl_velocity_when_position_unavailable": "절대 위치 없을 때 속도 적분 유지 여부",
+        "dvl_mount_roll_deg": "DVL 장착 Roll 보정각",
+        "dvl_mount_pitch_deg": "DVL 장착 Pitch 보정각",
+        "dvl_mount_yaw_deg": "DVL 장착 Yaw 보정각",
+    },
+    "allocator": {
+        "wrench_cmd_topic": "Wrench 명령을 수신하는 토픽",
+        "thruster_cmd_topic": "Thruster 명령을 출력하는 토픽",
+        "imu_topic": "IMU 데이터를 수신하는 토픽",
+        "cmd_attitude_topic": "목표 자세(Roll, Pitch) 토픽",
+        "cmd_attitude_trim_topic": "목표 자세 Trim(보정값) 토픽",
+        "output_scale_topic": "출력 비율 변경 토픽",
+        "joy_speed_scale_topic": "조이스틱 속도 배율 토픽",
+        "use_joy_speed_scale_for_output": "조이스틱 속도 배율을 Thruster 출력에도 적용 여부",
+        "heave_gain": "Heave(Z축) 힘 출력 Gain",
+        "horizontal_output_gain": "Surge(X), Sway(Y) 출력 Gain",
+        "yaw_output_gain": "Yaw 회전 출력 Gain",
+        "vertical_output_gain": "Vertical Thruster 출력 Gain",
+        "rear_vertical_bias": "후방 Vertical Thruster Bias(출력 보정)",
+        "pitch_torque_gain": "Pitch Torque Gain",
+        "torque_first_allocation": "Torque를 우선 Allocation할지 여부",
+        "slew_rate": "Thruster 출력 변화 속도 제한(Rate Limiter)",
+        "max_output": "Thruster 최대 출력 제한",
+        "output_scale": "전체 Thruster 출력 배율",
+        "output_deadband": "Deadband 이하 출력 제거",
+        "level_horizontal_compensation_enabled": "수평 이동 보상 기능 사용 여부",
+        "level_horizontal_compensation_gain": "수평 보상 Gain",
+        "level_horizontal_compensation_max": "수평 보상 최대 출력",
+        "level_horizontal_compensation_heave_sign": "Heave 방향 부호 설정",
+        "level_horizontal_compensation_min_z": "일정 기울기 이상에서만 보상 적용",
+        "level_horizontal_compensation_uses_spare_only": "남는 Thruster 출력만 사용하여 보상",
+        "attitude_priority_horizontal_slowdown_enabled": "자세 제어 시 수평 이동 감속 기능 사용 여부",
+        "attitude_priority_horizontal_slowdown_start": "감속 시작 오차",
+        "attitude_priority_horizontal_slowdown_full": "최대 감속 오차",
+        "attitude_priority_horizontal_min_scale": "감속 시 최소 수평 출력 비율",
+        "surge_pitch_moment_compensation_enabled": "전진 시 Pitch 모멘트 자동 보상 사용 여부",
+        "surge_pitch_moment_gain": "Pitch 모멘트 보상 Gain",
+        "surge_pitch_moment_max": "Pitch 모멘트 최대 보상량",
+        "surge_pitch_moment_min_surge": "일정 전진 속도 이상에서만 보상",
+        "surge_pitch_moment_target_gate_enabled": "목표 Pitch에 따라 보상 활성화 여부",
+        "surge_pitch_moment_min_target_deg": "보상 시작 목표 Pitch",
+        "surge_pitch_moment_full_target_deg": "최대 보상이 적용되는 목표 Pitch",
+        "imu_pitch_hold_compensation_enabled": "IMU 기반 Pitch 유지 기능 사용 여부",
+        "imu_pitch_hold_gain": "Pitch 유지 Gain",
+        "imu_pitch_hold_max": "Pitch 유지 최대 보상량",
+        "imu_pitch_hold_deadband_deg": "Pitch 오차 무시 범위(Deadband)",
+        "imu_pitch_hold_min_surge": "일정 전진 속도 이상에서만 Pitch Hold 적용",
+    },
+}
+
+
+def extract_declared_parameters(source: str) -> list[tuple[str, str]]:
+    parameters: list[tuple[str, str]] = []
+    for match in DECLARE_PARAMETER_RE.finditer(source):
+        name = match.group("name")
+        default = match.group("default").strip()
+        parameters.append((name, default))
+    return parameters
+
+
+def build_parameter_table_entries(module_key: str, source: str) -> list[tuple[str, str, str]]:
+    descriptions = CHAPTER_PARAMETER_DESCRIPTIONS.get(module_key, {})
+    entries: list[tuple[str, str, str]] = []
+    for name, default in extract_declared_parameters(source):
+        entries.append((name, default, descriptions.get(name, "")))
+    return entries
+
+
+def render_parameter_table_html(entries: list[tuple[str, str, str]]) -> str:
+    rows: list[str] = []
+    for name, default, description in entries:
+        rows.append(
+            "<tr>"
+            f"<td><code>{html.escape(name)}</code></td>"
+            f"<td><code>{html.escape(default)}</code></td>"
+            f"<td>{inline_code(description)}</td>"
+            "</tr>"
+        )
+    return (
+        '<div class="table-scroll"><table class="parameter-table">'
+        "<thead><tr><th>파라미터</th><th>기본값</th><th>설명</th></tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody></table></div>"
+    )
+
+
 def build_function_map(source: str) -> list[str]:
     names: list[str] = []
     for line in source.splitlines():
@@ -1709,6 +1917,7 @@ def render_html_chapter_module(config: ModuleConfig, source: str) -> str:
     def_map = get_def_map(source)
     chapter_no = MODULE_CHAPTERS.get(config.key, 2)
     function_docs = CHAPTER_FUNCTION_DOCS[config.key]
+    parameter_table = render_parameter_table_html(build_parameter_table_entries(config.key, source))
     chapter_title = {
         "allocator": "최종 Wrench 명령을 8개 스러스터 명령으로 변환하는 Control Allocation 노드",
         "attitude": "IMU 기반 Roll/Pitch/Yaw 자세 유지 토크를 생성하는 자세 제어 노드",
@@ -1785,6 +1994,7 @@ def render_html_chapter_module(config: ModuleConfig, source: str) -> str:
       <p class="meta">{inline_code(chapter_title)}</p>
       <nav class="toc">
         <a href="#chapter">장 개요</a>
+        <a href="#parameter-table">파라미터 표</a>
         {nav_links}
         <a href="#full-source">전체 코드</a>
       </nav>
@@ -1801,6 +2011,20 @@ def render_html_chapter_module(config: ModuleConfig, source: str) -> str:
             <li>함수 개수: {len(function_map)}</li>
             <li>주요 역할: {inline_code(chapter_title)}</li>
           </ul>
+          <div class="module-actions">
+            <a class="primary-link" href="#parameter-table">파라미터 표 보기</a>
+          </div>
+        </div>
+      </section>
+      <section id="parameter-table" class="panel">
+        <div class="panel-heading">
+          <div>
+            <p class="section-kicker">Parameters</p>
+            <h2>{html.escape(config.source_filename)} 파라미터 표</h2>
+          </div>
+        </div>
+        <div class="review-card">
+          {parameter_table}
         </div>
       </section>
       {' '.join(sections)}
@@ -2423,6 +2647,39 @@ pre code {
 .source-details summary {
   cursor: pointer;
   margin-bottom: 14px;
+}
+
+.table-scroll {
+  overflow-x: auto;
+}
+
+.parameter-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 860px;
+}
+
+.parameter-table th,
+.parameter-table td {
+  padding: 14px 16px;
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.parameter-table th {
+  color: var(--text);
+  font-weight: 700;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.parameter-table td {
+  color: var(--muted);
+  line-height: 1.7;
+}
+
+.parameter-table tbody tr:hover {
+  background: rgba(103, 184, 255, 0.05);
 }
 
 @media (max-width: 1200px) {

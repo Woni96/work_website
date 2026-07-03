@@ -62,66 +62,11 @@
         <div class="panel-heading">
           <div>
             <p class="section-kicker">Parameters</p>
-            <h2>Allocator 파라미터 표</h2>
+            <h2>allocator_node.py 파라미터 표</h2>
           </div>
         </div>
         <div class="review-card">
-          <div class="table-scroll">
-            <table class="parameter-table">
-              <thead>
-                <tr>
-                  <th>파라미터</th>
-                  <th>기본값</th>
-                  <th>설명</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr><td><code>wrench_cmd_topic</code></td><td><code>/rov/wrench_cmd</code></td><td>Wrench 명령을 수신하는 토픽</td></tr>
-                <tr><td><code>thruster_cmd_topic</code></td><td><code>/thruster_cmd</code></td><td>Thruster 명령을 출력하는 토픽</td></tr>
-                <tr><td><code>imu_topic</code></td><td><code>/imu</code></td><td>IMU 데이터를 수신하는 토픽</td></tr>
-                <tr><td><code>cmd_attitude_topic</code></td><td><code>/cmd_attitude</code></td><td>목표 자세(Roll, Pitch) 토픽</td></tr>
-                <tr><td><code>cmd_attitude_trim_topic</code></td><td><code>/cmd_attitude_trim</code></td><td>목표 자세 Trim(보정값) 토픽</td></tr>
-                <tr><td><code>output_scale_topic</code></td><td><code>/rov/output_scale</code></td><td>출력 비율 변경 토픽</td></tr>
-                <tr><td><code>joy_speed_scale_topic</code></td><td><code>/rov/joy_speed_scale</code></td><td>조이스틱 속도 배율 토픽</td></tr>
-                <tr><td><code>use_joy_speed_scale_for_output</code></td><td><code>False</code></td><td>조이스틱 속도 배율을 Thruster 출력에도 적용 여부</td></tr>
-                <tr><td><code>heave_gain</code></td><td><code>1.4</code></td><td>Heave(Z축) 힘 출력 Gain</td></tr>
-                <tr><td><code>horizontal_output_gain</code></td><td><code>2.5</code></td><td>Surge(X), Sway(Y) 출력 Gain</td></tr>
-                <tr><td><code>yaw_output_gain</code></td><td><code>0.35</code></td><td>Yaw 회전 출력 Gain</td></tr>
-                <tr><td><code>vertical_output_gain</code></td><td><code>3.0</code></td><td>Vertical Thruster 출력 Gain</td></tr>
-                <tr><td><code>rear_vertical_bias</code></td><td><code>0.0</code></td><td>후방 Vertical Thruster Bias(출력 보정)</td></tr>
-                <tr><td><code>pitch_torque_gain</code></td><td><code>1.5</code></td><td>Pitch Torque Gain</td></tr>
-                <tr><td><code>torque_first_allocation</code></td><td><code>True</code></td><td>Torque를 우선 Allocation할지 여부</td></tr>
-                <tr><td><code>slew_rate</code></td><td><code>4.0</code></td><td>Thruster 출력 변화 속도 제한(Rate Limiter)</td></tr>
-                <tr><td><code>max_output</code></td><td><code>1.0</code></td><td>Thruster 최대 출력 제한</td></tr>
-                <tr><td><code>output_scale</code></td><td><code>0.25</code></td><td>전체 Thruster 출력 배율</td></tr>
-                <tr><td><code>output_deadband</code></td><td><code>0.02</code></td><td>Deadband 이하 출력 제거</td></tr>
-                <tr><td><code>level_horizontal_compensation_enabled</code></td><td><code>True</code></td><td>수평 이동 보상 기능 사용 여부</td></tr>
-                <tr><td><code>level_horizontal_compensation_gain</code></td><td><code>1.0</code></td><td>수평 보상 Gain</td></tr>
-                <tr><td><code>level_horizontal_compensation_max</code></td><td><code>0.5</code></td><td>수평 보상 최대 출력</td></tr>
-                <tr><td><code>level_horizontal_compensation_heave_sign</code></td><td><code>-1.0</code></td><td>Heave 방향 부호 설정</td></tr>
-                <tr><td><code>level_horizontal_compensation_min_z</code></td><td><code>0.35</code></td><td>일정 기울기 이상에서만 보상 적용</td></tr>
-                <tr><td><code>level_horizontal_compensation_uses_spare_only</code></td><td><code>True</code></td><td>남는 Thruster 출력만 사용하여 보상</td></tr>
-                <tr><td><code>attitude_priority_horizontal_slowdown_enabled</code></td><td><code>False</code></td><td>자세 제어 시 수평 이동 감속 기능 사용 여부</td></tr>
-                <tr><td><code>attitude_priority_horizontal_slowdown_start</code></td><td><code>0.06</code></td><td>감속 시작 오차</td></tr>
-                <tr><td><code>attitude_priority_horizontal_slowdown_full</code></td><td><code>0.12</code></td><td>최대 감속 오차</td></tr>
-                <tr><td><code>attitude_priority_horizontal_min_scale</code></td><td><code>0.25</code></td><td>감속 시 최소 수평 출력 비율</td></tr>
-                <tr><td><code>surge_pitch_moment_compensation_enabled</code></td><td><code>False</code></td><td>전진 시 Pitch 모멘트 자동 보상 사용 여부</td></tr>
-                <tr><td><code>surge_pitch_moment_gain</code></td><td><code>-0.12</code></td><td>Pitch 모멘트 보상 Gain</td></tr>
-                <tr><td><code>surge_pitch_moment_max</code></td><td><code>0.12</code></td><td>Pitch 모멘트 최대 보상량</td></tr>
-                <tr><td><code>surge_pitch_moment_min_surge</code></td><td><code>0.03</code></td><td>일정 전진 속도 이상에서만 보상</td></tr>
-                <tr><td><code>surge_pitch_moment_target_gate_enabled</code></td><td><code>True</code></td><td>목표 Pitch에 따라 보상 활성화 여부</td></tr>
-                <tr><td><code>surge_pitch_moment_min_target_deg</code></td><td><code>3.0°</code></td><td>보상 시작 목표 Pitch</td></tr>
-                <tr><td><code>surge_pitch_moment_full_target_deg</code></td><td><code>20.0°</code></td><td>최대 보상이 적용되는 목표 Pitch</td></tr>
-                <tr><td><code>imu_pitch_hold_compensation_enabled</code></td><td><code>False</code></td><td>IMU 기반 Pitch 유지 기능 사용 여부</td></tr>
-                <tr><td><code>imu_pitch_hold_gain</code></td><td><code>0.25</code></td><td>Pitch 유지 Gain</td></tr>
-                <tr><td><code>imu_pitch_hold_max</code></td><td><code>0.10</code></td><td>Pitch 유지 최대 보상량</td></tr>
-                <tr><td><code>imu_pitch_hold_deadband_deg</code></td><td><code>1.0°</code></td><td>Pitch 오차 무시 범위(Deadband)</td></tr>
-                <tr><td><code>imu_pitch_hold_min_surge</code></td><td><code>0.03</code></td><td>일정 전진 속도 이상에서만 Pitch Hold 적용</td></tr>
-                <tr><td><code>roll_torque_gain</code></td><td><code>1.0</code></td><td>Roll Torque Gain</td></tr>
-                <tr><td><code>yaw_torque_gain</code></td><td><code>1.0</code></td><td>Yaw Torque Gain</td></tr>
-              </tbody>
-            </table>
-          </div>
+          <div class="table-scroll"><table class="parameter-table"><thead><tr><th>파라미터</th><th>기본값</th><th>설명</th></tr></thead><tbody><tr><td><code>wrench_cmd_topic</code></td><td><code>&#x27;/rov/wrench_cmd&#x27;</code></td><td>Wrench 명령을 수신하는 토픽</td></tr><tr><td><code>thruster_cmd_topic</code></td><td><code>&#x27;/thruster_cmd&#x27;</code></td><td>Thruster 명령을 출력하는 토픽</td></tr><tr><td><code>imu_topic</code></td><td><code>&#x27;/imu&#x27;</code></td><td>IMU 데이터를 수신하는 토픽</td></tr><tr><td><code>cmd_attitude_topic</code></td><td><code>&#x27;/cmd_attitude&#x27;</code></td><td>목표 자세(Roll, Pitch) 토픽</td></tr><tr><td><code>cmd_attitude_trim_topic</code></td><td><code>&#x27;/cmd_attitude_trim&#x27;</code></td><td>목표 자세 Trim(보정값) 토픽</td></tr><tr><td><code>output_scale_topic</code></td><td><code>&#x27;/rov/output_scale&#x27;</code></td><td>출력 비율 변경 토픽</td></tr><tr><td><code>joy_speed_scale_topic</code></td><td><code>&#x27;/rov/joy_speed_scale&#x27;</code></td><td>조이스틱 속도 배율 토픽</td></tr><tr><td><code>use_joy_speed_scale_for_output</code></td><td><code>False</code></td><td>조이스틱 속도 배율을 Thruster 출력에도 적용 여부</td></tr><tr><td><code>heave_gain</code></td><td><code>1.4</code></td><td>Heave(Z축) 힘 출력 Gain</td></tr><tr><td><code>horizontal_output_gain</code></td><td><code>2.5</code></td><td>Surge(X), Sway(Y) 출력 Gain</td></tr><tr><td><code>yaw_output_gain</code></td><td><code>0.35</code></td><td>Yaw 회전 출력 Gain</td></tr><tr><td><code>vertical_output_gain</code></td><td><code>3.0</code></td><td>Vertical Thruster 출력 Gain</td></tr><tr><td><code>rear_vertical_bias</code></td><td><code>0.0</code></td><td>후방 Vertical Thruster Bias(출력 보정)</td></tr><tr><td><code>pitch_torque_gain</code></td><td><code>1.5</code></td><td>Pitch Torque Gain</td></tr><tr><td><code>torque_first_allocation</code></td><td><code>True</code></td><td>Torque를 우선 Allocation할지 여부</td></tr><tr><td><code>slew_rate</code></td><td><code>4.0</code></td><td>Thruster 출력 변화 속도 제한(Rate Limiter)</td></tr><tr><td><code>max_output</code></td><td><code>1.0</code></td><td>Thruster 최대 출력 제한</td></tr><tr><td><code>output_scale</code></td><td><code>0.25</code></td><td>전체 Thruster 출력 배율</td></tr><tr><td><code>output_deadband</code></td><td><code>0.02</code></td><td>Deadband 이하 출력 제거</td></tr><tr><td><code>level_horizontal_compensation_enabled</code></td><td><code>True</code></td><td>수평 이동 보상 기능 사용 여부</td></tr><tr><td><code>level_horizontal_compensation_gain</code></td><td><code>1.0</code></td><td>수평 보상 Gain</td></tr><tr><td><code>level_horizontal_compensation_max</code></td><td><code>0.5</code></td><td>수평 보상 최대 출력</td></tr><tr><td><code>level_horizontal_compensation_heave_sign</code></td><td><code>-1.0</code></td><td>Heave 방향 부호 설정</td></tr><tr><td><code>level_horizontal_compensation_min_z</code></td><td><code>0.35</code></td><td>일정 기울기 이상에서만 보상 적용</td></tr><tr><td><code>level_horizontal_compensation_uses_spare_only</code></td><td><code>True</code></td><td>남는 Thruster 출력만 사용하여 보상</td></tr><tr><td><code>attitude_priority_horizontal_slowdown_enabled</code></td><td><code>False</code></td><td>자세 제어 시 수평 이동 감속 기능 사용 여부</td></tr><tr><td><code>attitude_priority_horizontal_slowdown_start</code></td><td><code>0.06</code></td><td>감속 시작 오차</td></tr><tr><td><code>attitude_priority_horizontal_slowdown_full</code></td><td><code>0.12</code></td><td>최대 감속 오차</td></tr><tr><td><code>attitude_priority_horizontal_min_scale</code></td><td><code>0.25</code></td><td>감속 시 최소 수평 출력 비율</td></tr><tr><td><code>surge_pitch_moment_compensation_enabled</code></td><td><code>False</code></td><td>전진 시 Pitch 모멘트 자동 보상 사용 여부</td></tr><tr><td><code>surge_pitch_moment_gain</code></td><td><code>-0.12</code></td><td>Pitch 모멘트 보상 Gain</td></tr><tr><td><code>surge_pitch_moment_max</code></td><td><code>0.12</code></td><td>Pitch 모멘트 최대 보상량</td></tr><tr><td><code>surge_pitch_moment_min_surge</code></td><td><code>0.03</code></td><td>일정 전진 속도 이상에서만 보상</td></tr><tr><td><code>surge_pitch_moment_target_gate_enabled</code></td><td><code>True</code></td><td>목표 Pitch에 따라 보상 활성화 여부</td></tr><tr><td><code>surge_pitch_moment_min_target_deg</code></td><td><code>3.0</code></td><td>보상 시작 목표 Pitch</td></tr><tr><td><code>surge_pitch_moment_full_target_deg</code></td><td><code>20.0</code></td><td>최대 보상이 적용되는 목표 Pitch</td></tr><tr><td><code>imu_pitch_hold_compensation_enabled</code></td><td><code>False</code></td><td>IMU 기반 Pitch 유지 기능 사용 여부</td></tr><tr><td><code>imu_pitch_hold_gain</code></td><td><code>0.25</code></td><td>Pitch 유지 Gain</td></tr><tr><td><code>imu_pitch_hold_max</code></td><td><code>0.10</code></td><td>Pitch 유지 최대 보상량</td></tr><tr><td><code>imu_pitch_hold_deadband_deg</code></td><td><code>1.0</code></td><td>Pitch 오차 무시 범위(Deadband)</td></tr><tr><td><code>imu_pitch_hold_min_surge</code></td><td><code>0.03</code></td><td>일정 전진 속도 이상에서만 Pitch Hold 적용</td></tr></tbody></table></div>
         </div>
       </section>
       <section id="fn-normalize" class="review-section">
